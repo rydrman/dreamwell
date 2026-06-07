@@ -1,0 +1,28 @@
+[package]
+name = "dreamwell-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "dreamwell-server"
+path = "src/main.rs"
+
+[dependencies]
+dreamwell-types = { workspace = true }
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3"
+regex = "1"
+async-stream = "0.3"
+png = "0.17"
+bytes = "1"
