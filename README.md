@@ -1,68 +1,64 @@
 # Dreamwell
 
-A lightweight SillyTavern-style roleplay client focused on **server-side streaming** and a **shared generation queue**.
+A lightweight SillyTavern-style roleplay client with **server-side streaming** and a **shared generation queue**.
 
 Send messages across many chats, switch away, and come back later — responses keep generating on the server and are persisted as they stream in.
 
+## Stack
+
+- **Backend**: Rust (Axum, SQLx/SQLite, Tokio job queue)
+- **Frontend**: Rust (Yew WASM via Trunk)
+- **CI**: rustfmt, clippy, tests, Docker build
+- **Publish**: private GHCR image on every `main` push (SHA tag) and on git tags (tag name)
+
 ## Features
 
-- **Custom inference server** — OpenAI-compatible API (Ollama, vLLM, text-generation-webui, etc.) with model picker
-- **Character cards** — create, edit, and import JSON or Tavern PNG cards
-- **Auto-summarize** — configurable threshold to compress old context
-- **KV facts** — per-chat key/value memory the model can update via `<fact key="...">...</fact>` tags
-- **Prompt & model settings** — temperature, top-p, max tokens, system prefix/suffix, concurrency
-- **Shared backend queue** — one slow worker by default; bump concurrency in settings to run more in parallel
+- Custom OpenAI-compatible inference server with model selection
+- Character cards (create, edit, import JSON/PNG)
+- Configurable auto-summarize to keep context small
+- Per-chat KV facts the model can update via `<fact key="...">...</fact>`
+- Prompt prefix/suffix and model parameters
+- Shared backend queue (default concurrency: 1)
 
-## Quick start
-
-### Backend
+## Development
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Lint / format
+make fmt-check
+make clippy
+
+# Build frontend + server
+make build
+
+# Run locally (serves UI + API on :8080)
+make run
 ```
 
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open http://localhost:5173
-
-### Inference
-
-Point **Settings → Inference server** at your OpenAI-compatible endpoint, e.g.:
-
-- Ollama: `http://localhost:11434/v1`
-- Then click **Refresh** and pick a model.
-
-## Architecture
-
-```
-User sends message → job queued → worker streams tokens → DB updated continuously
-                                         ↓
-Frontend SSE polls DB → live updates while viewing; full history on return
-```
-
-Jobs are processed by a background asyncio worker. Each token is committed to SQLite, so partial responses survive page reloads and tab switches.
+Point **Settings → Inference server** at your OpenAI-compatible endpoint (e.g. `http://localhost:11434/v1` for Ollama), refresh models, and pick one.
 
 ## Environment
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DREAMWELL_DATABASE_URL` | `sqlite:///./dreamwell.db` | SQLAlchemy database URL |
-| `DREAMWELL_MAX_CONCURRENT_JOBS` | `1` | Default queue concurrency |
+| `DREAMWELL_DATABASE_URL` | `sqlite:dreamwell.db` | SQLite database path |
+| `DREAMWELL_STATIC_DIR` | `crates/frontend/dist` | Built Yew assets |
+| `DREAMWELL_HOST` | `0.0.0.0` | Listen host |
+| `DREAMWELL_PORT` | `8080` | Listen port |
+| `DREAMWELL_MAX_CONCURRENT_JOBS` | `1` | Queue concurrency |
 
-## API
+## Docker
 
-- `GET /api/chats` — list chats with active job status
-- `POST /api/chats/{id}/messages` — send message, queue generation
-- `GET /api/chats/{id}/stream` — SSE stream of message updates
-- `GET /api/chats/queue` — global queue status
-- `GET /api/characters` — character cards
-- `POST /api/characters/import` — import JSON/PNG
-- `GET/PATCH /api/settings` — app configuration
+```bash
+make docker
+docker run --rm -p 8080:8080 -v dreamwell-data:/app/data dreamwell:local
+```
+
+Images are published privately to `ghcr.io/<owner>/dreamwell` on every push to `main` (tagged with the commit SHA) and on git tag pushes (tagged with the tag name).
+
+## Architecture
+
+```
+User sends message → job queued → worker streams tokens → SQLite updated continuously
+                                         ↓
+                         SSE polls DB → live updates; full history on return
+```
