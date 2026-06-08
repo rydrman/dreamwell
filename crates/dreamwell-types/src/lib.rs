@@ -161,6 +161,19 @@ pub struct SendMessageRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateMessageRequest {
+    pub content: String,
+    #[serde(default)]
+    pub rewind: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegenerateMessageRequest {
+    #[serde(default)]
+    pub rewind: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Fact {
     pub id: i64,
     pub chat_id: i64,

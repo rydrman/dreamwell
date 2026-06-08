@@ -97,6 +97,33 @@ pub async fn send_message(chat_id: i64, content: &str) -> Result<Message, String
     .await
 }
 
+pub async fn update_message(
+    chat_id: i64,
+    message_id: i64,
+    content: &str,
+    rewind: bool,
+) -> Result<Message, String> {
+    json_body(
+        "PATCH",
+        &format!("/api/chats/{chat_id}/messages/{message_id}"),
+        &serde_json::json!({ "content": content, "rewind": rewind }),
+    )
+    .await
+}
+
+pub async fn regenerate_message(
+    chat_id: i64,
+    message_id: i64,
+    rewind: bool,
+) -> Result<Message, String> {
+    json_body(
+        "POST",
+        &format!("/api/chats/{chat_id}/messages/{message_id}/regenerate"),
+        &serde_json::json!({ "rewind": rewind }),
+    )
+    .await
+}
+
 pub async fn get_queue() -> Result<QueueStatus, String> {
     json(api_request("GET", "/api/chats/queue")).await
 }

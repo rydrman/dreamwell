@@ -312,12 +312,54 @@ pub async fn delete_chat(pool: &SqlitePool, id: i64) -> AppResult<()> {
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.is_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.message_id = m.id WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+        "SELECT m.id, m.chat_id, m.role, m.content, m.is_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(message_from_row).collect())
+}
+
+pub async fn get_message(pool: &SqlitePool, chat_id: i64, message_id: i64) -> AppResult<Message> {
+    list_messages(pool, chat_id)
+        .await?
+        .into_iter()
+        .find(|m| m.id == message_id)
+        .ok_or_else(|| AppError::not_found("Message not found"))
+}
+
+pub async fn is_last_message(pool: &SqlitePool, chat_id: i64, message_id: i64) -> AppResult<bool> {
+    let messages = list_messages(pool, chat_id).await?;
+    Ok(messages.last().map(|m| m.id) == Some(message_id))
+}
+
+pub async fn list_active_jobs_for_message(
+    pool: &SqlitePool,
+    message_id: i64,
+) -> AppResult<Vec<Job>> {
+    let rows = sqlx::query_as::<_, JobRow>(
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE message_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC",
+    )
+    .bind(message_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+pub async fn delete_messages_after(
+    pool: &SqlitePool,
+    chat_id: i64,
+    message_id: i64,
+) -> AppResult<Vec<i64>> {
+    let messages = list_messages(pool, chat_id).await?;
+    let Some(idx) = messages.iter().position(|m| m.id == message_id) else {
+        return Err(AppError::not_found("Message not found"));
+    };
+    let to_delete: Vec<i64> = messages[(idx + 1)..].iter().map(|m| m.id).collect();
+    if !to_delete.is_empty() {
+        delete_messages(pool, &to_delete).await?;
+    }
+    Ok(to_delete)
 }
 
 pub async fn insert_message(

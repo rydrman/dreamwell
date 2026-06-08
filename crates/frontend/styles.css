@@ -346,6 +346,117 @@ button {
   border-radius: 0.375rem;
   padding: 0.75rem 1rem;
   line-height: 1.55;
+  position: relative;
+}
+
+.message-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.message-meta {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.message-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.message-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
+.message-menu-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.35rem;
+  min-height: 1.75rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.message-menu-btn:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.message-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 11;
+  min-width: 11rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.35rem;
+  box-shadow: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.08);
+}
+
+.message.user .message-menu {
+  right: 0;
+}
+
+.message.assistant .message-menu {
+  left: 0;
+  right: auto;
+}
+
+.message-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 0.25rem;
+  padding: 0.45rem 0.55rem;
+  cursor: pointer;
+}
+
+.message-menu-item:hover {
+  background: var(--surface);
+}
+
+.message-menu-rewind {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  margin-top: 0.2rem;
+}
+
+.message-menu-rewind input {
+  margin-top: 0.15rem;
+}
+
+.message-edit-input {
+  width: 100%;
+  min-height: 6rem;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--bg);
+}
+
+.message-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
 }
 
 .message-body > :first-child {
