@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
-    Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, Fact, Job, JobStatus, JobType,
-    Message, MessageRole, Settings, SettingsUpdate, DEFAULT_SYSTEM_PROMPT_PREFIX,
+    Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, ChatVariable, Job, JobStatus,
+    JobType, Message, MessageRole, Settings, SettingsUpdate, DEFAULT_SYSTEM_PROMPT_PREFIX,
     DEFAULT_USER_NAME,
 };
 
@@ -448,9 +448,9 @@ pub async fn touch_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<()> {
     Ok(())
 }
 
-pub async fn list_facts(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Fact>> {
-    let rows = sqlx::query_as::<_, FactRow>(
-        "SELECT id, chat_id, key, value, updated_at FROM facts WHERE chat_id = ?1 ORDER BY key ASC",
+pub async fn list_variables(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<ChatVariable>> {
+    let rows = sqlx::query_as::<_, VariableRow>(
+        "SELECT id, chat_id, key, value, updated_at FROM chat_variables WHERE chat_id = ?1 ORDER BY key ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -458,15 +458,15 @@ pub async fn list_facts(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Fact>>
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
-pub async fn upsert_fact(
+pub async fn upsert_variable(
     pool: &SqlitePool,
     chat_id: i64,
     key: String,
     value: String,
-) -> AppResult<Fact> {
+) -> AppResult<ChatVariable> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO facts (chat_id, key, value, updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        "INSERT INTO chat_variables (chat_id, key, value, updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
     )
     .bind(chat_id)
     .bind(&key)
@@ -474,8 +474,8 @@ pub async fn upsert_fact(
     .bind(&now)
     .execute(pool)
     .await?;
-    let row = sqlx::query_as::<_, FactRow>(
-        "SELECT id, chat_id, key, value, updated_at FROM facts WHERE chat_id = ?1 AND key = ?2",
+    let row = sqlx::query_as::<_, VariableRow>(
+        "SELECT id, chat_id, key, value, updated_at FROM chat_variables WHERE chat_id = ?1 AND key = ?2",
     )
     .bind(chat_id)
     .bind(&key)
@@ -484,21 +484,21 @@ pub async fn upsert_fact(
     Ok(row.into())
 }
 
-pub async fn delete_fact(pool: &SqlitePool, chat_id: i64, key: &str) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM facts WHERE chat_id = ?1 AND key = ?2")
+pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, key: &str) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM chat_variables WHERE chat_id = ?1 AND key = ?2")
         .bind(chat_id)
         .bind(key)
         .execute(pool)
         .await?;
     if result.rows_affected() == 0 {
-        return Err(AppError::not_found("Fact not found"));
+        return Err(AppError::not_found("Variable not found"));
     }
     Ok(())
 }
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_after_messages, summarize_keep_recent, facts_enabled, thought_blocks_enabled, max_context_messages FROM app_settings WHERE id = 1",
+        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
@@ -543,8 +543,8 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     if let Some(v) = payload.summarize_keep_recent {
         current.summarize_keep_recent = v;
     }
-    if let Some(v) = payload.facts_enabled {
-        current.facts_enabled = v;
+    if let Some(v) = payload.variables_enabled {
+        current.variables_enabled = v;
     }
     if let Some(v) = payload.thought_blocks_enabled {
         current.thought_blocks_enabled = v;
@@ -558,7 +558,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     }
 
     sqlx::query(
-        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_after_messages=?11, summarize_keep_recent=?12, facts_enabled=?13, thought_blocks_enabled=?14, max_context_messages=?15 WHERE id=1",
+        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_after_messages=?11, summarize_keep_recent=?12, variables_enabled=?13, thought_blocks_enabled=?14, max_context_messages=?15 WHERE id=1",
     )
     .bind(&current.inference_url)
     .bind(&current.model)
@@ -572,7 +572,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     .bind(current.summarize_enabled as i64)
     .bind(current.summarize_after_messages)
     .bind(current.summarize_keep_recent)
-    .bind(current.facts_enabled as i64)
+    .bind(current.variables_enabled as i64)
     .bind(current.thought_blocks_enabled as i64)
     .bind(current.max_context_messages)
     .execute(pool)
@@ -803,7 +803,7 @@ struct MessageRow {
 }
 
 #[derive(sqlx::FromRow)]
-struct FactRow {
+struct VariableRow {
     id: i64,
     chat_id: i64,
     key: String,
@@ -811,8 +811,8 @@ struct FactRow {
     updated_at: String,
 }
 
-impl From<FactRow> for Fact {
-    fn from(row: FactRow) -> Self {
+impl From<VariableRow> for ChatVariable {
+    fn from(row: VariableRow) -> Self {
         Self {
             id: row.id,
             chat_id: row.chat_id,
@@ -888,7 +888,7 @@ struct SettingsRow {
     summarize_enabled: i64,
     summarize_after_messages: i64,
     summarize_keep_recent: i64,
-    facts_enabled: i64,
+    variables_enabled: i64,
     thought_blocks_enabled: i64,
     max_context_messages: i64,
 }
@@ -908,7 +908,7 @@ impl SettingsRow {
             summarize_enabled: self.summarize_enabled != 0,
             summarize_after_messages: self.summarize_after_messages,
             summarize_keep_recent: self.summarize_keep_recent,
-            facts_enabled: self.facts_enabled != 0,
+            variables_enabled: self.variables_enabled != 0,
             thought_blocks_enabled: self.thought_blocks_enabled != 0,
             max_context_messages: self.max_context_messages,
             max_concurrent_jobs: MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst),

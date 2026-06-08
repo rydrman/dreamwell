@@ -79,19 +79,19 @@ pub fn parse_example_dialogue(text: &str, ctx: &MacroContext<'_>) -> Vec<(Messag
     messages
 }
 
-fn format_facts(facts: &[dreamwell_types::Fact]) -> String {
-    if facts.is_empty() {
+fn format_variables(variables: &[dreamwell_types::ChatVariable]) -> String {
+    if variables.is_empty() {
         return String::new();
     }
-    let lines: Vec<String> = facts
+    let lines: Vec<String> = variables
         .iter()
-        .map(|f| format!("- {}: {}", f.key, f.value))
+        .map(|v| format!("- {}: {}", v.key, v.value))
         .collect();
-    format!("Known facts about this conversation:\n{}", lines.join("\n"))
+    format!("Current chat variables:\n{}", lines.join("\n"))
 }
 
-fn facts_instruction() -> &'static str {
-    "You may update conversation facts using XML tags like <fact key=\"location\">tavern</fact>. Only emit fact tags when information should be remembered."
+fn variables_instruction() -> &'static str {
+    "You may update chat variables using XML tags like <var key=\"location\">tavern</var>. Reusing a key replaces its value. Only emit var tags for mutable session state that should persist (location, inventory, quest stage, etc.), not for static lore."
 }
 
 pub async fn build_messages_for_inference(
@@ -108,8 +108,8 @@ pub async fn build_messages_for_inference(
         &settings.persona_description,
     );
 
-    let facts = if settings.facts_enabled {
-        db::list_facts(pool, chat_id).await?
+    let variables = if settings.variables_enabled {
+        db::list_variables(pool, chat_id).await?
     } else {
         vec![]
     };
@@ -140,12 +140,12 @@ pub async fn build_messages_for_inference(
     if !summary.trim().is_empty() {
         system_parts.push(format!("Conversation summary so far:\n{summary}"));
     }
-    let facts_text = format_facts(&facts);
-    if !facts_text.is_empty() {
-        system_parts.push(facts_text);
+    let variables_text = format_variables(&variables);
+    if !variables_text.is_empty() {
+        system_parts.push(variables_text);
     }
-    if settings.facts_enabled {
-        system_parts.push(facts_instruction().to_string());
+    if settings.variables_enabled {
+        system_parts.push(variables_instruction().to_string());
     }
 
     let mut messages = Vec::new();

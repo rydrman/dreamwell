@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::facts::{apply_fact_updates, extract_facts_from_text};
 use crate::inference::{chat_completion, stream_chat_completion};
 use crate::prompts::build_messages_for_inference;
 use crate::story_prompts::{
@@ -19,6 +18,7 @@ use crate::story_prompts::{
 };
 use crate::summarize::maybe_summarize_chat;
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
+use crate::variables::{apply_variable_updates, extract_variables_from_text};
 
 fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> String {
     if settings.thought_blocks_enabled {
@@ -349,8 +349,8 @@ async fn run_chat_job(
             )
         };
 
-    let (cleaned, updates) = extract_facts_from_text(&processed);
-    if settings.facts_enabled && !updates.is_empty() {
+    let (cleaned, updates) = extract_variables_from_text(&processed);
+    if settings.variables_enabled && !updates.is_empty() {
         if settings.thought_blocks_enabled {
             db::update_message_generation(
                 pool,
@@ -364,7 +364,7 @@ async fn run_chat_job(
         } else {
             db::update_message_content(pool, message_id, &cleaned).await?;
         }
-        apply_fact_updates(pool, chat_id, &updates).await?;
+        apply_variable_updates(pool, chat_id, &updates).await?;
     } else if settings.thought_blocks_enabled
         && (thought_in_progress || thought_duration_ms.is_some() || !thought_content.is_empty())
     {

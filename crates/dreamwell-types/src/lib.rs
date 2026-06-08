@@ -180,7 +180,7 @@ pub struct RegenerateMessageRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Fact {
+pub struct ChatVariable {
     pub id: i64,
     pub chat_id: i64,
     pub key: String,
@@ -189,7 +189,7 @@ pub struct Fact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FactUpdate {
+pub struct ChatVariableUpdate {
     pub key: String,
     pub value: String,
 }
@@ -363,7 +363,7 @@ pub struct Settings {
     pub summarize_enabled: bool,
     pub summarize_after_messages: i64,
     pub summarize_keep_recent: i64,
-    pub facts_enabled: bool,
+    pub variables_enabled: bool,
     pub thought_blocks_enabled: bool,
     pub max_context_messages: i64,
     pub max_concurrent_jobs: i64,
@@ -383,7 +383,7 @@ pub struct SettingsUpdate {
     pub summarize_enabled: Option<bool>,
     pub summarize_after_messages: Option<i64>,
     pub summarize_keep_recent: Option<i64>,
-    pub facts_enabled: Option<bool>,
+    pub variables_enabled: Option<bool>,
     pub thought_blocks_enabled: Option<bool>,
     pub max_context_messages: Option<i64>,
     pub max_concurrent_jobs: Option<i64>,

@@ -166,24 +166,28 @@ pub async fn delete_character(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn get_facts(chat_id: i64) -> Result<Vec<Fact>, String> {
-    json(api_request("GET", &format!("/api/chats/{chat_id}/facts"))).await
+pub async fn get_variables(chat_id: i64) -> Result<Vec<ChatVariable>, String> {
+    json(api_request(
+        "GET",
+        &format!("/api/chats/{chat_id}/variables"),
+    ))
+    .await
 }
 
-pub async fn upsert_fact(chat_id: i64, key: &str, value: &str) -> Result<Fact, String> {
+pub async fn upsert_variable(chat_id: i64, key: &str, value: &str) -> Result<ChatVariable, String> {
     json_body(
         "PUT",
-        &format!("/api/chats/{chat_id}/facts"),
+        &format!("/api/chats/{chat_id}/variables"),
         &serde_json::json!({ "key": key, "value": value }),
     )
     .await
 }
 
-pub async fn delete_fact(chat_id: i64, key: &str) -> Result<(), String> {
+pub async fn delete_variable(chat_id: i64, key: &str) -> Result<(), String> {
     api_request(
         "DELETE",
         &format!(
-            "/api/chats/{chat_id}/facts/{}",
+            "/api/chats/{chat_id}/variables/{}",
             js_sys::encode_uri_component(key)
         ),
     )
