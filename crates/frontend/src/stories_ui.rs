@@ -3,6 +3,7 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
+use crate::MobilePane;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum StorySelection {
@@ -24,6 +25,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let selection = use_state(|| StorySelection::Basics);
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
+    let mobile_pane = use_state(|| MobilePane::Main);
 
     {
         let stories = stories.clone();
@@ -99,11 +101,21 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     }
 
     if *loading {
-        return html! { <div class="muted" style="padding:2rem;">{"Loading stories…"}</div> };
+        return html! { <div class="loading-screen muted">{"Loading stories…"}</div> };
     }
 
     html! {
-        <div class="app-shell">
+        <>
+            if *mobile_pane == MobilePane::Sidebar {
+                <div class="drawer-backdrop" onclick={Callback::from({
+                    let mobile_pane = mobile_pane.clone();
+                    move |_| mobile_pane.set(MobilePane::Main)
+                })} />
+            }
+            <div class={classes!(
+                "app-shell",
+                (*mobile_pane == MobilePane::Sidebar).then_some("pane-sidebar"),
+            )}>
             <StorySidebar
                 stories={(*stories).clone()}
                 detail={(*detail).clone()}
@@ -112,19 +124,27 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 on_select_story={Callback::from({
                     let selected_story_id = selected_story_id.clone();
                     let selection = selection.clone();
+                    let mobile_pane = mobile_pane.clone();
                     move |id| {
                         selected_story_id.set(Some(id));
                         selection.set(StorySelection::Basics);
+                        mobile_pane.set(MobilePane::Main);
                     }
                 })}
                 on_select_chapter={Callback::from({
                     let selection = selection.clone();
-                    move |id| selection.set(StorySelection::Chapter(id))
+                    let mobile_pane = mobile_pane.clone();
+                    move |id| {
+                        selection.set(StorySelection::Chapter(id));
+                        mobile_pane.set(MobilePane::Main);
+                    }
                 })}
                 on_select_beat={Callback::from({
                     let selection = selection.clone();
+                    let mobile_pane = mobile_pane.clone();
                     move |(chapter_id, beat_id)| {
-                        selection.set(StorySelection::Beat { chapter_id, beat_id })
+                        selection.set(StorySelection::Beat { chapter_id, beat_id });
+                        mobile_pane.set(MobilePane::Main);
                     }
                 })}
                 on_new={Callback::from({
@@ -202,9 +222,14 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                         let selection = selection.clone();
                         move |s| selection.set(s)
                     })}
+                    on_open_sidebar={Callback::from({
+                        let mobile_pane = mobile_pane.clone();
+                        move |_| mobile_pane.set(MobilePane::Sidebar)
+                    })}
                 />
             </main>
         </div>
+        </>
     }
 }
 
@@ -225,14 +250,14 @@ struct StorySidebarProps {
 fn story_sidebar(props: &StorySidebarProps) -> Html {
     html! {
         <aside class="sidebar">
-            <div class="header" style="display:flex;justify-content:space-between;align-items:center;">
+            <div class="header sidebar-header">
                 <div>
                     <div class="muted" style="text-transform:uppercase;letter-spacing:0.2em;font-size:0.7rem;">{"Dreamwell"}</div>
                     <strong>{"Stories"}</strong>
                 </div>
                 <button class="btn" onclick={props.on_new.reform(|_| ())}>{"New"}</button>
             </div>
-            <div style="flex:1;overflow-y:auto;padding:0.5rem;">
+            <div class="sidebar-scroll">
                 { for props.stories.iter().map(|story| {
                     let id = story.id;
                     let selected = props.selected_id == Some(story.id);
@@ -246,7 +271,7 @@ fn story_sidebar(props: &StorySidebarProps) -> Html {
                                         <span class="badge">{ label }</span>
                                     }
                                 </div>
-                                <button class="btn secondary" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick={props.on_delete.reform(move |_| id)}>{"✕"}</button>
+                                <button class="btn secondary btn-compact" onclick={props.on_delete.reform(move |_| id)}>{"✕"}</button>
                             </div>
                             if selected {
                                 if let Some(detail) = &props.detail {
@@ -317,6 +342,7 @@ struct StoryEditorProps {
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
+    on_open_sidebar: Callback<()>,
 }
 
 #[function_component(StoryEditor)]
@@ -325,9 +351,12 @@ fn story_editor(props: &StoryEditorProps) -> Html {
         return html! {
             <>
                 <header class="header">
-                    <h1 style="margin:0;font-size:1.1rem;">{"Select or create a story"}</h1>
+                    <div class="mobile-toolbar">
+                        <button class="btn secondary" onclick={props.on_open_sidebar.reform(|_| ())}>{"Stories"}</button>
+                    </div>
+                    <h1 class="header-title">{"Select or create a story"}</h1>
                 </header>
-                <div class="muted" style="padding:2rem;text-align:center;">{"Stories are built chapter by chapter, beat by beat."}</div>
+                <div class="loading-screen muted" style="text-align:center;">{"Stories are built chapter by chapter, beat by beat."}</div>
             </>
         };
     };
@@ -338,8 +367,11 @@ fn story_editor(props: &StoryEditorProps) -> Html {
     html! {
         <>
             <header class="header">
-                <h1 style="margin:0;font-size:1.1rem;">{ detail.story.title.clone() }</h1>
-                <p class="muted" style="margin:0.25rem 0 0;">
+                <div class="mobile-toolbar">
+                    <button class="btn secondary" onclick={props.on_open_sidebar.reform(|_| ())}>{"Stories"}</button>
+                </div>
+                <h1 class="header-title">{ detail.story.title.clone() }</h1>
+                <p class="header-subtitle muted">
                     { format!("{} · {} chapters target", detail.story.length_preset.label(), detail.story.length_preset.ref_chapters()) }
                 </p>
             </header>
@@ -683,7 +715,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                         });
                     })
                 }}>{"Add beat manually"}</button>
-                <button class="btn secondary" style="color:#fca5a5;" onclick={{
+                <button class="btn secondary text-danger btn-compact" onclick={{
                     let on_detail = props.on_detail.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
@@ -794,7 +826,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                         });
                     })
                 }}>{"Generate prose"}</button>
-                <button class="btn secondary" style="color:#fca5a5;" onclick={{
+                <button class="btn secondary text-danger btn-compact" onclick={{
                     let on_detail = props.on_detail.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();

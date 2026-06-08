@@ -1,16 +1,24 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
+  --bg: #ffffff;
+  --fg: #111111;
+  --muted: #555555;
+  --border: #cccccc;
+  --surface: #f7f7f7;
+  --accent: #111111;
+  --accent-fg: #ffffff;
+  --danger: #8b0000;
+  --overlay: rgba(0, 0, 0, 0.25);
   font-family: "Segoe UI", system-ui, sans-serif;
-  background: #0f0d12;
-  color: #e8e0f0;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.55;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top, rgba(120, 70, 180, 0.18), transparent 40%),
-    #0f0d12;
+  background: var(--bg);
 }
 
 #app {
@@ -22,6 +30,7 @@ input,
 select,
 button {
   font: inherit;
+  touch-action: manipulation;
 }
 
 .mode-bar {
@@ -30,8 +39,9 @@ button {
   justify-content: space-between;
   gap: 0.25rem;
   padding: 0.5rem 1rem;
-  background: rgba(15, 13, 18, 0.95);
-  border-bottom: 1px solid rgba(88, 28, 135, 0.3);
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
   position: relative;
   z-index: 20;
 }
@@ -39,14 +49,16 @@ button {
 .mode-bar-tabs {
   display: flex;
   gap: 0.25rem;
+  flex-wrap: wrap;
 }
 
 .settings-backdrop,
-.modal-backdrop {
+.modal-backdrop,
+.drawer-backdrop {
   position: fixed;
   inset: 0;
   z-index: 15;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--overlay);
 }
 
 .modal {
@@ -58,11 +70,10 @@ button {
   max-height: calc(100vh - 4rem);
   overflow-y: auto;
   z-index: 25;
-  background: rgba(21, 17, 28, 0.98);
-  border: 1px solid rgba(88, 28, 135, 0.5);
-  border-radius: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
   padding: 1rem;
-  box-shadow: 0 1rem 2rem rgba(0, 0, 0, 0.45);
 }
 
 .modal h2 {
@@ -83,18 +94,18 @@ button {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.65rem;
-  border: 1px solid rgba(88, 28, 135, 0.3);
-  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
   cursor: pointer;
 }
 
 .modal-item:hover {
-  background: rgba(88, 28, 135, 0.15);
+  background: var(--surface);
 }
 
 .chat-character {
   font-size: 0.75rem;
-  color: #9ca3af;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -108,11 +119,10 @@ button {
   max-height: calc(100vh - 3.5rem);
   overflow-y: auto;
   z-index: 25;
-  background: rgba(21, 17, 28, 0.98);
-  border: 1px solid rgba(88, 28, 135, 0.5);
-  border-radius: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
   padding: 1rem;
-  box-shadow: 0 1rem 2rem rgba(0, 0, 0, 0.45);
 }
 
 .settings-status {
@@ -122,34 +132,37 @@ button {
 
 .mode-btn {
   background: transparent;
-  border: 1px solid rgba(88, 28, 135, 0.4);
-  color: #c4b5d8;
-  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 0.375rem;
   padding: 0.35rem 0.85rem;
+  min-height: 2.75rem;
   cursor: pointer;
 }
 
 .mode-btn.active {
-  background: rgba(88, 28, 135, 0.35);
-  color: #f3e8ff;
+  background: var(--fg);
+  color: var(--accent-fg);
+  border-color: var(--fg);
 }
 
 .app-shell {
   display: flex;
   height: calc(100vh - 2.75rem);
+  height: calc(100dvh - 2.75rem);
   overflow: hidden;
 }
 
 .sidebar,
 .panel {
-  background: rgba(21, 17, 28, 0.9);
-  border-color: rgba(88, 28, 135, 0.4);
+  background: var(--surface);
+  border-color: var(--border);
 }
 
 .sidebar {
   width: 18rem;
   flex-shrink: 0;
-  border-right: 1px solid rgba(88, 28, 135, 0.4);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
 }
@@ -157,7 +170,7 @@ button {
 .panel {
   width: 24rem;
   flex-shrink: 0;
-  border-left: 1px solid rgba(88, 28, 135, 0.4);
+  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
 }
@@ -167,16 +180,32 @@ button {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
 }
 
 .header {
-  border-bottom: 1px solid rgba(88, 28, 135, 0.3);
+  border-bottom: 1px solid var(--border);
   padding: 0.75rem 1rem;
 }
 
+.header-title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.header-subtitle {
+  margin: 0.25rem 0 0;
+}
+
+.mobile-toolbar {
+  display: none;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
 .queue-bar {
-  border-bottom: 1px solid rgba(88, 28, 135, 0.3);
-  background: rgba(26, 20, 36, 0.8);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
 }
@@ -192,26 +221,35 @@ button {
 
 .message {
   max-width: 85%;
-  border-radius: 1rem;
+  border-radius: 0.375rem;
   padding: 0.75rem 1rem;
   white-space: pre-wrap;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .message.user {
   align-self: flex-end;
-  background: rgba(109, 40, 217, 0.8);
+  background: var(--surface);
+  border: 1px solid var(--border);
 }
 
 .message.assistant {
   align-self: flex-start;
-  background: #221a2d;
-  border: 1px solid rgba(88, 28, 135, 0.4);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.message.system {
+  align-self: stretch;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px dashed var(--border);
 }
 
 .composer {
-  border-top: 1px solid rgba(88, 28, 135, 0.3);
+  border-top: 1px solid var(--border);
   padding: 1rem;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
   display: flex;
   gap: 0.75rem;
 }
@@ -219,20 +257,21 @@ button {
 .composer textarea {
   flex: 1;
   min-height: 5rem;
-  border-radius: 0.75rem;
-  border: 1px solid rgba(88, 28, 135, 0.5);
-  background: #0f0d12;
-  color: #e8e0f0;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
   padding: 0.75rem 1rem;
   resize: vertical;
 }
 
 .btn {
   border: none;
-  border-radius: 0.75rem;
+  border-radius: 0.375rem;
   padding: 0.5rem 1rem;
-  background: #7c3aed;
-  color: white;
+  min-height: 2.75rem;
+  background: var(--accent);
+  color: var(--accent-fg);
   cursor: pointer;
 }
 
@@ -242,51 +281,61 @@ button {
 }
 
 .btn.secondary {
-  background: transparent;
-  border: 1px solid rgba(124, 58, 237, 0.6);
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
 }
 
 .chat-item {
-  border-radius: 0.75rem;
+  border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
   margin-bottom: 0.25rem;
   cursor: pointer;
 }
 
 .chat-item.selected {
-  background: rgba(109, 40, 217, 0.4);
+  background: var(--fg);
+  color: var(--accent-fg);
 }
 
-.chat-item:hover {
-  background: rgba(88, 28, 135, 0.2);
+.chat-item.selected .chat-character,
+.chat-item.selected .badge {
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
+
+.chat-item:hover:not(.selected) {
+  background: var(--surface);
 }
 
 .badge {
   display: inline-block;
   border-radius: 999px;
-  background: rgba(245, 158, 11, 0.2);
-  color: #fde68a;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
   padding: 0.1rem 0.5rem;
   font-size: 0.75rem;
 }
 
 .tabs {
   display: flex;
-  border-bottom: 1px solid rgba(88, 28, 135, 0.3);
+  border-bottom: 1px solid var(--border);
 }
 
 .tab {
   flex: 1;
   padding: 0.75rem;
+  min-height: 2.75rem;
   background: none;
   border: none;
-  color: rgba(221, 214, 254, 0.6);
+  color: var(--muted);
   cursor: pointer;
 }
 
 .tab.active {
-  color: #ede9fe;
-  border-bottom: 2px solid #a78bfa;
+  color: var(--fg);
+  border-bottom: 2px solid var(--fg);
 }
 
 .panel-body {
@@ -305,34 +354,69 @@ button {
 .field select {
   width: 100%;
   box-sizing: border-box;
-  border-radius: 0.5rem;
-  border: 1px solid rgba(88, 28, 135, 0.5);
-  background: #0f0d12;
-  color: #e8e0f0;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
   padding: 0.5rem 0.75rem;
 }
 
 .muted {
-  color: rgba(221, 214, 254, 0.5);
+  color: var(--muted);
   font-size: 0.875rem;
+}
+
+.text-danger {
+  color: var(--danger);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  margin: 1rem;
+}
+
+.scroll-list {
+  max-height: 10rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  margin-bottom: 1rem;
+}
+
+.fact-card {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.settings-group {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 .story-tree {
   margin: 0.5rem 0 0 0.5rem;
   padding-left: 0.5rem;
-  border-left: 1px solid rgba(88, 28, 135, 0.3);
+  border-left: 1px solid var(--border);
 }
 
 .tree-item {
   padding: 0.25rem 0.5rem;
-  border-radius: 0.4rem;
+  border-radius: 0.25rem;
   font-size: 0.85rem;
   cursor: pointer;
   margin-bottom: 0.15rem;
 }
 
 .tree-item.selected {
-  background: rgba(109, 40, 217, 0.3);
+  background: var(--fg);
+  color: var(--accent-fg);
 }
 
 .tree-beat {
@@ -360,4 +444,114 @@ button {
 .prose-editor {
   min-height: 16rem;
   line-height: 1.6;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sidebar-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.list-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem;
+  cursor: pointer;
+  gap: 0.35rem;
+}
+
+.list-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-compact {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  min-height: 2rem;
+}
+
+.loading-screen {
+  padding: 2rem;
+}
+
+@media (max-width: 768px) {
+  .mobile-toolbar {
+    display: flex;
+  }
+
+  .app-shell {
+    position: relative;
+  }
+
+  .sidebar,
+  .panel {
+    position: fixed;
+    top: 2.75rem;
+    bottom: 0;
+    z-index: 18;
+    width: min(18rem, 85vw);
+    max-width: 85vw;
+    transform: translateX(-110%);
+  }
+
+  .panel {
+    right: 0;
+    left: auto;
+    transform: translateX(110%);
+  }
+
+  .app-shell.pane-sidebar .sidebar {
+    transform: translateX(0);
+  }
+
+  .app-shell.pane-panel .panel {
+    transform: translateX(0);
+  }
+
+  .main {
+    width: 100%;
+  }
+
+  .message {
+    max-width: 100%;
+  }
+
+  .composer {
+    flex-direction: column;
+  }
+
+  .composer .btn {
+    width: 100%;
+  }
+
+  .settings-popover {
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+  }
+}
+
+@media (min-width: 769px) {
+  .drawer-backdrop {
+    display: none;
+  }
+}
+
+@media (update: slow) {
+  .modal-item:hover,
+  .chat-item:hover:not(.selected) {
+    background: inherit;
+  }
 }
