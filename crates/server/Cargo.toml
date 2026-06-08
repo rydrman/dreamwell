@@ -11,6 +11,7 @@ path = "src/main.rs"
 dreamwell-types = { workspace = true }
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 tokio-stream = "0.1"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }

@@ -101,6 +101,24 @@ pub async fn get_queue() -> Result<QueueStatus, String> {
     json(api_request("GET", "/api/chats/queue")).await
 }
 
+pub async fn get_jobs() -> Result<QueueStatus, String> {
+    json(api_request("GET", "/api/jobs")).await
+}
+
+pub async fn cancel_job(id: i64) -> Result<Job, String> {
+    let response = api_request("POST", &format!("/api/jobs/{id}/cancel"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.ok() {
+        return Err(response
+            .text()
+            .await
+            .unwrap_or_else(|_| response.status_text()));
+    }
+    response.json().await.map_err(|e| e.to_string())
+}
+
 pub async fn list_characters() -> Result<Vec<Character>, String> {
     json(api_request("GET", "/api/characters")).await
 }

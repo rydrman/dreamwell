@@ -1,9 +1,11 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use dreamwell_types::{JobStatus, JobType};
+use dreamwell_types::{Job, JobStatus, JobType};
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use crate::db;
 use crate::error::{AppError, AppResult};
@@ -20,6 +22,7 @@ use crate::summarize::maybe_summarize_chat;
 pub struct JobQueue {
     pool: SqlitePool,
     notify: Arc<Notify>,
+    active_tokens: Arc<Mutex<HashMap<i64, CancellationToken>>>,
 }
 
 impl JobQueue {
@@ -27,6 +30,7 @@ impl JobQueue {
         let queue = Self {
             pool: pool.clone(),
             notify: Arc::new(Notify::new()),
+            active_tokens: Arc::new(Mutex::new(HashMap::new())),
         };
         queue.spawn_loop();
         queue
@@ -36,17 +40,52 @@ impl JobQueue {
         self.notify.notify_one();
     }
 
+    pub async fn cancel_job(&self, pool: &SqlitePool, job_id: i64) -> AppResult<Job> {
+        let job = db::get_job(pool, job_id).await?;
+        match job.status {
+            JobStatus::Queued | JobStatus::Running => {
+                if job.status == JobStatus::Running {
+                    if let Some(token) = self
+                        .active_tokens
+                        .lock()
+                        .map_err(|_| AppError::internal("token map poisoned"))?
+                        .get(&job_id)
+                    {
+                        token.cancel();
+                    }
+                }
+                cancel_job_record(pool, &job).await?;
+                self.wake();
+            }
+            _ => {
+                return Err(AppError::bad_request("Job is not active"));
+            }
+        }
+        db::get_job(pool, job_id).await
+    }
+
     fn spawn_loop(&self) {
         let pool = self.pool.clone();
         let notify = self.notify.clone();
+        let active_tokens = self.active_tokens.clone();
         tokio::spawn(async move {
             loop {
                 if let Ok(ids) = db::claim_jobs(&pool, 8).await {
                     for job_id in ids {
                         let pool = pool.clone();
                         let notify = notify.clone();
+                        let active_tokens = active_tokens.clone();
+                        let token = CancellationToken::new();
+                        active_tokens
+                            .lock()
+                            .expect("token map poisoned")
+                            .insert(job_id, token.clone());
                         tokio::spawn(async move {
-                            let _ = run_job(&pool, job_id).await;
+                            run_job_guarded(&pool, job_id, token).await;
+                            active_tokens
+                                .lock()
+                                .expect("token map poisoned")
+                                .remove(&job_id);
                             notify.notify_one();
                         });
                     }
@@ -57,10 +96,25 @@ impl JobQueue {
     }
 }
 
-async fn run_job(pool: &SqlitePool, job_id: i64) -> AppResult<()> {
+async fn run_job_guarded(pool: &SqlitePool, job_id: i64, token: CancellationToken) {
+    if let Err(err) = run_job(pool, job_id, token).await {
+        tracing::error!(job_id, %err, "job failed");
+        if let Ok(job) = db::get_job(pool, job_id).await {
+            if job.status == JobStatus::Running {
+                let _ = fail_job(pool, job_id, &job, &err.to_string()).await;
+            }
+        }
+    }
+}
+
+async fn run_job(pool: &SqlitePool, job_id: i64, token: CancellationToken) -> AppResult<()> {
     let job = db::get_job(pool, job_id).await?;
     if job.status != JobStatus::Running {
         return Ok(());
+    }
+
+    if token.is_cancelled() {
+        return cancel_job_record(pool, &job).await;
     }
 
     let settings = db::get_settings(pool).await?;
@@ -69,13 +123,56 @@ async fn run_job(pool: &SqlitePool, job_id: i64) -> AppResult<()> {
     }
 
     match job.job_type {
-        JobType::ChatMessage => run_chat_job(pool, job_id, &job, &settings).await,
+        JobType::ChatMessage => run_chat_job(pool, job_id, &job, &settings, token).await,
         JobType::StoryChapterOutline => {
-            run_story_chapter_outline(pool, job_id, &job, &settings).await
+            run_story_chapter_outline(pool, job_id, &job, &settings, token).await
         }
-        JobType::StoryBeatOutline => run_story_beat_outline(pool, job_id, &job, &settings).await,
-        JobType::StoryBeatProse => run_story_beat_prose(pool, job_id, &job, &settings).await,
+        JobType::StoryBeatOutline => {
+            run_story_beat_outline(pool, job_id, &job, &settings, token).await
+        }
+        JobType::StoryBeatProse => run_story_beat_prose(pool, job_id, &job, &settings, token).await,
     }
+}
+
+async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
+    let current = db::get_job(pool, job.id).await?;
+    if current.status == JobStatus::Cancelled {
+        return Ok(());
+    }
+    if !matches!(current.status, JobStatus::Queued | JobStatus::Running) {
+        return Ok(());
+    }
+
+    db::complete_job(pool, job.id, JobStatus::Cancelled, None).await?;
+    match job.job_type {
+        JobType::ChatMessage => {
+            if let (Some(chat_id), Some(message_id)) = (job.chat_id, job.message_id) {
+                let messages = db::list_messages(pool, chat_id).await?;
+                if let Some(message) = messages.iter().find(|m| m.id == message_id) {
+                    if message.content.is_empty() {
+                        db::update_message_content(pool, message_id, "[Generation cancelled]")
+                            .await?;
+                    }
+                }
+            }
+        }
+        JobType::StoryBeatProse => {
+            if let (Some(story_id), Some(beat_id)) = (job.story_id, job.beat_id) {
+                if let Ok(detail) = db::get_story_detail(pool, story_id).await {
+                    let beat = detail
+                        .chapters
+                        .iter()
+                        .flat_map(|c| c.beats.iter())
+                        .find(|b| b.id == beat_id);
+                    if beat.is_some_and(|b| b.content.is_empty()) {
+                        db::update_beat_content(pool, beat_id, "[Generation cancelled]").await?;
+                    }
+                }
+            }
+        }
+        JobType::StoryChapterOutline | JobType::StoryBeatOutline => {}
+    }
+    Ok(())
 }
 
 async fn fail_job(
@@ -112,6 +209,7 @@ async fn run_chat_job(
     job_id: i64,
     job: &dreamwell_types::Job,
     settings: &dreamwell_types::Settings,
+    token: CancellationToken,
 ) -> AppResult<()> {
     let chat_id = job
         .chat_id
@@ -136,8 +234,11 @@ async fn run_chat_job(
     .await?;
 
     let mut accumulated = String::new();
-    while let Some(token) = stream.next().await {
-        match token {
+    while let Some(token_result) = stream.next().await {
+        if token.is_cancelled() {
+            return cancel_job_record(pool, job).await;
+        }
+        match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
                 db::update_message_content(pool, message_id, &accumulated).await?;
@@ -158,6 +259,10 @@ async fn run_chat_job(
         }
     }
 
+    if token.is_cancelled() {
+        return cancel_job_record(pool, job).await;
+    }
+
     let (cleaned, updates) = extract_facts_from_text(&accumulated);
     if settings.facts_enabled && !updates.is_empty() {
         db::update_message_content(pool, message_id, &cleaned).await?;
@@ -174,6 +279,7 @@ async fn run_story_chapter_outline(
     job_id: i64,
     job: &dreamwell_types::Job,
     settings: &dreamwell_types::Settings,
+    token: CancellationToken,
 ) -> AppResult<()> {
     let story_id = job
         .story_id
@@ -196,15 +302,19 @@ async fn run_story_chapter_outline(
         &job.guidance_notes,
     );
 
-    let response = chat_completion(
-        &settings.inference_url,
-        &settings.model,
-        &messages,
-        0.7,
-        settings.top_p,
-        512,
-    )
-    .await;
+    let response = tokio::select! {
+        () = token.cancelled() => {
+            return cancel_job_record(pool, job).await;
+        }
+        result = chat_completion(
+            &settings.inference_url,
+            &settings.model,
+            &messages,
+            0.7,
+            settings.top_p,
+            512,
+        ) => result,
+    };
 
     match response {
         Ok(text) => {
@@ -228,6 +338,7 @@ async fn run_story_beat_outline(
     job_id: i64,
     job: &dreamwell_types::Job,
     settings: &dreamwell_types::Settings,
+    token: CancellationToken,
 ) -> AppResult<()> {
     let story_id = job
         .story_id
@@ -259,15 +370,19 @@ async fn run_story_beat_outline(
         &job.guidance_notes,
     );
 
-    let response = chat_completion(
-        &settings.inference_url,
-        &settings.model,
-        &messages,
-        0.7,
-        settings.top_p,
-        512,
-    )
-    .await;
+    let response = tokio::select! {
+        () = token.cancelled() => {
+            return cancel_job_record(pool, job).await;
+        }
+        result = chat_completion(
+            &settings.inference_url,
+            &settings.model,
+            &messages,
+            0.7,
+            settings.top_p,
+            512,
+        ) => result,
+    };
 
     match response {
         Ok(text) => {
@@ -291,6 +406,7 @@ async fn run_story_beat_prose(
     job_id: i64,
     job: &dreamwell_types::Job,
     settings: &dreamwell_types::Settings,
+    token: CancellationToken,
 ) -> AppResult<()> {
     let story_id = job
         .story_id
@@ -333,8 +449,11 @@ async fn run_story_beat_prose(
     .await?;
 
     let mut accumulated = String::new();
-    while let Some(token) = stream.next().await {
-        match token {
+    while let Some(token_result) = stream.next().await {
+        if token.is_cancelled() {
+            return cancel_job_record(pool, job).await;
+        }
+        match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
                 db::update_beat_content(pool, beat_id, &accumulated).await?;
@@ -349,6 +468,10 @@ async fn run_story_beat_prose(
                 return Ok(());
             }
         }
+    }
+
+    if token.is_cancelled() {
+        return cancel_job_record(pool, job).await;
     }
 
     db::complete_job(pool, job_id, JobStatus::Completed, None).await?;

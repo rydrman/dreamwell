@@ -254,10 +254,82 @@ button {
 }
 
 .queue-bar {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+.queue-bar:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.04));
+}
+
+.queue-page .header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+}
+
+.queue-item-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.queue-status {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.queue-status-running {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.queue-status-queued {
+  background: rgba(234, 179, 8, 0.2);
+}
+
+.queue-created {
+  font-size: 0.8125rem;
+}
+
+.btn.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, #60a5fa);
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .messages {

@@ -589,6 +589,15 @@ pub async fn claim_jobs(pool: &SqlitePool, limit: i64) -> AppResult<Vec<i64>> {
     Ok(ids)
 }
 
+pub async fn requeue_stale_jobs(pool: &SqlitePool) -> AppResult<i64> {
+    let result = sqlx::query(
+        "UPDATE generation_jobs SET status = 'queued', started_at = NULL WHERE status = 'running'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() as i64)
+}
+
 pub async fn complete_job(
     pool: &SqlitePool,
     job_id: i64,

@@ -1,5 +1,6 @@
 mod api;
 mod markdown;
+mod queue_ui;
 mod stories_ui;
 
 use std::cell::RefCell;
@@ -7,15 +8,10 @@ use std::rc::Rc;
 
 use dreamwell_types::*;
 use gloo_timers::callback::{Interval, Timeout};
-use stories_ui::{QueueBar, StoriesShell};
+use queue_ui::{AppMode, QueueBar, QueuePage};
+use stories_ui::StoriesShell;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
-
-#[derive(Clone, Copy, PartialEq)]
-enum AppMode {
-    Chats,
-    Stories,
-}
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum MobilePane {
@@ -27,6 +23,8 @@ pub(crate) enum MobilePane {
 #[function_component(App)]
 fn app() -> Html {
     let mode = use_state(|| AppMode::Chats);
+    let return_mode = use_state(|| AppMode::Chats);
+    let pending_story_id = use_state(|| None::<i64>);
     let chats = use_state(Vec::<Chat>::new);
     let characters = use_state(Vec::<Character>::new);
     let selected_chat_id = use_state(|| None::<i64>);
@@ -147,8 +145,58 @@ fn app() -> Html {
         });
     }
 
+    let open_queue = {
+        let mode = mode.clone();
+        let return_mode = return_mode.clone();
+        Callback::from(move |_| {
+            return_mode.set(*mode);
+            mode.set(AppMode::Queue);
+        })
+    };
+
     if *loading && *mode == AppMode::Chats {
         return html! { <div class="loading-screen muted">{"Loading Dreamwell…"}</div> };
+    }
+
+    if *mode == AppMode::Queue {
+        return html! {
+            <>
+                <ModeBar mode={AppMode::Chats} settings={settings.clone()} on_mode={Callback::from({
+                    let mode = mode.clone();
+                    move |m| mode.set(m)
+                })} />
+                <QueuePage
+                    queue={(*queue).clone()}
+                    on_back={Callback::from({
+                        let mode = mode.clone();
+                        let return_mode = return_mode.clone();
+                        move |_| mode.set(*return_mode)
+                    })}
+                    on_open_chat={Callback::from({
+                        let mode = mode.clone();
+                        let selected_chat_id = selected_chat_id.clone();
+                        let load_messages_for_chat = load_messages_for_chat.clone();
+                        move |chat_id| {
+                            mode.set(AppMode::Chats);
+                            selected_chat_id.set(Some(chat_id));
+                            load_messages_for_chat.emit(chat_id);
+                        }
+                    })}
+                    on_open_story={Callback::from({
+                        let mode = mode.clone();
+                        let pending_story_id = pending_story_id.clone();
+                        move |story_id| {
+                            pending_story_id.set(Some(story_id));
+                            mode.set(AppMode::Stories);
+                        }
+                    })}
+                    on_queue_change={Callback::from({
+                        let queue = queue.clone();
+                        move |status| queue.set(Some(status))
+                    })}
+                />
+            </>
+        };
     }
 
     if *mode == AppMode::Stories {
@@ -158,7 +206,11 @@ fn app() -> Html {
                     let mode = mode.clone();
                     move |m| mode.set(m)
                 })} />
-                <StoriesShell queue={(*queue).clone()} />
+                <StoriesShell
+                    queue={(*queue).clone()}
+                    on_open_queue={open_queue.clone()}
+                    initial_story_id={*pending_story_id}
+                />
             </>
         };
     }
@@ -262,7 +314,7 @@ fn app() -> Html {
                 })}
             />
             <main class="main">
-                <QueueBar queue={(*queue).clone()} />
+                <QueueBar queue={(*queue).clone()} on_open={open_queue.clone()} />
                 <header class="header">
                     <div class="mobile-toolbar">
                         <button class="btn secondary" onclick={Callback::from({
@@ -574,14 +626,17 @@ fn message_list(props: &MessageListProps) -> Html {
                         MessageRole::Assistant => "assistant",
                         MessageRole::System => "system",
                     };
-                    let streaming = matches!(m.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
+                    let queued = matches!(m.job_status, Some(JobStatus::Queued));
+                    let streaming = matches!(m.job_status, Some(JobStatus::Running));
+                    let active = queued || streaming;
                     html! {
                         <div class={classes!("message", role)}>
                             <div class="muted" style="font-size:0.75rem;text-transform:uppercase;">
                                 { role.to_string() }
+                                if queued { <span>{" · queued on server"}</span> }
                                 if streaming { <span>{" · streaming on server"}</span> }
                             </div>
-                            if m.content.is_empty() && streaming {
+                            if m.content.is_empty() && active {
                                 { "…" }
                             } else if let Some(ctx) = macro_ctx.as_ref() {
                                 { markdown::render_message_content(&substitute_macros(&m.content, ctx)) }

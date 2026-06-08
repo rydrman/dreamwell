@@ -49,6 +49,10 @@ make run-local
 
 Point **Settings → Inference server** at your OpenAI-compatible endpoint (e.g. `http://localhost:11434/v1` for Ollama), refresh models, and pick one.
 
+When using `make run` (Docker), the app runs inside a container — use `http://host.docker.internal:11434/v1` to reach Ollama on the host, not `localhost`.
+
+Click the **queue bar** at the top of Chats or Stories to open the queue page, inspect running/waiting jobs, and cancel them. Jobs interrupted by a server restart are automatically requeued.
+
 ## Environment
 
 | Variable | Default | Description |
@@ -58,6 +62,8 @@ Point **Settings → Inference server** at your OpenAI-compatible endpoint (e.g.
 | `DREAMWELL_HOST` | `0.0.0.0` | Listen host |
 | `DREAMWELL_PORT` | `8080` | Listen port |
 | `DREAMWELL_MAX_CONCURRENT_JOBS` | `1` | Queue concurrency |
+
+Inference HTTP timeouts are fixed at 5 minutes (connect) and 15 minutes (total request) to support slow local models.
 
 ## Docker
 

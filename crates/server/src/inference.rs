@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use dreamwell_types::ModelInfo;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -5,10 +8,23 @@ use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(900);
+
+fn http_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("http client")
+    })
+}
+
 pub async fn list_models(base_url: &str) -> AppResult<Vec<ModelInfo>> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let client = Client::new();
-    let response = client.get(&url).send().await?;
+    let response = http_client().get(&url).send().await?;
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(AppError::inference(format!(
@@ -52,7 +68,6 @@ pub async fn stream_chat_completion(
     max_tokens: i64,
 ) -> AppResult<impl futures_util::Stream<Item = AppResult<String>>> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = Client::new();
     let payload = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -61,7 +76,7 @@ pub async fn stream_chat_completion(
         "max_tokens": max_tokens,
         "stream": true,
     });
-    let response = client.post(url).json(&payload).send().await?;
+    let response = http_client().post(url).json(&payload).send().await?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -111,7 +126,6 @@ pub async fn chat_completion(
     max_tokens: i64,
 ) -> AppResult<String> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = Client::new();
     let payload = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -120,7 +134,7 @@ pub async fn chat_completion(
         "max_tokens": max_tokens,
         "stream": false,
     });
-    let response = client.post(url).json(&payload).send().await?;
+    let response = http_client().post(url).json(&payload).send().await?;
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(AppError::inference(body));
