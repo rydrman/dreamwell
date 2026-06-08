@@ -1,6 +1,7 @@
 pub mod characters;
 pub mod chats;
 pub mod settings;
+pub mod stories;
 
 use sqlx::SqlitePool;
 

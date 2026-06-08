@@ -7,6 +7,7 @@ mod inference;
 mod prompts;
 mod queue;
 mod routes;
+mod story_prompts;
 mod summarize;
 
 use std::net::SocketAddr;
@@ -55,6 +56,7 @@ async fn main() {
         )
         .nest("/characters", routes::characters::router())
         .nest("/chats", routes::chats::router())
+        .nest("/stories", routes::stories::router())
         .nest("/settings", routes::settings::router())
         .with_state(state);
 

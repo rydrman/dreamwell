@@ -1,9 +1,13 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
-    Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, Fact, Job, JobStatus, Message,
-    MessageRole, Settings, SettingsUpdate,
+    Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, Fact, Job, JobStatus, JobType,
+    Message, MessageRole, Settings, SettingsUpdate,
 };
+
+#[path = "stories_db.rs"]
+mod stories_db;
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+pub use stories_db::*;
 
 use crate::config::MAX_CONCURRENT_JOBS;
 use crate::error::{AppError, AppResult};
@@ -42,7 +46,7 @@ fn role_str(role: MessageRole) -> &'static str {
     }
 }
 
-fn parse_job_status(s: &str) -> JobStatus {
+pub(crate) fn parse_job_status(s: &str) -> JobStatus {
     match s {
         "running" => JobStatus::Running,
         "completed" => JobStatus::Completed,
@@ -52,7 +56,25 @@ fn parse_job_status(s: &str) -> JobStatus {
     }
 }
 
-fn job_status_str(status: JobStatus) -> &'static str {
+pub(crate) fn parse_job_type(s: &str) -> JobType {
+    match s {
+        "story_chapter_outline" => JobType::StoryChapterOutline,
+        "story_beat_outline" => JobType::StoryBeatOutline,
+        "story_beat_prose" => JobType::StoryBeatProse,
+        _ => JobType::ChatMessage,
+    }
+}
+
+pub(crate) fn job_type_str(job_type: JobType) -> &'static str {
+    match job_type {
+        JobType::ChatMessage => "chat_message",
+        JobType::StoryChapterOutline => "story_chapter_outline",
+        JobType::StoryBeatOutline => "story_beat_outline",
+        JobType::StoryBeatProse => "story_beat_prose",
+    }
+}
+
+pub(crate) fn job_status_str(status: JobStatus) -> &'static str {
     match status {
         JobStatus::Queued => "queued",
         JobStatus::Running => "running",
@@ -179,7 +201,7 @@ pub async fn get_chat(pool: &SqlitePool, id: i64) -> AppResult<Chat> {
 async fn chat_from_row(pool: &SqlitePool, row: ChatRow) -> AppResult<Chat> {
     let active_job = get_active_job(pool, row.id).await?;
     let queued_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM generation_jobs WHERE chat_id = ?1 AND status = 'queued'",
+        "SELECT COUNT(*) FROM generation_jobs WHERE chat_id = ?1 AND job_type = 'chat_message' AND status = 'queued'",
     )
     .bind(row.id)
     .fetch_one(pool)
@@ -446,7 +468,7 @@ pub async fn enqueue_job(pool: &SqlitePool, chat_id: i64, message_id: i64) -> Ap
             .fetch_one(pool)
             .await?;
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO generation_jobs (chat_id, message_id, status, position, created_at) VALUES (?1,?2,'queued',?3,?4) RETURNING id",
+        "INSERT INTO generation_jobs (job_type, chat_id, message_id, status, position, created_at) VALUES ('chat_message',?1,?2,'queued',?3,?4) RETURNING id",
     )
     .bind(chat_id)
     .bind(message_id)
@@ -459,7 +481,7 @@ pub async fn enqueue_job(pool: &SqlitePool, chat_id: i64, message_id: i64) -> Ap
 
 pub async fn get_job(pool: &SqlitePool, id: i64) -> AppResult<Job> {
     let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, chat_id, message_id, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE id = ?1",
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -470,7 +492,7 @@ pub async fn get_job(pool: &SqlitePool, id: i64) -> AppResult<Job> {
 
 pub async fn get_active_job(pool: &SqlitePool, chat_id: i64) -> AppResult<Option<Job>> {
     let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, chat_id, message_id, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type = 'chat_message' AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
     )
     .bind(chat_id)
     .fetch_optional(pool)
@@ -480,7 +502,7 @@ pub async fn get_active_job(pool: &SqlitePool, chat_id: i64) -> AppResult<Option
 
 pub async fn list_queue(pool: &SqlitePool) -> AppResult<(Vec<Job>, Vec<Job>)> {
     let running = sqlx::query_as::<_, JobRow>(
-        "SELECT id, chat_id, message_id, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE status = 'running' ORDER BY started_at ASC",
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE status = 'running' ORDER BY started_at ASC",
     )
     .fetch_all(pool)
     .await?
@@ -488,7 +510,7 @@ pub async fn list_queue(pool: &SqlitePool) -> AppResult<(Vec<Job>, Vec<Job>)> {
     .map(Into::into)
     .collect();
     let queued = sqlx::query_as::<_, JobRow>(
-        "SELECT id, chat_id, message_id, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE status = 'queued' ORDER BY created_at ASC",
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE status = 'queued' ORDER BY created_at ASC",
     )
     .fetch_all(pool)
     .await?
@@ -564,7 +586,7 @@ pub async fn delete_messages(pool: &SqlitePool, ids: &[i64]) -> AppResult<()> {
     Ok(())
 }
 
-fn parse_dt(s: &str) -> AppResult<DateTime<Utc>> {
+pub(crate) fn parse_dt(s: &str) -> AppResult<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
         .or_else(|_| {
@@ -669,10 +691,15 @@ impl From<FactRow> for Fact {
 }
 
 #[derive(sqlx::FromRow)]
-struct JobRow {
+pub(crate) struct JobRow {
     id: i64,
-    chat_id: i64,
-    message_id: i64,
+    job_type: String,
+    chat_id: Option<i64>,
+    message_id: Option<i64>,
+    story_id: Option<i64>,
+    chapter_id: Option<i64>,
+    beat_id: Option<i64>,
+    guidance_notes: String,
     status: String,
     error: Option<String>,
     position: i64,
@@ -685,8 +712,13 @@ impl From<JobRow> for Job {
     fn from(row: JobRow) -> Self {
         Self {
             id: row.id,
+            job_type: parse_job_type(&row.job_type),
             chat_id: row.chat_id,
             message_id: row.message_id,
+            story_id: row.story_id,
+            chapter_id: row.chapter_id,
+            beat_id: row.beat_id,
+            guidance_notes: row.guidance_notes,
             status: parse_job_status(&row.status),
             error: row.error,
             position: row.position,

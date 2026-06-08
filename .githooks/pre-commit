@@ -1,0 +1,16 @@
+#!/bin/sh
+# Blocks commits unless rustfmt, clippy, and tests all pass.
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-commit: running fmt-check, clippy, and tests..."
+
+if ! make fmt-check clippy test; then
+	echo ""
+	echo "pre-commit: checks failed — commit aborted."
+	echo "Fix with: make fmt && make clippy && make test"
+	exit 1
+fi
+
+echo "pre-commit: all checks passed."

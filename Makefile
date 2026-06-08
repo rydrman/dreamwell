@@ -1,7 +1,7 @@
 CARGO ?= cargo
 TRUNK ?= trunk
 
-.PHONY: fmt fmt-check clippy test build build-front build-server run clean docker
+.PHONY: fmt fmt-check clippy test validate install-hooks build build-front build-server run clean docker
 
 fmt:
 	$(CARGO) fmt --all
@@ -14,6 +14,12 @@ clippy:
 
 test:
 	$(CARGO) test --workspace
+
+validate: fmt-check clippy test
+
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "Git hooks installed from .githooks/ (pre-commit runs make validate)"
 
 build-front:
 	cd crates/frontend && env -u NO_COLOR $(TRUNK) build --release
