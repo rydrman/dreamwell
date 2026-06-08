@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
     Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, Fact, Job, JobStatus, JobType,
-    Message, MessageRole, Settings, SettingsUpdate,
+    Message, MessageRole, Settings, SettingsUpdate, DEFAULT_SYSTEM_PROMPT_PREFIX,
+    DEFAULT_USER_NAME,
 };
 
 #[path = "stories_db.rs"]
@@ -24,9 +25,13 @@ pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
 }
 
 async fn ensure_settings(pool: &SqlitePool) -> AppResult<()> {
-    sqlx::query("INSERT OR IGNORE INTO app_settings (id) VALUES (1)")
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO app_settings (id, system_prompt_prefix, user_name) VALUES (1, ?1, ?2)",
+    )
+    .bind(DEFAULT_SYSTEM_PROMPT_PREFIX)
+    .bind(DEFAULT_USER_NAME)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -164,6 +169,15 @@ pub async fn update_character(
 }
 
 pub async fn delete_character(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let linked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats WHERE character_id = ?1")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    if linked > 0 {
+        return Err(AppError::bad_request(
+            "Cannot delete character while chats are linked to it",
+        ));
+    }
     let result = sqlx::query("DELETE FROM characters WHERE id = ?1")
         .bind(id)
         .execute(pool)
@@ -176,7 +190,10 @@ pub async fn delete_character(pool: &SqlitePool, id: i64) -> AppResult<()> {
 
 pub async fn list_chats(pool: &SqlitePool) -> AppResult<Vec<Chat>> {
     let rows = sqlx::query_as::<_, ChatRow>(
-        "SELECT id, title, character_id, summary, created_at, updated_at FROM chats ORDER BY updated_at DESC",
+        "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at
+         FROM chats c
+         JOIN characters ch ON ch.id = c.character_id
+         ORDER BY c.updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -189,7 +206,10 @@ pub async fn list_chats(pool: &SqlitePool) -> AppResult<Vec<Chat>> {
 
 pub async fn get_chat(pool: &SqlitePool, id: i64) -> AppResult<Chat> {
     let row = sqlx::query_as::<_, ChatRow>(
-        "SELECT id, title, character_id, summary, created_at, updated_at FROM chats WHERE id = ?1",
+        "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at
+         FROM chats c
+         JOIN characters ch ON ch.id = c.character_id
+         WHERE c.id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -210,6 +230,7 @@ async fn chat_from_row(pool: &SqlitePool, row: ChatRow) -> AppResult<Chat> {
         id: row.id,
         title: row.title,
         character_id: row.character_id,
+        character_name: row.character_name,
         summary: row.summary,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
@@ -218,14 +239,8 @@ async fn chat_from_row(pool: &SqlitePool, row: ChatRow) -> AppResult<Chat> {
     })
 }
 
-pub async fn create_chat(
-    pool: &SqlitePool,
-    title: String,
-    character_id: Option<i64>,
-) -> AppResult<Chat> {
-    if let Some(cid) = character_id {
-        let _ = get_character(pool, cid).await?;
-    }
+pub async fn create_chat(pool: &SqlitePool, title: String, character_id: i64) -> AppResult<Chat> {
+    let character = get_character(pool, character_id).await?;
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO chats (title, character_id, summary, created_at, updated_at) VALUES (?1,?2,'',?3,?3) RETURNING id",
@@ -236,26 +251,33 @@ pub async fn create_chat(
     .fetch_one(pool)
     .await?;
 
-    if let Some(cid) = character_id {
-        let character = get_character(pool, cid).await?;
-        if !character.first_message.trim().is_empty() {
-            insert_message(
-                pool,
-                id,
-                MessageRole::Assistant,
-                character.first_message.trim().to_string(),
-                false,
-            )
-            .await?;
-        }
-    }
+    seed_character_greeting(pool, id, &character).await?;
     get_chat(pool, id).await
+}
+
+async fn seed_character_greeting(
+    pool: &SqlitePool,
+    chat_id: i64,
+    character: &Character,
+) -> AppResult<()> {
+    if !character.first_message.trim().is_empty() {
+        insert_message(
+            pool,
+            chat_id,
+            MessageRole::Assistant,
+            character.first_message.trim().to_string(),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn update_chat(pool: &SqlitePool, id: i64, payload: ChatUpdate) -> AppResult<Chat> {
     let existing = get_chat(pool, id).await?;
     let title = payload.title.unwrap_or(existing.title);
-    let character_id = payload.character_id.or(existing.character_id);
+    let character_id = payload.character_id.unwrap_or(existing.character_id);
+    let _ = get_character(pool, character_id).await?;
     let now = Utc::now().to_rfc3339();
     sqlx::query("UPDATE chats SET title=?1, character_id=?2, updated_at=?3 WHERE id=?4")
         .bind(&title)
@@ -264,6 +286,15 @@ pub async fn update_chat(pool: &SqlitePool, id: i64, payload: ChatUpdate) -> App
         .bind(id)
         .execute(pool)
         .await?;
+
+    if character_id != existing.character_id {
+        let messages = list_messages(pool, id).await?;
+        if messages.is_empty() {
+            let character = get_character(pool, character_id).await?;
+            seed_character_greeting(pool, id, &character).await?;
+        }
+    }
+
     get_chat(pool, id).await
 }
 
@@ -391,7 +422,7 @@ pub async fn delete_fact(pool: &SqlitePool, chat_id: i64, key: &str) -> AppResul
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, summarize_enabled, summarize_after_messages, summarize_keep_recent, facts_enabled, max_context_messages FROM app_settings WHERE id = 1",
+        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, summarize_enabled, summarize_after_messages, summarize_keep_recent, facts_enabled, max_context_messages FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
@@ -421,6 +452,9 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     if let Some(v) = payload.system_prompt_suffix {
         current.system_prompt_suffix = v;
     }
+    if let Some(v) = payload.user_name {
+        current.user_name = v;
+    }
     if let Some(v) = payload.summarize_enabled {
         current.summarize_enabled = v;
     }
@@ -442,7 +476,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     }
 
     sqlx::query(
-        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, summarize_enabled=?8, summarize_after_messages=?9, summarize_keep_recent=?10, facts_enabled=?11, max_context_messages=?12 WHERE id=1",
+        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, summarize_enabled=?9, summarize_after_messages=?10, summarize_keep_recent=?11, facts_enabled=?12, max_context_messages=?13 WHERE id=1",
     )
     .bind(&current.inference_url)
     .bind(&current.model)
@@ -451,6 +485,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     .bind(current.max_tokens)
     .bind(&current.system_prompt_prefix)
     .bind(&current.system_prompt_suffix)
+    .bind(&current.user_name)
     .bind(current.summarize_enabled as i64)
     .bind(current.summarize_after_messages)
     .bind(current.summarize_keep_recent)
@@ -650,7 +685,8 @@ impl From<CharacterRow> for Character {
 pub struct ChatRow {
     pub id: i64,
     pub title: String,
-    pub character_id: Option<i64>,
+    pub character_id: i64,
+    pub character_name: String,
     pub summary: String,
     pub created_at: String,
     pub updated_at: String,
@@ -748,6 +784,7 @@ struct SettingsRow {
     max_tokens: i64,
     system_prompt_prefix: String,
     system_prompt_suffix: String,
+    user_name: String,
     summarize_enabled: i64,
     summarize_after_messages: i64,
     summarize_keep_recent: i64,
@@ -765,6 +802,7 @@ impl SettingsRow {
             max_tokens: self.max_tokens,
             system_prompt_prefix: self.system_prompt_prefix,
             system_prompt_suffix: self.system_prompt_suffix,
+            user_name: self.user_name,
             summarize_enabled: self.summarize_enabled != 0,
             summarize_after_messages: self.summarize_after_messages,
             summarize_keep_recent: self.summarize_keep_recent,
