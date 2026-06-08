@@ -2,7 +2,6 @@ mod character_import;
 mod config;
 mod db;
 mod error;
-mod facts;
 mod inference;
 mod prompts;
 mod queue;
@@ -10,6 +9,7 @@ mod routes;
 mod story_prompts;
 mod summarize;
 mod thoughts;
+mod variables;
 
 use std::net::SocketAddr;
 

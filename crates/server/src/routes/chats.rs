@@ -12,8 +12,9 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    Chat, ChatCreate, ChatStreamPayload, ChatUpdate, Fact, FactUpdate, Message, MessageRole,
-    OkResponse, QueueStatus, RegenerateMessageRequest, SendMessageRequest, UpdateMessageRequest,
+    Chat, ChatCreate, ChatStreamPayload, ChatUpdate, ChatVariable, ChatVariableUpdate, Message,
+    MessageRole, OkResponse, QueueStatus, RegenerateMessageRequest, SendMessageRequest,
+    UpdateMessageRequest,
 };
 
 use crate::db;
@@ -35,8 +36,8 @@ pub fn router() -> Router<AppState> {
             "/:id/messages/:message_id/regenerate",
             post(regenerate_message),
         )
-        .route("/:id/facts", get(list_facts).put(upsert_fact))
-        .route("/:id/facts/:key", delete(delete_fact))
+        .route("/:id/variables", get(list_variables).put(upsert_variable))
+        .route("/:id/variables/:key", delete(delete_variable))
         .route("/:id/stream", get(stream_chat))
 }
 
@@ -199,28 +200,28 @@ async fn regenerate_message(
     Ok(Json(updated))
 }
 
-async fn list_facts(
+async fn list_variables(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> AppResult<Json<Vec<Fact>>> {
-    Ok(Json(db::list_facts(&state.pool, id).await?))
+) -> AppResult<Json<Vec<ChatVariable>>> {
+    Ok(Json(db::list_variables(&state.pool, id).await?))
 }
 
-async fn upsert_fact(
+async fn upsert_variable(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    Json(payload): Json<FactUpdate>,
-) -> AppResult<Json<Fact>> {
+    Json(payload): Json<ChatVariableUpdate>,
+) -> AppResult<Json<ChatVariable>> {
     Ok(Json(
-        db::upsert_fact(&state.pool, id, payload.key, payload.value).await?,
+        db::upsert_variable(&state.pool, id, payload.key, payload.value).await?,
     ))
 }
 
-async fn delete_fact(
+async fn delete_variable(
     State(state): State<AppState>,
     Path((id, key)): Path<(i64, String)>,
 ) -> AppResult<Json<OkResponse>> {
-    db::delete_fact(&state.pool, id, &key).await?;
+    db::delete_variable(&state.pool, id, &key).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 

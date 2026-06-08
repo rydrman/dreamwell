@@ -16,7 +16,7 @@ Send messages across many chats, switch away, and come back later — responses 
 - Custom OpenAI-compatible inference server with model selection
 - Character cards (create, edit, import JSON/PNG)
 - Configurable auto-summarize to keep context small
-- Per-chat KV facts the model can update via `<fact key="...">...</fact>`
+- Per-chat variables the model can update via `<var key="...">...</var>`
 - Prompt prefix/suffix and model parameters
 - Shared backend queue (default concurrency: 1)
 
