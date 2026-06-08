@@ -9,6 +9,7 @@ mod queue;
 mod routes;
 mod story_prompts;
 mod summarize;
+mod thoughts;
 
 use std::net::SocketAddr;
 

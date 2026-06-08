@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use dreamwell_types::{Job, JobStatus, JobType};
 use futures_util::StreamExt;
@@ -17,6 +18,38 @@ use crate::story_prompts::{
     parse_outline_json,
 };
 use crate::summarize::maybe_summarize_chat;
+use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
+
+fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> String {
+    if settings.thought_blocks_enabled {
+        strip_thought_blocks(text)
+    } else {
+        text.to_string()
+    }
+}
+
+fn thought_timing(
+    parsed: &crate::thoughts::ParsedThoughts,
+    thought_started_at: &mut Option<Instant>,
+    thought_duration_ms: &mut Option<i64>,
+) -> (Option<i64>, bool) {
+    if !parsed.thought_complete {
+        if thought_started_at.is_none() {
+            *thought_started_at = Some(Instant::now());
+        }
+        return (*thought_duration_ms, true);
+    }
+
+    if thought_duration_ms.is_none() {
+        if let Some(start) = thought_started_at {
+            *thought_duration_ms = Some(start.elapsed().as_millis() as i64);
+        } else if !parsed.thought.is_empty() {
+            *thought_duration_ms = Some(0);
+        }
+    }
+
+    (*thought_duration_ms, false)
+}
 
 #[derive(Clone)]
 pub struct JobQueue {
@@ -249,6 +282,8 @@ async fn run_chat_job(
     .await?;
 
     let mut accumulated = String::new();
+    let mut thought_started_at: Option<Instant> = None;
+    let mut thought_duration_ms: Option<i64> = None;
     while let Some(token_result) = stream.next().await {
         if token.is_cancelled() {
             return cancel_job_record(pool, job).await;
@@ -256,7 +291,22 @@ async fn run_chat_job(
         match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
-                db::update_message_content(pool, message_id, &accumulated).await?;
+                if settings.thought_blocks_enabled {
+                    let parsed = parse_thought_blocks(&accumulated);
+                    let (duration_ms, in_progress) =
+                        thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
+                    db::update_message_generation(
+                        pool,
+                        message_id,
+                        &parsed.reply,
+                        &parsed.thought,
+                        duration_ms,
+                        in_progress,
+                    )
+                    .await?;
+                } else {
+                    db::update_message_content(pool, message_id, &accumulated).await?;
+                }
                 db::touch_chat(pool, chat_id).await?;
             }
             Err(err) => {
@@ -278,10 +328,55 @@ async fn run_chat_job(
         return cancel_job_record(pool, job).await;
     }
 
-    let (cleaned, updates) = extract_facts_from_text(&accumulated);
+    let (processed, thought_content, thought_duration_ms, thought_in_progress) =
+        if settings.thought_blocks_enabled {
+            let parsed = parse_thought_blocks(&accumulated);
+            let (duration_ms, in_progress) =
+                thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
+            let final_duration = if in_progress {
+                duration_ms
+                    .or_else(|| thought_started_at.map(|start| start.elapsed().as_millis() as i64))
+            } else {
+                duration_ms
+            };
+            (parsed.reply, parsed.thought, final_duration, false)
+        } else {
+            (
+                display_generated_text(settings, &accumulated),
+                String::new(),
+                None,
+                false,
+            )
+        };
+
+    let (cleaned, updates) = extract_facts_from_text(&processed);
     if settings.facts_enabled && !updates.is_empty() {
-        db::update_message_content(pool, message_id, &cleaned).await?;
+        if settings.thought_blocks_enabled {
+            db::update_message_generation(
+                pool,
+                message_id,
+                &cleaned,
+                &thought_content,
+                thought_duration_ms,
+                thought_in_progress,
+            )
+            .await?;
+        } else {
+            db::update_message_content(pool, message_id, &cleaned).await?;
+        }
         apply_fact_updates(pool, chat_id, &updates).await?;
+    } else if settings.thought_blocks_enabled
+        && (thought_in_progress || thought_duration_ms.is_some() || !thought_content.is_empty())
+    {
+        db::update_message_generation(
+            pool,
+            message_id,
+            &processed,
+            &thought_content,
+            thought_duration_ms,
+            thought_in_progress,
+        )
+        .await?;
     }
 
     db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
@@ -333,6 +428,7 @@ async fn run_story_chapter_outline(
 
     match response {
         Ok(text) => {
+            let text = display_generated_text(settings, &text);
             if let Some((title, synopsis)) = parse_outline_json(&text) {
                 db::update_chapter_outline(pool, chapter_id, &title, &synopsis).await?;
                 db::touch_story(pool, story_id).await?;
@@ -401,6 +497,7 @@ async fn run_story_beat_outline(
 
     match response {
         Ok(text) => {
+            let text = display_generated_text(settings, &text);
             if let Some((title, synopsis)) = parse_outline_json(&text) {
                 db::update_beat_outline(pool, beat_id, &title, &synopsis).await?;
                 db::touch_story(pool, story_id).await?;
@@ -471,7 +568,8 @@ async fn run_story_beat_prose(
         match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
-                db::update_beat_content(pool, beat_id, &accumulated).await?;
+                let display = display_generated_text(settings, &accumulated);
+                db::update_beat_content(pool, beat_id, &display).await?;
                 db::touch_story(pool, story_id).await?;
             }
             Err(err) => {

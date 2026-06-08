@@ -150,6 +150,12 @@ pub struct Message {
     pub chat_id: i64,
     pub role: MessageRole,
     pub content: String,
+    #[serde(default)]
+    pub thought_content: String,
+    #[serde(default)]
+    pub thought_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub thought_in_progress: bool,
     pub is_summary: bool,
     pub created_at: DateTime<Utc>,
     pub job_status: Option<JobStatus>,
@@ -358,6 +364,7 @@ pub struct Settings {
     pub summarize_after_messages: i64,
     pub summarize_keep_recent: i64,
     pub facts_enabled: bool,
+    pub thought_blocks_enabled: bool,
     pub max_context_messages: i64,
     pub max_concurrent_jobs: i64,
 }
@@ -377,6 +384,7 @@ pub struct SettingsUpdate {
     pub summarize_after_messages: Option<i64>,
     pub summarize_keep_recent: Option<i64>,
     pub facts_enabled: Option<bool>,
+    pub thought_blocks_enabled: Option<bool>,
     pub max_context_messages: Option<i64>,
     pub max_concurrent_jobs: Option<i64>,
 }
