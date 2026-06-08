@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev-base
+    init: true
     working_dir: /app
     ports:
       - "8080:8080"
@@ -20,6 +21,24 @@ services:
       DREAMWELL_STATIC_DIR: crates/frontend/dist
       DREAMWELL_DATABASE_URL: sqlite:/app/data/dreamwell.db
     entrypoint: ["/app/scripts/dev-run.sh"]
+    develop:
+      watch:
+        - action: rebuild
+          path: Dockerfile
+        - action: rebuild
+          path: docker-compose.dev.yml
+        - action: restart
+          path: ./crates
+          ignore:
+            - frontend/dist/
+        - action: restart
+          path: ./scripts
+        - action: restart
+          path: Cargo.toml
+        - action: restart
+          path: Cargo.lock
+        - action: restart
+          path: Makefile
 
 volumes:
   dreamwell-cargo-registry:

@@ -422,7 +422,7 @@ pub async fn delete_fact(pool: &SqlitePool, chat_id: i64, key: &str) -> AppResul
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, summarize_enabled, summarize_after_messages, summarize_keep_recent, facts_enabled, max_context_messages FROM app_settings WHERE id = 1",
+        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_after_messages, summarize_keep_recent, facts_enabled, max_context_messages FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
@@ -455,6 +455,9 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     if let Some(v) = payload.user_name {
         current.user_name = v;
     }
+    if let Some(v) = payload.persona_description {
+        current.persona_description = v;
+    }
     if let Some(v) = payload.summarize_enabled {
         current.summarize_enabled = v;
     }
@@ -476,7 +479,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     }
 
     sqlx::query(
-        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, summarize_enabled=?9, summarize_after_messages=?10, summarize_keep_recent=?11, facts_enabled=?12, max_context_messages=?13 WHERE id=1",
+        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_after_messages=?11, summarize_keep_recent=?12, facts_enabled=?13, max_context_messages=?14 WHERE id=1",
     )
     .bind(&current.inference_url)
     .bind(&current.model)
@@ -486,6 +489,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     .bind(&current.system_prompt_prefix)
     .bind(&current.system_prompt_suffix)
     .bind(&current.user_name)
+    .bind(&current.persona_description)
     .bind(current.summarize_enabled as i64)
     .bind(current.summarize_after_messages)
     .bind(current.summarize_keep_recent)
@@ -785,6 +789,7 @@ struct SettingsRow {
     system_prompt_prefix: String,
     system_prompt_suffix: String,
     user_name: String,
+    persona_description: String,
     summarize_enabled: i64,
     summarize_after_messages: i64,
     summarize_keep_recent: i64,
@@ -803,6 +808,7 @@ impl SettingsRow {
             system_prompt_prefix: self.system_prompt_prefix,
             system_prompt_suffix: self.system_prompt_suffix,
             user_name: self.user_name,
+            persona_description: self.persona_description,
             summarize_enabled: self.summarize_enabled != 0,
             summarize_after_messages: self.summarize_after_messages,
             summarize_keep_recent: self.summarize_keep_recent,

@@ -1,4 +1,5 @@
 mod api;
+mod markdown;
 mod stories_ui;
 
 use std::cell::RefCell;
@@ -30,6 +31,8 @@ fn app() -> Html {
     let characters = use_state(Vec::<Character>::new);
     let selected_chat_id = use_state(|| None::<i64>);
     let messages = use_state(Vec::<Message>::new);
+    let messages_loading = use_state(|| false);
+    let settings = use_state(|| None::<Settings>);
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
     let picker_open = use_state(|| false);
@@ -39,6 +42,7 @@ fn app() -> Html {
         let chats = chats.clone();
         let characters = characters.clone();
         let selected_chat_id = selected_chat_id.clone();
+        let settings = settings.clone();
         let loading = loading.clone();
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
@@ -51,6 +55,9 @@ fn app() -> Html {
                 if let Ok(list) = api::list_characters().await {
                     characters.set(list);
                 }
+                if let Ok(s) = api::get_settings().await {
+                    settings.set(Some(s));
+                }
                 loading.set(false);
             });
             || ()
@@ -59,20 +66,25 @@ fn app() -> Html {
 
     {
         let messages = messages.clone();
+        let messages_loading = messages_loading.clone();
         let chats = chats.clone();
         let selected_chat_id = *selected_chat_id;
         use_effect_with(selected_chat_id, move |chat_id| {
             let mut stream_holder = None::<api::ChatStream>;
             if let Some(chat_id) = *chat_id {
+                messages_loading.set(true);
                 let messages_for_fetch = messages.clone();
+                let messages_loading_for_fetch = messages_loading.clone();
                 let chats = chats.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(msgs) = api::get_messages(chat_id).await {
                         messages_for_fetch.set(msgs);
                     }
+                    messages_loading_for_fetch.set(false);
                 });
-                stream_holder = Some(api::ChatStream::new(chat_id, move |payload| {
+                stream_holder = api::ChatStream::new(chat_id, move |payload| {
                     messages.set(payload.messages.clone());
+                    messages_loading.set(false);
                     let current = (*chats).clone();
                     chats.set(
                         current
@@ -86,15 +98,32 @@ fn app() -> Html {
                             })
                             .collect(),
                     );
-                }));
+                });
             } else {
                 messages.set(vec![]);
+                messages_loading.set(false);
             }
             move || {
                 drop(stream_holder);
             }
         });
     }
+
+    let load_messages_for_chat = {
+        let messages = messages.clone();
+        let messages_loading = messages_loading.clone();
+        Callback::from(move |chat_id: i64| {
+            let messages = messages.clone();
+            let messages_loading = messages_loading.clone();
+            messages_loading.set(true);
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(msgs) = api::get_messages(chat_id).await {
+                    messages.set(msgs);
+                }
+                messages_loading.set(false);
+            });
+        })
+    };
 
     {
         let queue = queue.clone();
@@ -125,7 +154,7 @@ fn app() -> Html {
     if *mode == AppMode::Stories {
         return html! {
             <>
-                <ModeBar mode={*mode} on_mode={Callback::from({
+                <ModeBar mode={*mode} settings={settings.clone()} on_mode={Callback::from({
                     let mode = mode.clone();
                     move |m| mode.set(m)
                 })} />
@@ -140,17 +169,28 @@ fn app() -> Html {
         let chats = chats.clone();
         let selected_chat_id = selected_chat_id.clone();
         let picker_open = picker_open.clone();
+        let load_messages_for_chat = load_messages_for_chat.clone();
         Callback::from(move |(character_id, title): (i64, String)| {
             let chats = chats.clone();
             let selected_chat_id = selected_chat_id.clone();
             let picker_open = picker_open.clone();
+            let load_messages_for_chat = load_messages_for_chat.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(chat) = api::create_chat(&title, character_id).await {
-                    if let Ok(list) = api::list_chats().await {
-                        chats.set(list);
+                match api::create_chat(&title, character_id).await {
+                    Ok(chat) => {
+                        if let Ok(list) = api::list_chats().await {
+                            chats.set(list);
+                        }
+                        selected_chat_id.set(Some(chat.id));
+                        load_messages_for_chat.emit(chat.id);
+                        picker_open.set(false);
                     }
-                    selected_chat_id.set(Some(chat.id));
-                    picker_open.set(false);
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ =
+                                window.alert_with_message(&format!("Could not create chat: {err}"));
+                        }
+                    }
                 }
             });
         })
@@ -158,7 +198,7 @@ fn app() -> Html {
 
     html! {
         <>
-            <ModeBar mode={*mode} on_mode={Callback::from({
+            <ModeBar mode={*mode} settings={settings.clone()} on_mode={Callback::from({
                 let mode = mode.clone();
                 move |m| mode.set(m)
             })} />
@@ -256,7 +296,15 @@ fn app() -> Html {
                         }
                     </div>
                 } else {
-                    <MessageList messages={(*messages).clone()} />
+                    <MessageList
+                        messages={(*messages).clone()}
+                        loading={*messages_loading}
+                        settings={(*settings).clone()}
+                        character={selected.as_ref().and_then(|chat| {
+                            characters.iter().find(|c| c.id == chat.character_id).cloned()
+                        })}
+                        char_name={selected.as_ref().map(|c| c.character_name.clone())}
+                    />
                 }
                 <Composer
                     disabled={selected_chat_id.is_none()}
@@ -305,14 +353,17 @@ fn app() -> Html {
                 on_chat_created={Callback::from({
                     let chats = chats.clone();
                     let selected_chat_id = selected_chat_id.clone();
+                    let load_messages_for_chat = load_messages_for_chat.clone();
                     move |chat_id| {
                         let chats = chats.clone();
                         let selected_chat_id = selected_chat_id.clone();
+                        let load_messages_for_chat = load_messages_for_chat.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(list) = api::list_chats().await {
                                 chats.set(list);
                             }
                             selected_chat_id.set(Some(chat_id));
+                            load_messages_for_chat.emit(chat_id);
                         });
                     }
                 })}
@@ -336,12 +387,57 @@ fn app() -> Html {
 #[derive(Properties, PartialEq)]
 struct ModeBarProps {
     mode: AppMode,
+    settings: UseStateHandle<Option<Settings>>,
     on_mode: Callback<AppMode>,
 }
 
 #[function_component(ModeBar)]
 fn mode_bar(props: &ModeBarProps) -> Html {
     let settings_open = use_state(|| false);
+    let draft = use_state(|| None::<Settings>);
+    let draft_ref = use_mut_ref(|| None::<Settings>);
+    let last_saved = use_state(|| None::<Settings>);
+    let phase = use_state(|| SettingsSavePhase::Synced);
+    let save_timeout = use_mut_ref(|| None::<Timeout>);
+    let save_ctx = SettingsSaveContext {
+        draft: draft.clone(),
+        draft_ref: draft_ref.clone(),
+        last_saved: last_saved.clone(),
+        parent_settings: props.settings.clone(),
+        phase: phase.clone(),
+        save_timeout: save_timeout.clone(),
+    };
+
+    {
+        let save_ctx = save_ctx.clone();
+        use_effect_with((*props.settings).clone(), move |loaded| {
+            if let Some(settings) = loaded.clone() {
+                if (*save_ctx.draft).is_none() {
+                    save_ctx.load_from(settings);
+                }
+            }
+            || ()
+        });
+    }
+
+    {
+        let save_ctx = save_ctx.clone();
+        use_effect_with(*settings_open, move |open| {
+            if *open {
+                save_ctx.ensure_loaded();
+                if (*save_ctx.draft).is_none() {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Ok(settings) = api::get_settings().await {
+                            save_ctx.parent_settings.set(Some(settings.clone()));
+                            save_ctx.load_from(settings);
+                        }
+                    });
+                }
+            }
+            || ()
+        });
+    }
+
     html! {
         <>
             if *settings_open {
@@ -364,7 +460,7 @@ fn mode_bar(props: &ModeBarProps) -> Html {
             </div>
             if *settings_open {
                 <div class="settings-popover">
-                    <SettingsPanel />
+                    <SettingsPanel save_ctx={save_ctx.clone()} />
                 </div>
             }
         </>
@@ -434,15 +530,42 @@ fn chat_status(chat: &Chat) -> Option<String> {
 #[derive(Properties, PartialEq)]
 struct MessageListProps {
     messages: Vec<Message>,
+    loading: bool,
+    settings: Option<Settings>,
+    character: Option<Character>,
+    char_name: Option<String>,
 }
 
 #[function_component(MessageList)]
 fn message_list(props: &MessageListProps) -> Html {
+    let macro_ctx = props.settings.as_ref().map(|settings| {
+        if let Some(character) = props.character.as_ref() {
+            MacroContext::from_character_and_settings(
+                Some(character),
+                &settings.user_name,
+                &settings.persona_description,
+            )
+        } else {
+            MacroContext {
+                char_name: props.char_name.as_deref().unwrap_or("Character"),
+                user_name: settings.user_name.as_str(),
+                persona: settings.persona_description.as_str(),
+                description: "",
+                personality: "",
+                scenario: "",
+                first_message: "",
+            }
+        }
+    });
     html! {
         <div class="messages">
             if props.messages.is_empty() {
                 <div class="empty-state muted">
-                    {"Send a message to queue a reply. You can switch chats while it generates server-side."}
+                    if props.loading {
+                        {"Loading messages…"}
+                    } else {
+                        {"Send a message to queue a reply. You can switch chats while it generates server-side."}
+                    }
                 </div>
             } else {
                 { for props.messages.iter().map(|m| {
@@ -458,7 +581,13 @@ fn message_list(props: &MessageListProps) -> Html {
                                 { role.to_string() }
                                 if streaming { <span>{" · streaming on server"}</span> }
                             </div>
-                            { if m.content.is_empty() && streaming { "…".to_string() } else { m.content.clone() } }
+                            if m.content.is_empty() && streaming {
+                                { "…" }
+                            } else if let Some(ctx) = macro_ctx.as_ref() {
+                                { markdown::render_message_content(&substitute_macros(&m.content, ctx)) }
+                            } else {
+                                { markdown::render_message_content(&m.content) }
+                            }
                         </div>
                     }
                 }) }
@@ -1001,6 +1130,143 @@ fn input_callback(state: UseStateHandle<String>) -> Callback<InputEvent> {
     })
 }
 
+#[derive(Clone, PartialEq)]
+enum SettingsSavePhase {
+    Synced,
+    Debouncing,
+    Saving,
+    Failed(String),
+}
+
+#[derive(Clone)]
+struct SettingsSaveContext {
+    draft: UseStateHandle<Option<Settings>>,
+    draft_ref: Rc<RefCell<Option<Settings>>>,
+    last_saved: UseStateHandle<Option<Settings>>,
+    parent_settings: UseStateHandle<Option<Settings>>,
+    phase: UseStateHandle<SettingsSavePhase>,
+    save_timeout: Rc<RefCell<Option<Timeout>>>,
+}
+
+impl PartialEq for SettingsSaveContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.draft == other.draft
+            && self.last_saved == other.last_saved
+            && self.parent_settings == other.parent_settings
+            && self.phase == other.phase
+    }
+}
+
+impl SettingsSaveContext {
+    fn load_from(&self, settings: Settings) {
+        *self.draft_ref.borrow_mut() = Some(settings.clone());
+        self.draft.set(Some(settings.clone()));
+        self.last_saved.set(Some(settings));
+        self.phase.set(SettingsSavePhase::Synced);
+    }
+
+    fn ensure_loaded(&self) {
+        if (*self.draft).is_none() {
+            if let Some(settings) = (*self.parent_settings).clone() {
+                self.load_from(settings);
+            }
+        }
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.draft_ref.borrow().as_ref() != (*self.last_saved).as_ref()
+    }
+
+    fn cancel_debounce(&self) {
+        if let Some(timeout) = self.save_timeout.borrow_mut().take() {
+            drop(timeout);
+        }
+    }
+
+    fn mark_saved(&self, saved: Settings) {
+        *self.draft_ref.borrow_mut() = Some(saved.clone());
+        self.draft.set(Some(saved.clone()));
+        self.last_saved.set(Some(saved.clone()));
+        self.parent_settings.set(Some(saved));
+        self.cancel_debounce();
+        self.phase.set(SettingsSavePhase::Synced);
+    }
+
+    fn schedule_save(&self) {
+        if !self.is_dirty() {
+            self.cancel_debounce();
+            if !matches!(*self.phase, SettingsSavePhase::Saving) {
+                self.phase.set(SettingsSavePhase::Synced);
+            }
+            return;
+        }
+
+        self.cancel_debounce();
+        self.phase.set(SettingsSavePhase::Debouncing);
+
+        let ctx = self.clone();
+        *self.save_timeout.borrow_mut() = Some(Timeout::new(400, move || {
+            ctx.run_save();
+        }));
+    }
+
+    fn run_save(&self) {
+        let Some(sent) = self.draft_ref.borrow().clone() else {
+            return;
+        };
+        if Some(&sent) == (*self.last_saved).as_ref() {
+            self.phase.set(SettingsSavePhase::Synced);
+            return;
+        }
+
+        self.phase.set(SettingsSavePhase::Saving);
+        let ctx = self.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let update = settings_to_update(&sent);
+            match api::update_settings(&update).await {
+                Ok(saved) if ctx.draft_ref.borrow().as_ref() == Some(&sent) => {
+                    ctx.mark_saved(saved);
+                }
+                Ok(_) => {
+                    ctx.phase.set(SettingsSavePhase::Synced);
+                    ctx.schedule_save();
+                }
+                Err(err) if ctx.draft_ref.borrow().as_ref() == Some(&sent) => {
+                    ctx.phase.set(SettingsSavePhase::Failed(err));
+                }
+                Err(_) => {
+                    ctx.phase.set(SettingsSavePhase::Synced);
+                    ctx.schedule_save();
+                }
+            }
+        });
+    }
+
+    fn update_field<F>(&self, update: F)
+    where
+        F: FnOnce(&mut Settings),
+    {
+        let Some(mut current) = self.draft_ref.borrow().clone() else {
+            return;
+        };
+        update(&mut current);
+        let dirty = Some(&current) != (*self.last_saved).as_ref();
+        *self.draft_ref.borrow_mut() = Some(current.clone());
+        self.draft.set(Some(current));
+        if matches!(*self.phase, SettingsSavePhase::Failed(_)) && dirty {
+            self.phase.set(SettingsSavePhase::Debouncing);
+        } else if matches!(*self.phase, SettingsSavePhase::Failed(_)) {
+            self.phase.set(SettingsSavePhase::Synced);
+        }
+        if dirty {
+            self.schedule_save();
+        } else {
+            self.cancel_debounce();
+            self.phase.set(SettingsSavePhase::Synced);
+        }
+    }
+}
+
 fn settings_to_update(current: &Settings) -> SettingsUpdate {
     SettingsUpdate {
         inference_url: Some(current.inference_url.clone()),
@@ -1011,6 +1277,7 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         system_prompt_prefix: Some(current.system_prompt_prefix.clone()),
         system_prompt_suffix: Some(current.system_prompt_suffix.clone()),
         user_name: Some(current.user_name.clone()),
+        persona_description: Some(current.persona_description.clone()),
         summarize_enabled: Some(current.summarize_enabled),
         summarize_after_messages: Some(current.summarize_after_messages),
         summarize_keep_recent: Some(current.summarize_keep_recent),
@@ -1020,96 +1287,63 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
     }
 }
 
-fn schedule_settings_save(
-    settings: UseStateHandle<Option<Settings>>,
-    saving: UseStateHandle<bool>,
-    save_timeout: Rc<RefCell<Option<Timeout>>>,
-) {
-    if let Some(timeout) = save_timeout.borrow_mut().take() {
-        drop(timeout);
+fn settings_save_status_html(phase: &SettingsSavePhase) -> Html {
+    match phase {
+        SettingsSavePhase::Saving => html! {
+            <span class="settings-save-indicator settings-save-indicator--saving">
+                <span class="settings-save-spinner" aria-hidden="true"></span>
+                <span>{"Saving…"}</span>
+            </span>
+        },
+        SettingsSavePhase::Failed(message) => html! {
+            <span class="settings-save-indicator settings-save-indicator--error" title={message.clone()}>
+                <span class="settings-save-icon" aria-hidden="true">{"✕"}</span>
+                <span>{"Save failed"}</span>
+            </span>
+        },
+        SettingsSavePhase::Debouncing => html! {
+            <span class="settings-save-indicator settings-save-indicator--pending">
+                <span class="settings-save-icon" aria-hidden="true">{"⏳"}</span>
+            </span>
+        },
+        SettingsSavePhase::Synced => html! {
+            <span class="settings-save-indicator settings-save-indicator--saved">
+                <span class="settings-save-icon" aria-hidden="true">{"✓"}</span>
+                <span>{"Saved"}</span>
+            </span>
+        },
     }
-    let settings = settings.clone();
-    let saving = saving.clone();
-    let save_timeout = save_timeout.clone();
-    *save_timeout.borrow_mut() = Some(Timeout::new(400, move || {
-        let Some(current) = (*settings).clone() else {
-            return;
-        };
-        let settings = settings.clone();
-        let saving = saving.clone();
-        saving.set(true);
-        wasm_bindgen_futures::spawn_local(async move {
-            let update = settings_to_update(&current);
-            if let Ok(updated) = api::update_settings(&update).await {
-                settings.set(Some(updated));
-            }
-            saving.set(false);
-        });
-    }));
 }
 
-fn update_settings_field<F>(
-    settings: UseStateHandle<Option<Settings>>,
-    saving: UseStateHandle<bool>,
-    save_timeout: Rc<RefCell<Option<Timeout>>>,
-    update: F,
-) where
-    F: FnOnce(&mut Settings),
-{
-    if let Some(mut current) = (*settings).clone() {
-        update(&mut current);
-        settings.set(Some(current));
-        schedule_settings_save(settings, saving, save_timeout);
-    }
+#[derive(Properties, PartialEq)]
+struct SettingsPanelProps {
+    save_ctx: SettingsSaveContext,
 }
 
 #[function_component(SettingsPanel)]
-fn settings_panel() -> Html {
-    let settings = use_state(|| None::<Settings>);
+fn settings_panel(props: &SettingsPanelProps) -> Html {
+    let save_ctx = props.save_ctx.clone();
+    let draft = save_ctx.draft.clone();
+    let phase = save_ctx.phase.clone();
     let models = use_state(Vec::<ModelInfo>::new);
     let model_error = use_state(|| None::<String>);
-    let saving = use_state(|| false);
-    let save_timeout = use_mut_ref(|| None::<Timeout>);
 
-    {
-        let settings = settings.clone();
-        use_effect_with((), move |_| {
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(s) = api::get_settings().await {
-                    settings.set(Some(s));
-                }
-            });
-            || ()
-        });
-    }
-
-    let Some(s) = (*settings).clone() else {
+    let Some(s) = (*draft).clone() else {
         return html! { <p class="muted">{"Loading settings…"}</p> };
     };
 
     html! {
         <div>
             <div class="settings-status">
-                if *saving {
-                    <span class="muted">{"Saving…"}</span>
-                } else {
-                    <span class="muted">{"Changes save automatically"}</span>
-                }
+                { settings_save_status_html(&phase) }
             </div>
             <label class="field">
                 <span class="muted">{"Inference server"}</span>
                 <input value={s.inference_url.clone()} oninput={{
-                    let settings = settings.clone();
-                    let saving = saving.clone();
-                    let save_timeout = save_timeout.clone();
+                    let save_ctx = save_ctx.clone();
                     Callback::from(move |e: InputEvent| {
                         let input: HtmlInputElement = e.target_unchecked_into();
-                        update_settings_field(
-                            settings.clone(),
-                            saving.clone(),
-                            save_timeout.clone(),
-                            |current| current.inference_url = input.value(),
-                        );
+                        save_ctx.update_field(|current| current.inference_url = input.value());
                     })
                 }} />
             </label>
@@ -1117,17 +1351,10 @@ fn settings_panel() -> Html {
                 <label class="field" style="flex:1;">
                     <span class="muted">{"Model"}</span>
                     <select onchange={{
-                        let settings = settings.clone();
-                        let saving = saving.clone();
-                        let save_timeout = save_timeout.clone();
+                        let save_ctx = save_ctx.clone();
                         Callback::from(move |e: Event| {
                             let input: HtmlInputElement = e.target_unchecked_into();
-                            update_settings_field(
-                                settings.clone(),
-                                saving.clone(),
-                                save_timeout.clone(),
-                                |current| current.model = input.value(),
-                            );
+                            save_ctx.update_field(|current| current.model = input.value());
                         })
                     }}>
                         <option value="">{"Select a model"}</option>
@@ -1156,47 +1383,34 @@ fn settings_panel() -> Html {
                 <p class="text-danger">{ err }</p>
             }
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
-                <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "temperature")} /></label>
-                <label class="field"><span class="muted">{"Top P"}</span><input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "top_p")} /></label>
-                <label class="field"><span class="muted">{"Max tokens"}</span><input type="number" value={s.max_tokens.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "max_tokens")} /></label>
-                <label class="field"><span class="muted">{"Max concurrent jobs"}</span><input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "max_concurrent_jobs")} /></label>
+                <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(save_ctx.clone(), "temperature")} /></label>
+                <label class="field"><span class="muted">{"Top P"}</span><input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(save_ctx.clone(), "top_p")} /></label>
+                <label class="field"><span class="muted">{"Max tokens"}</span><input type="number" value={s.max_tokens.to_string()} oninput={num_input(save_ctx.clone(), "max_tokens")} /></label>
+                <label class="field"><span class="muted">{"Max concurrent jobs"}</span><input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(save_ctx.clone(), "max_concurrent_jobs")} /></label>
             </div>
-            <label class="field"><span class="muted">{"User name ({{user}})"}</span><input value={s.user_name.clone()} oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "user_name")} /></label>
-            <label class="field"><span class="muted">{"Main prompt (prefix)"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_prefix")} /></label>
-            <label class="field"><span class="muted">{"Post-history instructions (suffix)"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_suffix")} /></label>
+            <label class="field"><span class="muted">{"User name ({{user}})"}</span><input value={s.user_name.clone()} oninput={text_input(save_ctx.clone(), "user_name")} /></label>
+            <label class="field"><span class="muted">{"Persona description ({{persona}})"}</span><textarea value={s.persona_description.clone()} rows="3" oninput={text_input(save_ctx.clone(), "persona_description")} /></label>
+            <label class="field"><span class="muted">{"Main prompt (prefix)"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(save_ctx.clone(), "system_prompt_prefix")} /></label>
+            <label class="field"><span class="muted">{"Post-history instructions (suffix)"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(save_ctx.clone(), "system_prompt_suffix")} /></label>
             <div class="settings-group">
                 <strong>{"Auto summarize"}</strong>
                 <label style="display:flex;gap:0.5rem;margin:0.5rem 0;">
                     <input type="checkbox" checked={s.summarize_enabled} onclick={{
-                        let settings = settings.clone();
-                        let saving = saving.clone();
-                        let save_timeout = save_timeout.clone();
+                        let save_ctx = save_ctx.clone();
                         Callback::from(move |_| {
-                            update_settings_field(
-                                settings.clone(),
-                                saving.clone(),
-                                save_timeout.clone(),
-                                |current| current.summarize_enabled = !current.summarize_enabled,
-                            );
+                            save_ctx.update_field(|current| current.summarize_enabled = !current.summarize_enabled);
                         })
                     }} />
                     {"Enable summarization"}
                 </label>
-                <label class="field"><span class="muted">{"Summarize after N messages"}</span><input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "summarize_after_messages")} /></label>
-                <label class="field"><span class="muted">{"Keep recent messages"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "summarize_keep_recent")} /></label>
+                <label class="field"><span class="muted">{"Summarize after N messages"}</span><input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(save_ctx.clone(), "summarize_after_messages")} /></label>
+                <label class="field"><span class="muted">{"Keep recent messages"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(save_ctx.clone(), "summarize_keep_recent")} /></label>
             </div>
             <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
                 <input type="checkbox" checked={s.facts_enabled} onclick={{
-                    let settings = settings.clone();
-                    let saving = saving.clone();
-                    let save_timeout = save_timeout.clone();
+                    let save_ctx = save_ctx.clone();
                     Callback::from(move |_| {
-                        update_settings_field(
-                            settings.clone(),
-                            saving.clone(),
-                            save_timeout.clone(),
-                            |current| current.facts_enabled = !current.facts_enabled,
-                        );
+                        save_ctx.update_field(|current| current.facts_enabled = !current.facts_enabled);
                     })
                 }} />
                 {"Enable KV facts in prompts"}
@@ -1205,53 +1419,34 @@ fn settings_panel() -> Html {
     }
 }
 
-fn num_input(
-    settings: UseStateHandle<Option<Settings>>,
-    saving: UseStateHandle<bool>,
-    save_timeout: Rc<RefCell<Option<Timeout>>>,
-    field: &'static str,
-) -> Callback<InputEvent> {
+fn num_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<InputEvent> {
     Callback::from(move |e: InputEvent| {
         let input: HtmlInputElement = e.target_unchecked_into();
         if let Ok(v) = input.value().parse::<f64>() {
-            update_settings_field(
-                settings.clone(),
-                saving.clone(),
-                save_timeout.clone(),
-                move |current| match field {
-                    "temperature" => current.temperature = v,
-                    "top_p" => current.top_p = v,
-                    "max_tokens" => current.max_tokens = v as i64,
-                    "max_concurrent_jobs" => current.max_concurrent_jobs = v as i64,
-                    "summarize_after_messages" => current.summarize_after_messages = v as i64,
-                    "summarize_keep_recent" => current.summarize_keep_recent = v as i64,
-                    _ => {}
-                },
-            );
+            save_ctx.update_field(move |current| match field {
+                "temperature" => current.temperature = v,
+                "top_p" => current.top_p = v,
+                "max_tokens" => current.max_tokens = v as i64,
+                "max_concurrent_jobs" => current.max_concurrent_jobs = (v as i64).max(1),
+                "summarize_after_messages" => current.summarize_after_messages = v as i64,
+                "summarize_keep_recent" => current.summarize_keep_recent = v as i64,
+                _ => {}
+            });
         }
     })
 }
 
-fn text_input(
-    settings: UseStateHandle<Option<Settings>>,
-    saving: UseStateHandle<bool>,
-    save_timeout: Rc<RefCell<Option<Timeout>>>,
-    field: &'static str,
-) -> Callback<InputEvent> {
+fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<InputEvent> {
     Callback::from(move |e: InputEvent| {
         let input: HtmlInputElement = e.target_unchecked_into();
         let value = input.value();
-        update_settings_field(
-            settings.clone(),
-            saving.clone(),
-            save_timeout.clone(),
-            move |current| match field {
-                "system_prompt_prefix" => current.system_prompt_prefix = value.clone(),
-                "system_prompt_suffix" => current.system_prompt_suffix = value.clone(),
-                "user_name" => current.user_name = value.clone(),
-                _ => {}
-            },
-        );
+        save_ctx.update_field(move |current| match field {
+            "system_prompt_prefix" => current.system_prompt_prefix = value.clone(),
+            "system_prompt_suffix" => current.system_prompt_suffix = value.clone(),
+            "user_name" => current.user_name = value.clone(),
+            "persona_description" => current.persona_description = value.clone(),
+            _ => {}
+        });
     })
 }
 

@@ -185,9 +185,9 @@ pub struct ChatStream {
 }
 
 impl ChatStream {
-    pub fn new(chat_id: i64, on_update: impl Fn(ChatStreamPayload) + 'static) -> Self {
+    pub fn new(chat_id: i64, on_update: impl Fn(ChatStreamPayload) + 'static) -> Option<Self> {
         let url = format!("/api/chats/{chat_id}/stream");
-        let source = EventSource::new(&url).expect("EventSource");
+        let source = EventSource::new(&url).ok()?;
         let on_update = std::rc::Rc::new(on_update);
         {
             let on_update = on_update.clone();
@@ -203,7 +203,7 @@ impl ChatStream {
             source.set_onmessage(Some(callback.as_ref().unchecked_ref()));
             callback.forget();
         }
-        Self { source }
+        Some(Self { source })
     }
 }
 

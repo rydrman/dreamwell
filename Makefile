@@ -55,7 +55,11 @@ run: run-docker
 
 run-docker:
 	chmod +x scripts/dev-run.sh
-	$(COMPOSE_DEV) run --rm --service-ports dreamwell
+	@status=0; \
+	$(COMPOSE_DEV) up --build --watch --abort-on-container-exit --exit-code-from dreamwell dreamwell \
+		|| status=$$?; \
+	$(COMPOSE_DEV) down --remove-orphans; \
+	exit $$status
 
 run-local: build
 	DREAMWELL_STATIC_DIR=crates/frontend/dist \
