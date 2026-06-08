@@ -8,12 +8,12 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{delete, get},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use dreamwell_types::{
     Chat, ChatCreate, ChatStreamPayload, ChatUpdate, Fact, FactUpdate, Message, MessageRole,
-    OkResponse, QueueStatus, SendMessageRequest,
+    OkResponse, QueueStatus, RegenerateMessageRequest, SendMessageRequest, UpdateMessageRequest,
 };
 
 use crate::db;
@@ -27,6 +27,14 @@ pub fn router() -> Router<AppState> {
         .route("/", get(list_chats).post(create_chat))
         .route("/:id", get(get_chat).patch(update_chat).delete(delete_chat))
         .route("/:id/messages", get(list_messages).post(send_message))
+        .route(
+            "/:id/messages/:message_id",
+            patch(update_message).delete(rewind_message),
+        )
+        .route(
+            "/:id/messages/:message_id/regenerate",
+            post(regenerate_message),
+        )
         .route("/:id/facts", get(list_facts).put(upsert_fact))
         .route("/:id/facts/:key", delete(delete_fact))
         .route("/:id/stream", get(stream_chat))
@@ -77,6 +85,21 @@ async fn list_messages(
     Ok(Json(db::list_messages(&state.pool, id).await?))
 }
 
+async fn rewind_after_message(state: &AppState, chat_id: i64, message_id: i64) -> AppResult<usize> {
+    let messages = db::list_messages(&state.pool, chat_id).await?;
+    let Some(idx) = messages.iter().position(|m| m.id == message_id) else {
+        return Err(AppError::not_found("Message not found"));
+    };
+    let after = &messages[(idx + 1)..];
+    for message in after {
+        for job in db::list_active_jobs_for_message(&state.pool, message.id).await? {
+            let _ = state.queue.cancel_job(&state.pool, job.id).await;
+        }
+    }
+    let deleted = db::delete_messages_after(&state.pool, chat_id, message_id).await?;
+    Ok(deleted.len())
+}
+
 async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -108,6 +131,71 @@ async fn send_message(
         job_status: Some(job.status),
         ..assistant
     }))
+}
+
+async fn update_message(
+    State(state): State<AppState>,
+    Path((id, message_id)): Path<(i64, i64)>,
+    Json(payload): Json<UpdateMessageRequest>,
+) -> AppResult<Json<Message>> {
+    if payload.content.trim().is_empty() {
+        return Err(AppError::bad_request("Message cannot be empty"));
+    }
+    let message = db::get_message(&state.pool, id, message_id).await?;
+    if message.is_summary {
+        return Err(AppError::bad_request("Cannot edit summary messages"));
+    }
+    if message.role == MessageRole::System {
+        return Err(AppError::bad_request("Cannot edit system messages"));
+    }
+    if payload.rewind {
+        rewind_after_message(&state, id, message_id).await?;
+    }
+    db::update_message_content(&state.pool, message_id, payload.content.trim()).await?;
+    db::touch_chat(&state.pool, id).await?;
+    Ok(Json(db::get_message(&state.pool, id, message_id).await?))
+}
+
+async fn rewind_message(
+    State(state): State<AppState>,
+    Path((id, message_id)): Path<(i64, i64)>,
+) -> AppResult<Json<OkResponse>> {
+    let _ = db::get_message(&state.pool, id, message_id).await?;
+    rewind_after_message(&state, id, message_id).await?;
+    db::touch_chat(&state.pool, id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn regenerate_message(
+    State(state): State<AppState>,
+    Path((id, message_id)): Path<(i64, i64)>,
+    Json(payload): Json<RegenerateMessageRequest>,
+) -> AppResult<Json<Message>> {
+    let message = db::get_message(&state.pool, id, message_id).await?;
+    if message.role != MessageRole::Assistant {
+        return Err(AppError::bad_request(
+            "Only assistant messages can be regenerated",
+        ));
+    }
+    if message.is_summary {
+        return Err(AppError::bad_request("Cannot regenerate summary messages"));
+    }
+
+    let is_last = db::is_last_message(&state.pool, id, message_id).await?;
+    if !is_last || payload.rewind {
+        rewind_after_message(&state, id, message_id).await?;
+    }
+
+    for job in db::list_active_jobs_for_message(&state.pool, message_id).await? {
+        state.queue.cancel_job(&state.pool, job.id).await?;
+    }
+
+    db::update_message_content(&state.pool, message_id, "").await?;
+    let job = enqueue_generation(&state.pool, &state.queue, id, message_id).await?;
+    db::touch_chat(&state.pool, id).await?;
+    let mut updated = db::get_message(&state.pool, id, message_id).await?;
+    updated.job_status = Some(job.status);
+    Ok(Json(updated))
 }
 
 async fn list_facts(

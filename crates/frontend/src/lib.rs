@@ -349,6 +349,7 @@ fn app() -> Html {
                     </div>
                 } else {
                     <MessageList
+                        chat_id={*selected_chat_id}
                         messages={(*messages).clone()}
                         loading={*messages_loading}
                         settings={(*settings).clone()}
@@ -356,6 +357,24 @@ fn app() -> Html {
                             characters.iter().find(|c| c.id == chat.character_id).cloned()
                         })}
                         char_name={selected.as_ref().map(|c| c.character_name.clone())}
+                        on_messages_change={Callback::from({
+                            let selected_chat_id = selected_chat_id.clone();
+                            let messages = messages.clone();
+                            let queue = queue.clone();
+                            move |_| {
+                                let Some(chat_id) = *selected_chat_id else { return };
+                                let messages = messages.clone();
+                                let queue = queue.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(msgs) = api::get_messages(chat_id).await {
+                                        messages.set(msgs);
+                                    }
+                                    if let Ok(status) = api::get_queue().await {
+                                        queue.set(Some(status));
+                                    }
+                                });
+                            }
+                        })}
                     />
                 }
                 <Composer
@@ -579,13 +598,268 @@ fn chat_status(chat: &Chat) -> Option<String> {
     }
 }
 
+fn confirm_delete_after(count: usize) -> bool {
+    if count == 0 {
+        return true;
+    }
+    web_sys::window()
+        .and_then(|w| {
+            w.confirm_with_message(&format!(
+                "Delete {count} message{} after this one?",
+                if count == 1 { "" } else { "s" }
+            ))
+            .ok()
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum MessageBubbleMode {
+    View,
+    Edit,
+}
+
+#[derive(Properties, PartialEq)]
+struct MessageBubbleProps {
+    message: Message,
+    chat_id: i64,
+    is_last: bool,
+    after_count: usize,
+    rendered_content: Html,
+    on_changed: Callback<()>,
+}
+
+#[function_component(MessageBubble)]
+fn message_bubble(props: &MessageBubbleProps) -> Html {
+    let menu_open = use_state(|| false);
+    let mode = use_state(|| MessageBubbleMode::View);
+    let edit_text = use_state(String::new);
+    let rewind = use_state(|| false);
+    let acting = use_state(|| false);
+
+    let role = match props.message.role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::System => "system",
+    };
+    let queued = matches!(props.message.job_status, Some(JobStatus::Queued));
+    let streaming = matches!(props.message.job_status, Some(JobStatus::Running));
+    let active = queued || streaming;
+    let can_menu =
+        !props.message.is_summary && props.message.role != MessageRole::System && !active;
+    let show_regenerate = props.message.role == MessageRole::Assistant;
+
+    let close_menu = {
+        let menu_open = menu_open.clone();
+        Callback::from(move |_| menu_open.set(false))
+    };
+
+    let start_edit = {
+        let mode = mode.clone();
+        let edit_text = edit_text.clone();
+        let menu_open = menu_open.clone();
+        let content = props.message.content.clone();
+        Callback::from(move |_| {
+            edit_text.set(content.clone());
+            mode.set(MessageBubbleMode::Edit);
+            menu_open.set(false);
+        })
+    };
+
+    let cancel_edit = {
+        let mode = mode.clone();
+        Callback::from(move |_| mode.set(MessageBubbleMode::View))
+    };
+
+    let save_edit = {
+        let mode = mode.clone();
+        let edit_text = edit_text.clone();
+        let rewind = rewind.clone();
+        let acting = acting.clone();
+        let on_changed = props.on_changed.clone();
+        let chat_id = props.chat_id;
+        let message_id = props.message.id;
+        let after_count = props.after_count;
+        Callback::from(move |_| {
+            let content = (*edit_text).trim().to_string();
+            if content.is_empty() || *acting {
+                return;
+            }
+            let rewind_enabled = *rewind;
+            let delete_count = if rewind_enabled { after_count } else { 0 };
+            if !confirm_delete_after(delete_count) {
+                return;
+            }
+            acting.set(true);
+            let mode = mode.clone();
+            let acting = acting.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::update_message(chat_id, message_id, &content, rewind_enabled).await {
+                    Ok(_) => {
+                        mode.set(MessageBubbleMode::View);
+                        on_changed.emit(());
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&format!("Could not save: {err}"));
+                        }
+                    }
+                }
+                acting.set(false);
+            });
+        })
+    };
+
+    let regenerate = {
+        let menu_open = menu_open.clone();
+        let rewind = rewind.clone();
+        let acting = acting.clone();
+        let on_changed = props.on_changed.clone();
+        let chat_id = props.chat_id;
+        let message_id = props.message.id;
+        let is_last = props.is_last;
+        let after_count = props.after_count;
+        Callback::from(move |_| {
+            if *acting {
+                return;
+            }
+            let rewind_enabled = *rewind;
+            let delete_count = if !is_last || rewind_enabled {
+                after_count
+            } else {
+                0
+            };
+            if !confirm_delete_after(delete_count) {
+                return;
+            }
+            menu_open.set(false);
+            acting.set(true);
+            let acting = acting.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::regenerate_message(chat_id, message_id, rewind_enabled).await {
+                    Ok(_) => on_changed.emit(()),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ =
+                                window.alert_with_message(&format!("Could not regenerate: {err}"));
+                        }
+                    }
+                }
+                acting.set(false);
+            });
+        })
+    };
+
+    html! {
+        <div class={classes!("message", role)}>
+            <div class="message-header">
+                <div class="message-meta muted">
+                    { role.to_string() }
+                    if queued { <span>{" · queued on server"}</span> }
+                    if streaming { <span>{" · streaming on server"}</span> }
+                </div>
+                if can_menu {
+                    <div class="message-menu-wrap">
+                        if *menu_open {
+                            <div class="message-menu-backdrop" onclick={close_menu.clone()} />
+                        }
+                        <button
+                            type="button"
+                            class="message-menu-btn"
+                            title="Message options"
+                            onclick={Callback::from({
+                                let menu_open = menu_open.clone();
+                                move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    menu_open.set(!*menu_open);
+                                }
+                            })}
+                            disabled={*acting}
+                        >
+                            {"⋯"}
+                        </button>
+                        if *menu_open {
+                            <div class="message-menu" onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}>
+                                <button type="button" class="message-menu-item" onclick={start_edit}>{"Edit"}</button>
+                                if show_regenerate {
+                                    <button type="button" class="message-menu-item" onclick={regenerate}>{"Regenerate"}</button>
+                                }
+                                <label class="message-menu-rewind">
+                                    <input
+                                        type="checkbox"
+                                        checked={*rewind}
+                                        disabled={props.after_count == 0}
+                                        onclick={Callback::from({
+                                            let rewind = rewind.clone();
+                                            move |_| rewind.set(!*rewind)
+                                        })}
+                                    />
+                                    if props.after_count == 0 {
+                                        <span>{"Rewind (nothing after)"}</span>
+                                    } else {
+                                        <span>{ format!("Rewind (delete {after} after)", after = props.after_count) }</span>
+                                    }
+                                </label>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+            if *mode == MessageBubbleMode::Edit {
+                <textarea
+                    class="message-edit-input"
+                    value={(*edit_text).clone()}
+                    oninput={Callback::from({
+                        let edit_text = edit_text.clone();
+                        move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            edit_text.set(input.value());
+                        }
+                    })}
+                    disabled={*acting}
+                />
+                <div class="message-edit-actions">
+                    <button type="button" class="btn" onclick={save_edit} disabled={*acting || edit_text.trim().is_empty()}>
+                        { if *acting { "Saving…" } else { "Save" } }
+                    </button>
+                    <button type="button" class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
+                    <label class="message-menu-rewind">
+                        <input
+                            type="checkbox"
+                            checked={*rewind}
+                            disabled={props.after_count == 0}
+                            onclick={Callback::from({
+                                let rewind = rewind.clone();
+                                move |_| rewind.set(!*rewind)
+                            })}
+                        />
+                        if props.after_count == 0 {
+                            <span>{"Rewind (nothing after)"}</span>
+                        } else {
+                            <span>{ format!("Rewind (delete {after} after)", after = props.after_count) }</span>
+                        }
+                    </label>
+                </div>
+            } else if props.message.content.is_empty() && active {
+                { "…" }
+            } else {
+                { props.rendered_content.clone() }
+            }
+        </div>
+    }
+}
+
 #[derive(Properties, PartialEq)]
 struct MessageListProps {
+    chat_id: Option<i64>,
     messages: Vec<Message>,
     loading: bool,
     settings: Option<Settings>,
     character: Option<Character>,
     char_name: Option<String>,
+    on_messages_change: Callback<()>,
 }
 
 #[function_component(MessageList)]
@@ -609,6 +883,7 @@ fn message_list(props: &MessageListProps) -> Html {
             }
         }
     });
+    let last_id = props.messages.last().map(|m| m.id);
     html! {
         <div class="messages">
             if props.messages.is_empty() {
@@ -619,31 +894,26 @@ fn message_list(props: &MessageListProps) -> Html {
                         {"Send a message to queue a reply. You can switch chats while it generates server-side."}
                     }
                 </div>
-            } else {
-                { for props.messages.iter().map(|m| {
-                    let role = match m.role {
-                        MessageRole::User => "user",
-                        MessageRole::Assistant => "assistant",
-                        MessageRole::System => "system",
+            } else if let Some(chat_id) = props.chat_id {
+                { for props.messages.iter().enumerate().map(|(idx, m)| {
+                    let after_count = props.messages.len().saturating_sub(idx + 1);
+                    let is_last = last_id == Some(m.id);
+                    let rendered_content = if m.content.is_empty() {
+                        html! {}
+                    } else if let Some(ctx) = macro_ctx.as_ref() {
+                        markdown::render_message_content(&substitute_macros(&m.content, ctx))
+                    } else {
+                        markdown::render_message_content(&m.content)
                     };
-                    let queued = matches!(m.job_status, Some(JobStatus::Queued));
-                    let streaming = matches!(m.job_status, Some(JobStatus::Running));
-                    let active = queued || streaming;
                     html! {
-                        <div class={classes!("message", role)}>
-                            <div class="muted" style="font-size:0.75rem;text-transform:uppercase;">
-                                { role.to_string() }
-                                if queued { <span>{" · queued on server"}</span> }
-                                if streaming { <span>{" · streaming on server"}</span> }
-                            </div>
-                            if m.content.is_empty() && active {
-                                { "…" }
-                            } else if let Some(ctx) = macro_ctx.as_ref() {
-                                { markdown::render_message_content(&substitute_macros(&m.content, ctx)) }
-                            } else {
-                                { markdown::render_message_content(&m.content) }
-                            }
-                        </div>
+                        <MessageBubble
+                            message={m.clone()}
+                            chat_id={chat_id}
+                            is_last={is_last}
+                            after_count={after_count}
+                            rendered_content={rendered_content}
+                            on_changed={props.on_messages_change.clone()}
+                        />
                     }
                 }) }
             }
