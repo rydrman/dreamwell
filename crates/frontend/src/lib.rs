@@ -16,6 +16,13 @@ enum AppMode {
     Stories,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum MobilePane {
+    Main,
+    Sidebar,
+    Panel,
+}
+
 #[function_component(App)]
 fn app() -> Html {
     let mode = use_state(|| AppMode::Chats);
@@ -26,6 +33,7 @@ fn app() -> Html {
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
     let picker_open = use_state(|| false);
+    let mobile_pane = use_state(|| MobilePane::Main);
 
     {
         let chats = chats.clone();
@@ -111,7 +119,7 @@ fn app() -> Html {
     }
 
     if *loading && *mode == AppMode::Chats {
-        return html! { <div class="muted" style="padding:2rem;">{"Loading Dreamwell…"}</div> };
+        return html! { <div class="loading-screen muted">{"Loading Dreamwell…"}</div> };
     }
 
     if *mode == AppMode::Stories {
@@ -169,13 +177,27 @@ fn app() -> Html {
                     })}
                 />
             }
-            <div class="app-shell">
+            if *mobile_pane != MobilePane::Main {
+                <div class="drawer-backdrop" onclick={Callback::from({
+                    let mobile_pane = mobile_pane.clone();
+                    move |_| mobile_pane.set(MobilePane::Main)
+                })} />
+            }
+            <div class={classes!(
+                "app-shell",
+                (*mobile_pane == MobilePane::Sidebar).then_some("pane-sidebar"),
+                (*mobile_pane == MobilePane::Panel).then_some("pane-panel"),
+            )}>
             <ChatSidebar
                 chats={(*chats).clone()}
                 selected_id={*selected_chat_id}
                 on_select={Callback::from({
                     let selected_chat_id = selected_chat_id.clone();
-                    move |id| selected_chat_id.set(Some(id))
+                    let mobile_pane = mobile_pane.clone();
+                    move |id| {
+                        selected_chat_id.set(Some(id));
+                        mobile_pane.set(MobilePane::Main);
+                    }
                 })}
                 on_new={Callback::from({
                     let picker_open = picker_open.clone();
@@ -202,17 +224,27 @@ fn app() -> Html {
             <main class="main">
                 <QueueBar queue={(*queue).clone()} />
                 <header class="header">
-                    <h1 style="margin:0;font-size:1.1rem;">{selected.as_ref().map(|c| c.title.clone()).unwrap_or_else(|| "Select a chat".to_string())}</h1>
+                    <div class="mobile-toolbar">
+                        <button class="btn secondary" onclick={Callback::from({
+                            let mobile_pane = mobile_pane.clone();
+                            move |_| mobile_pane.set(MobilePane::Sidebar)
+                        })}>{"Chats"}</button>
+                        <button class="btn secondary" onclick={Callback::from({
+                            let mobile_pane = mobile_pane.clone();
+                            move |_| mobile_pane.set(MobilePane::Panel)
+                        })}>{"Character"}</button>
+                    </div>
+                    <h1 class="header-title">{selected.as_ref().map(|c| c.title.clone()).unwrap_or_else(|| "Select a chat".to_string())}</h1>
                     if let Some(chat) = selected.as_ref() {
-                        <p class="muted" style="margin:0.25rem 0 0;">{ format!("With {}", chat.character_name) }</p>
+                        <p class="header-subtitle muted">{ format!("With {}", chat.character_name) }</p>
                     } else if chats.is_empty() {
-                        <p class="muted" style="margin:0.25rem 0 0;">{"Create a character in the panel, then start a chat."}</p>
+                        <p class="header-subtitle muted">{"Create a character in the panel, then start a chat."}</p>
                     } else {
-                        <p class="muted" style="margin:0.25rem 0 0;">{"Responses stream on the server — switch chats freely while they generate."}</p>
+                        <p class="header-subtitle muted">{"Responses stream on the server — switch chats freely while they generate."}</p>
                     }
                 </header>
                 if chats.is_empty() {
-                    <div class="muted" style="text-align:center;padding:2rem;border:1px dashed rgba(88,28,135,0.5);border-radius:1rem;margin:1rem;">
+                    <div class="empty-state muted">
                         if characters.is_empty() {
                             <p>{"No characters yet. Use the Character panel to create or import one."}</p>
                         } else {
@@ -352,14 +384,14 @@ struct ChatSidebarProps {
 fn chat_sidebar(props: &ChatSidebarProps) -> Html {
     html! {
         <aside class="sidebar">
-            <div class="header" style="display:flex;justify-content:space-between;align-items:center;">
+            <div class="header sidebar-header">
                 <div>
                     <div class="muted" style="text-transform:uppercase;letter-spacing:0.2em;font-size:0.7rem;">{"Dreamwell"}</div>
                     <strong>{"Chats"}</strong>
                 </div>
                 <button class="btn" onclick={props.on_new.reform(|_| ())}>{"New"}</button>
             </div>
-            <div style="flex:1;overflow-y:auto;padding:0.5rem;">
+            <div class="sidebar-scroll">
                 { for props.chats.iter().map(|chat| {
                     let id = chat.id;
                     let status = chat_status(chat);
@@ -374,7 +406,7 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
                                         <span class="badge">{ label }</span>
                                     }
                                 </div>
-                                <button class="btn secondary" style="padding:0.2rem 0.5rem;font-size:0.75rem;" onclick={props.on_delete.reform(move |_| id)}>{"✕"}</button>
+                                <button class="btn secondary btn-compact" onclick={props.on_delete.reform(move |_| id)}>{"✕"}</button>
                             </div>
                         </div>
                     }
@@ -409,7 +441,7 @@ fn message_list(props: &MessageListProps) -> Html {
     html! {
         <div class="messages">
             if props.messages.is_empty() {
-                <div class="muted" style="text-align:center;padding:2rem;border:1px dashed rgba(88,28,135,0.5);border-radius:1rem;">
+                <div class="empty-state muted">
                     {"Send a message to queue a reply. You can switch chats while it generates server-side."}
                 </div>
             } else {
@@ -666,12 +698,12 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                     })
                 }} />
             </div>
-            <div style="max-height:10rem;overflow-y:auto;border:1px solid rgba(88,28,135,0.3);border-radius:0.5rem;margin-bottom:1rem;">
+            <div class="scroll-list">
                 { for characters.iter().map(|c| {
                     let id = c.id;
                     let name = c.name.clone();
                     html! {
-                        <div style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem;cursor:pointer;gap:0.35rem;"
+                        <div class="list-row"
                             onclick={{
                                 let draft = draft.clone();
                                 let editing_id = editing_id.clone();
@@ -681,8 +713,8 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                                     draft.set(CharacterDraft::from(&c));
                                 })
                             }}>
-                            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &c.name }</span>
-                            <button class="btn secondary" style="padding:0.1rem 0.4rem;font-size:0.75rem;flex-shrink:0;" onclick={{
+                            <span class="list-row-name">{ &c.name }</span>
+                            <button class="btn secondary btn-compact" onclick={{
                                 let on_start_chat = props.on_start_chat.clone();
                                 let name = name.clone();
                                 Callback::from(move |e: MouseEvent| {
@@ -690,7 +722,7 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                                     on_start_chat.emit((id, name.clone()));
                                 })
                             }}>{"Chat"}</button>
-                            <button class="btn secondary" style="padding:0.1rem 0.4rem;font-size:0.75rem;flex-shrink:0;" onclick={{
+                            <button class="btn secondary btn-compact" onclick={{
                                 let characters = characters.clone();
                                 let on_characters_changed = props.on_characters_changed.clone();
                                 Callback::from(move |e: MouseEvent| {
@@ -912,10 +944,10 @@ fn facts_panel(props: &FactsPanelProps) -> Html {
                 let fact_key = f.key.clone();
                 let chat_id_for_delete = chat_id;
                 html! {
-                    <div style="border:1px solid rgba(88,28,135,0.4);border-radius:0.5rem;padding:0.75rem;margin-bottom:0.5rem;">
+                    <div class="fact-card">
                         <div style="display:flex;justify-content:space-between;">
                             <strong>{ &f.key }</strong>
-                            <button class="btn secondary" style="padding:0.1rem 0.4rem;font-size:0.75rem;" onclick={{
+                            <button class="btn secondary btn-compact" onclick={{
                                 let facts = facts.clone();
                                 let fact_key = fact_key.clone();
                                 let chat_id = chat_id_for_delete;
@@ -1121,7 +1153,7 @@ fn settings_panel() -> Html {
                 }}>{"Refresh"}</button>
             </div>
             if let Some(err) = &*model_error {
-                <p style="color:#fca5a5;">{ err }</p>
+                <p class="text-danger">{ err }</p>
             }
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
                 <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "temperature")} /></label>
@@ -1132,7 +1164,7 @@ fn settings_panel() -> Html {
             <label class="field"><span class="muted">{"User name ({{user}})"}</span><input value={s.user_name.clone()} oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "user_name")} /></label>
             <label class="field"><span class="muted">{"Main prompt (prefix)"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_prefix")} /></label>
             <label class="field"><span class="muted">{"Post-history instructions (suffix)"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_suffix")} /></label>
-            <div style="border:1px solid rgba(88,28,135,0.3);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.75rem;">
+            <div class="settings-group">
                 <strong>{"Auto summarize"}</strong>
                 <label style="display:flex;gap:0.5rem;margin:0.5rem 0;">
                     <input type="checkbox" checked={s.summarize_enabled} onclick={{
