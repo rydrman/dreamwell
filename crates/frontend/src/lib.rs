@@ -1,12 +1,21 @@
 mod api;
+mod stories_ui;
 
 use dreamwell_types::*;
 use gloo_timers::callback::Interval;
+use stories_ui::{QueueBar, StoriesShell};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
+#[derive(Clone, Copy, PartialEq)]
+enum AppMode {
+    Chats,
+    Stories,
+}
+
 #[function_component(App)]
 fn app() -> Html {
+    let mode = use_state(|| AppMode::Chats);
     let chats = use_state(Vec::<Chat>::new);
     let selected_chat_id = use_state(|| None::<i64>);
     let messages = use_state(Vec::<Message>::new);
@@ -92,14 +101,31 @@ fn app() -> Html {
         });
     }
 
-    if *loading {
+    if *loading && *mode == AppMode::Chats {
         return html! { <div class="muted" style="padding:2rem;">{"Loading Dreamwell…"}</div> };
+    }
+
+    if *mode == AppMode::Stories {
+        return html! {
+            <>
+                <ModeBar mode={*mode} on_mode={Callback::from({
+                    let mode = mode.clone();
+                    move |m| mode.set(m)
+                })} />
+                <StoriesShell queue={(*queue).clone()} />
+            </>
+        };
     }
 
     let selected = (*selected_chat_id).and_then(|id| chats.iter().find(|c| c.id == id).cloned());
 
     html! {
-        <div class="app-shell">
+        <>
+            <ModeBar mode={*mode} on_mode={Callback::from({
+                let mode = mode.clone();
+                move |m| mode.set(m)
+            })} />
+            <div class="app-shell">
             <ChatSidebar
                 chats={(*chats).clone()}
                 selected_id={*selected_chat_id}
@@ -196,6 +222,25 @@ fn app() -> Html {
                 })}
             />
         </div>
+        </>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct ModeBarProps {
+    mode: AppMode,
+    on_mode: Callback<AppMode>,
+}
+
+#[function_component(ModeBar)]
+fn mode_bar(props: &ModeBarProps) -> Html {
+    html! {
+        <div class="mode-bar">
+            <button class={classes!("mode-btn", (props.mode == AppMode::Chats).then_some("active"))}
+                onclick={props.on_mode.reform(|_| AppMode::Chats)}>{"Chats"}</button>
+            <button class={classes!("mode-btn", (props.mode == AppMode::Stories).then_some("active"))}
+                onclick={props.on_mode.reform(|_| AppMode::Stories)}>{"Stories"}</button>
+        </div>
     }
 }
 
@@ -255,52 +300,6 @@ fn chat_status(chat: &Chat) -> Option<String> {
             }
         }
         _ => Some(format!("{:?}", job.status).to_lowercase()),
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct QueueBarProps {
-    queue: Option<QueueStatus>,
-}
-
-#[function_component(QueueBar)]
-fn queue_bar(props: &QueueBarProps) -> Html {
-    let Some(queue) = &props.queue else {
-        return html! {};
-    };
-    let total = queue.running.len() + queue.queued.len();
-    if total == 0 {
-        return html! {};
-    }
-    let running = if queue.running.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "running chat {}",
-            queue
-                .running
-                .iter()
-                .map(|j| j.chat_id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-    let waiting = if queue.queued.is_empty() {
-        String::new()
-    } else {
-        format!("{} waiting", queue.queued.len())
-    };
-    html! {
-        <div class="queue-bar">
-            <strong>{"Queue: "}</strong>
-            if !running.is_empty() {
-                <span>{ running.clone() }</span>
-            }
-            if !running.is_empty() && !waiting.is_empty() { <span>{" · "}</span> }
-            if !waiting.is_empty() {
-                <span>{ waiting.clone() }</span>
-            }
-        </div>
     }
 }
 
