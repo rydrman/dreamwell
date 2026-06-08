@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use dreamwell_types::{Job, JobStatus, JobType};
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
-use tokio::sync::Notify;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::db;
@@ -21,23 +21,25 @@ use crate::summarize::maybe_summarize_chat;
 #[derive(Clone)]
 pub struct JobQueue {
     pool: SqlitePool,
-    notify: Arc<Notify>,
+    work_tx: mpsc::UnboundedSender<()>,
     active_tokens: Arc<Mutex<HashMap<i64, CancellationToken>>>,
 }
 
 impl JobQueue {
     pub fn new(pool: SqlitePool) -> Self {
+        let (work_tx, work_rx) = mpsc::unbounded_channel();
         let queue = Self {
             pool: pool.clone(),
-            notify: Arc::new(Notify::new()),
+            work_tx,
             active_tokens: Arc::new(Mutex::new(HashMap::new())),
         };
-        queue.spawn_loop();
+        queue.spawn_loop(work_rx);
+        queue.wake();
         queue
     }
 
     pub fn wake(&self) {
-        self.notify.notify_one();
+        let _ = self.work_tx.send(());
     }
 
     pub async fn cancel_job(&self, pool: &SqlitePool, job_id: i64) -> AppResult<Job> {
@@ -64,34 +66,47 @@ impl JobQueue {
         db::get_job(pool, job_id).await
     }
 
-    fn spawn_loop(&self) {
+    fn spawn_loop(&self, mut work_rx: mpsc::UnboundedReceiver<()>) {
         let pool = self.pool.clone();
-        let notify = self.notify.clone();
+        let work_tx = self.work_tx.clone();
         let active_tokens = self.active_tokens.clone();
         tokio::spawn(async move {
-            loop {
-                if let Ok(ids) = db::claim_jobs(&pool, 8).await {
+            tracing::info!("generation queue worker started");
+            while work_rx.recv().await.is_some() {
+                loop {
+                    let ids = match db::claim_jobs(&pool, 8).await {
+                        Ok(ids) => ids,
+                        Err(err) => {
+                            tracing::error!(%err, "claim_jobs failed");
+                            break;
+                        }
+                    };
+                    if ids.is_empty() {
+                        break;
+                    }
                     for job_id in ids {
                         let pool = pool.clone();
-                        let notify = notify.clone();
+                        let work_tx = work_tx.clone();
                         let active_tokens = active_tokens.clone();
                         let token = CancellationToken::new();
-                        active_tokens
-                            .lock()
-                            .expect("token map poisoned")
-                            .insert(job_id, token.clone());
+                        match active_tokens.lock() {
+                            Ok(mut tokens) => tokens.insert(job_id, token.clone()),
+                            Err(err) => {
+                                tracing::error!(%err, "token map poisoned while enqueueing job");
+                                continue;
+                            }
+                        };
                         tokio::spawn(async move {
                             run_job_guarded(&pool, job_id, token).await;
-                            active_tokens
-                                .lock()
-                                .expect("token map poisoned")
-                                .remove(&job_id);
-                            notify.notify_one();
+                            if let Ok(mut tokens) = active_tokens.lock() {
+                                tokens.remove(&job_id);
+                            }
+                            let _ = work_tx.send(());
                         });
                     }
                 }
-                notify.notified().await;
             }
+            tracing::warn!("generation queue worker stopped");
         });
     }
 }
