@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  TRUNK_VERSION: v0.21.14
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.86.0
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      # Cache cargo registry + target before any builds (including trunk wasm artifacts).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dreamwell
+          cache-on-failure: true
+
+      - name: rustfmt
+        run: make fmt-check
+
+      # Download prebuilt trunk binary (~seconds) instead of `cargo install` (~minutes).
+      - uses: jetli/trunk-action@v0.5.1
+        with:
+          version: ${{ env.TRUNK_VERSION }}
+
+      - name: clippy
+        run: make clippy
+
+      - name: test
+        run: make test
+
+      - name: build
+        run: make build

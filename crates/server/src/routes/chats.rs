@@ -1,0 +1,180 @@
+use std::convert::Infallible;
+use std::time::Duration;
+
+use async_stream::stream;
+use axum::{
+    extract::{Path, State},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
+    routing::{delete, get},
+    Json, Router,
+};
+use dreamwell_types::{
+    Chat, ChatCreate, ChatStreamPayload, ChatUpdate, Fact, FactUpdate, Message, MessageRole,
+    OkResponse, QueueStatus, SendMessageRequest,
+};
+
+use crate::db;
+use crate::error::{AppError, AppResult};
+use crate::queue::enqueue_generation;
+use crate::routes::AppState;
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/queue", get(get_queue))
+        .route("/", get(list_chats).post(create_chat))
+        .route("/:id", get(get_chat).patch(update_chat).delete(delete_chat))
+        .route("/:id/messages", get(list_messages).post(send_message))
+        .route("/:id/facts", get(list_facts).put(upsert_fact))
+        .route("/:id/facts/:key", delete(delete_fact))
+        .route("/:id/stream", get(stream_chat))
+}
+
+async fn list_chats(State(state): State<AppState>) -> AppResult<Json<Vec<Chat>>> {
+    Ok(Json(db::list_chats(&state.pool).await?))
+}
+
+async fn create_chat(
+    State(state): State<AppState>,
+    Json(payload): Json<ChatCreate>,
+) -> AppResult<Json<Chat>> {
+    Ok(Json(
+        db::create_chat(&state.pool, payload.title, payload.character_id).await?,
+    ))
+}
+
+async fn get_queue(State(state): State<AppState>) -> AppResult<Json<QueueStatus>> {
+    let (running, queued) = db::list_queue(&state.pool).await?;
+    Ok(Json(QueueStatus { running, queued }))
+}
+
+async fn get_chat(State(state): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Chat>> {
+    Ok(Json(db::get_chat(&state.pool, id).await?))
+}
+
+async fn update_chat(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<ChatUpdate>,
+) -> AppResult<Json<Chat>> {
+    Ok(Json(db::update_chat(&state.pool, id, payload).await?))
+}
+
+async fn delete_chat(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<OkResponse>> {
+    db::delete_chat(&state.pool, id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn list_messages(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Vec<Message>>> {
+    Ok(Json(db::list_messages(&state.pool, id).await?))
+}
+
+async fn send_message(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<SendMessageRequest>,
+) -> AppResult<Json<Message>> {
+    if payload.content.trim().is_empty() {
+        return Err(AppError::bad_request("Message cannot be empty"));
+    }
+    let _ = db::get_settings(&state.pool).await?;
+    db::insert_message(
+        &state.pool,
+        id,
+        MessageRole::User,
+        payload.content.trim().to_string(),
+        false,
+    )
+    .await?;
+    let assistant = db::insert_message(
+        &state.pool,
+        id,
+        MessageRole::Assistant,
+        String::new(),
+        false,
+    )
+    .await?;
+    let job = enqueue_generation(&state.pool, &state.queue, id, assistant.id).await?;
+    db::touch_chat(&state.pool, id).await?;
+    Ok(Json(Message {
+        job_status: Some(job.status),
+        ..assistant
+    }))
+}
+
+async fn list_facts(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Vec<Fact>>> {
+    Ok(Json(db::list_facts(&state.pool, id).await?))
+}
+
+async fn upsert_fact(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<FactUpdate>,
+) -> AppResult<Json<Fact>> {
+    Ok(Json(
+        db::upsert_fact(&state.pool, id, payload.key, payload.value).await?,
+    ))
+}
+
+async fn delete_fact(
+    State(state): State<AppState>,
+    Path((id, key)): Path<(i64, String)>,
+) -> AppResult<Json<OkResponse>> {
+    db::delete_fact(&state.pool, id, &key).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn stream_chat(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<impl IntoResponse> {
+    let _ = db::get_chat(&state.pool, id).await?;
+    let pool = state.pool.clone();
+    let interval = Duration::from_millis(state.sse_poll_interval_ms);
+
+    let event_stream = stream! {
+        let mut last_payload = String::new();
+        loop {
+            let chat = match db::get_chat(&pool, id).await {
+                Ok(chat) => chat,
+                Err(_) => {
+                    yield Ok::<_, Infallible>(Event::default().event("error").data("{\"detail\":\"not found\"}"));
+                    break;
+                }
+            };
+            let messages = db::list_messages(&pool, id).await.unwrap_or_default();
+            let active_job = db::get_active_job(&pool, id).await.ok().flatten();
+            let has_active_job = active_job.is_some();
+            let payload = serde_json::to_string(&ChatStreamPayload {
+                chat,
+                messages,
+                active_job,
+            }).unwrap_or_default();
+
+            if payload != last_payload {
+                last_payload = payload.clone();
+                yield Ok(Event::default().data(payload));
+            }
+
+            if !has_active_job {
+                yield Ok(Event::default().event("idle").data(format!("{{\"chat_id\":{id}}}")));
+                break;
+            }
+
+            tokio::time::sleep(interval).await;
+        }
+    };
+
+    Ok(Sse::new(event_stream).keep_alive(KeepAlive::default()))
+}
