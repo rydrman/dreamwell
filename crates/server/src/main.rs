@@ -37,7 +37,16 @@ async fn main() {
     let pool = db::connect(&config.database_url)
         .await
         .expect("database connection");
+    let requeued = db::requeue_stale_jobs(&pool)
+        .await
+        .expect("requeue stale jobs");
+    if requeued > 0 {
+        tracing::info!("requeued {requeued} stale jobs after restart");
+    }
     let queue = JobQueue::new(pool.clone());
+    if requeued > 0 {
+        queue.wake();
+    }
 
     let state = AppState {
         pool,
@@ -56,6 +65,7 @@ async fn main() {
         )
         .nest("/characters", routes::characters::router())
         .nest("/chats", routes::chats::router())
+        .nest("/jobs", routes::jobs::router())
         .nest("/stories", routes::stories::router())
         .nest("/settings", routes::settings::router())
         .with_state(state);

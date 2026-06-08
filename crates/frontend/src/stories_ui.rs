@@ -3,6 +3,7 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
+use crate::queue_ui::QueueBar;
 use crate::MobilePane;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -15,6 +16,9 @@ pub enum StorySelection {
 #[derive(Properties, PartialEq)]
 pub struct StoriesShellProps {
     pub queue: Option<QueueStatus>,
+    pub on_open_queue: Callback<()>,
+    #[prop_or_default]
+    pub initial_story_id: Option<i64>,
 }
 
 #[function_component(StoriesShell)]
@@ -31,10 +35,13 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         let stories = stories.clone();
         let selected_story_id = selected_story_id.clone();
         let loading = loading.clone();
+        let initial_story_id = props.initial_story_id;
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(list) = api::list_stories().await {
-                    if let Some(first) = list.first() {
+                    if let Some(id) = initial_story_id {
+                        selected_story_id.set(Some(id));
+                    } else if let Some(first) = list.first() {
                         selected_story_id.set(Some(first.id));
                     }
                     stories.set(list);
@@ -189,7 +196,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 })}
             />
             <main class="main">
-                <QueueBar queue={props.queue.clone()} />
+                <QueueBar queue={props.queue.clone()} on_open={props.on_open_queue.clone()} />
                 <StoryEditor
                     detail={(*detail).clone()}
                     selection={*selection}
@@ -848,50 +855,4 @@ fn string_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
         let input: HtmlInputElement = e.target_unchecked_into();
         state.set(input.value());
     })
-}
-
-#[derive(Properties, PartialEq)]
-pub struct QueueBarProps {
-    pub queue: Option<QueueStatus>,
-}
-
-#[function_component(QueueBar)]
-pub fn queue_bar(props: &QueueBarProps) -> Html {
-    let Some(queue) = &props.queue else {
-        return html! {};
-    };
-    let total = queue.running.len() + queue.queued.len();
-    if total == 0 {
-        return html! {};
-    }
-    let running: Vec<String> = queue
-        .running
-        .iter()
-        .map(|j| {
-            if let Some(chat_id) = j.chat_id {
-                format!("chat {chat_id}")
-            } else if let Some(story_id) = j.story_id {
-                format!("story {story_id}")
-            } else {
-                format!("job {}", j.id)
-            }
-        })
-        .collect();
-    let waiting = if queue.queued.is_empty() {
-        String::new()
-    } else {
-        format!("{} waiting", queue.queued.len())
-    };
-    html! {
-        <div class="queue-bar">
-            <strong>{"Queue: "}</strong>
-            if !running.is_empty() {
-                <span>{ running.join(", ") }</span>
-            }
-            if !running.is_empty() && !waiting.is_empty() { <span>{" · "}</span> }
-            if !waiting.is_empty() {
-                <span>{ waiting }</span>
-            }
-        </div>
-    }
 }

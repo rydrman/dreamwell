@@ -1,5 +1,6 @@
 pub mod characters;
 pub mod chats;
+pub mod jobs;
 pub mod settings;
 pub mod stories;
 
