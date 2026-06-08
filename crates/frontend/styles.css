@@ -8,6 +8,7 @@
   --accent: #111111;
   --accent-fg: #ffffff;
   --danger: #8b0000;
+  --success: #1a6b3c;
   --overlay: rgba(0, 0, 0, 0.25);
   font-family: "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
@@ -126,8 +127,57 @@ button {
 }
 
 .settings-status {
+  display: flex;
+  align-items: center;
+  min-height: 1.5rem;
   margin-bottom: 0.75rem;
   font-size: 0.875rem;
+}
+
+.settings-save-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.settings-save-indicator--saved {
+  color: var(--success);
+}
+
+.settings-save-indicator--error {
+  color: var(--danger);
+}
+
+.settings-save-indicator--saving {
+  color: var(--muted);
+}
+
+.settings-save-indicator--pending {
+  color: var(--muted);
+}
+
+.settings-save-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.settings-save-spinner {
+  width: 0.875rem;
+  height: 0.875rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--fg);
+  border-radius: 50%;
+  animation: settings-save-spin 0.8s linear infinite;
+}
+
+@keyframes settings-save-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .mode-btn {
@@ -223,8 +273,57 @@ button {
   max-width: 85%;
   border-radius: 0.375rem;
   padding: 0.75rem 1rem;
-  white-space: pre-wrap;
   line-height: 1.55;
+}
+
+.message-body > :first-child {
+  margin-top: 0;
+}
+
+.message-body > :last-child {
+  margin-bottom: 0;
+}
+
+.message-body p,
+.message-body ul,
+.message-body ol,
+.message-body blockquote,
+.message-body pre {
+  margin: 0.5rem 0;
+}
+
+.message-body code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.2rem;
+  padding: 0.1em 0.35em;
+}
+
+.message-body pre {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.75rem;
+}
+
+.message-body pre code {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.message-body blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75rem;
+  color: var(--muted);
+}
+
+.message-body a {
+  color: inherit;
+  text-decoration: underline;
 }
 
 .message.user {

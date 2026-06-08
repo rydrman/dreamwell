@@ -1,50 +1,35 @@
-use dreamwell_types::{Character, MessageRole, Settings};
+use dreamwell_types::{substitute_macros, Character, MacroContext, MessageRole, Settings};
 use serde_json::json;
 use sqlx::SqlitePool;
 
 use crate::db;
 use crate::error::AppResult;
 
-pub fn substitute_macros(text: &str, char_name: &str, user_name: &str) -> String {
-    text.replace("{{char}}", char_name)
-        .replace("{{user}}", user_name)
-        .replace("{{Char}}", char_name)
-        .replace("{{User}}", user_name)
-}
-
-fn build_character_system_prompt(character: &Character, user_name: &str) -> String {
+fn build_character_system_prompt(character: &Character, ctx: &MacroContext<'_>) -> String {
     if !character.system_prompt.trim().is_empty() {
-        return substitute_macros(character.system_prompt.trim(), &character.name, user_name);
+        return substitute_macros(character.system_prompt.trim(), ctx);
     }
     let mut parts = Vec::new();
     if !character.description.trim().is_empty() {
-        parts.push(substitute_macros(
-            character.description.trim(),
-            &character.name,
-            user_name,
-        ));
+        parts.push(substitute_macros(character.description.trim(), ctx));
     }
     if !character.personality.trim().is_empty() {
         parts.push(format!(
             "{}'s personality: {}",
             character.name,
-            substitute_macros(character.personality.trim(), &character.name, user_name)
+            substitute_macros(character.personality.trim(), ctx)
         ));
     }
     if !character.scenario.trim().is_empty() {
         parts.push(format!(
             "Scenario: {}",
-            substitute_macros(character.scenario.trim(), &character.name, user_name)
+            substitute_macros(character.scenario.trim(), ctx)
         ));
     }
     parts.join("\n\n")
 }
 
-pub fn parse_example_dialogue(
-    text: &str,
-    char_name: &str,
-    user_name: &str,
-) -> Vec<(MessageRole, String)> {
+pub fn parse_example_dialogue(text: &str, ctx: &MacroContext<'_>) -> Vec<(MessageRole, String)> {
     if !text.contains("<START>") && !text.contains("<start>") {
         return Vec::new();
     }
@@ -69,15 +54,16 @@ pub fn parse_example_dialogue(
                 .or_else(|| line.strip_prefix("{{Char}}:"))
             {
                 (MessageRole::Assistant, rest.trim())
-            } else if let Some(rest) = line.strip_prefix(&format!("{user_name}:")) {
+            } else if let Some(rest) = line.strip_prefix(&format!("{}:", ctx.effective_user_name()))
+            {
                 (MessageRole::User, rest.trim())
-            } else if let Some(rest) = line.strip_prefix(&format!("{char_name}:")) {
+            } else if let Some(rest) = line.strip_prefix(&format!("{}:", ctx.char_name)) {
                 (MessageRole::Assistant, rest.trim())
             } else if let Some((speaker, rest)) = line.split_once(':') {
                 let speaker = speaker.trim().to_lowercase();
-                if speaker == "user" || speaker == user_name.to_lowercase() {
+                if speaker == "user" || speaker == ctx.effective_user_name().to_lowercase() {
                     (MessageRole::User, rest.trim())
-                } else if speaker == "char" || speaker == char_name.to_lowercase() {
+                } else if speaker == "char" || speaker == ctx.char_name.to_lowercase() {
                     (MessageRole::Assistant, rest.trim())
                 } else {
                     continue;
@@ -86,7 +72,7 @@ pub fn parse_example_dialogue(
                 continue;
             };
             if !content.is_empty() {
-                messages.push((role, substitute_macros(content, char_name, user_name)));
+                messages.push((role, substitute_macros(content, ctx)));
             }
         }
     }
@@ -116,16 +102,11 @@ pub async fn build_messages_for_inference(
     settings: &Settings,
 ) -> AppResult<Vec<serde_json::Value>> {
     let character = db::get_character(pool, character_id).await.ok();
-    let char_name = character
-        .as_ref()
-        .map(|c| c.name.as_str())
-        .unwrap_or("Character");
-    let user_name = settings.user_name.trim();
-    let user_name = if user_name.is_empty() {
-        "User"
-    } else {
-        user_name
-    };
+    let ctx = MacroContext::from_character_and_settings(
+        character.as_ref(),
+        &settings.user_name,
+        &settings.persona_description,
+    );
 
     let facts = if settings.facts_enabled {
         db::list_facts(pool, chat_id).await?
@@ -137,20 +118,22 @@ pub async fn build_messages_for_inference(
     if !settings.system_prompt_prefix.trim().is_empty() {
         system_parts.push(substitute_macros(
             settings.system_prompt_prefix.trim(),
-            char_name,
-            user_name,
+            &ctx,
         ));
     }
+    if !settings.persona_description.trim().is_empty() {
+        system_parts.push(substitute_macros(settings.persona_description.trim(), &ctx));
+    }
     if let Some(ref character) = character {
-        let char_prompt = build_character_system_prompt(character, user_name);
+        let char_prompt = build_character_system_prompt(character, &ctx);
         if !char_prompt.is_empty() {
             system_parts.push(char_prompt);
         }
-        let examples = parse_example_dialogue(&character.example_dialogue, char_name, user_name);
+        let examples = parse_example_dialogue(&character.example_dialogue, &ctx);
         if examples.is_empty() && !character.example_dialogue.trim().is_empty() {
             system_parts.push(format!(
                 "Example dialogue:\n{}",
-                substitute_macros(character.example_dialogue.trim(), char_name, user_name)
+                substitute_macros(character.example_dialogue.trim(), &ctx)
             ));
         }
     }
@@ -174,9 +157,7 @@ pub async fn build_messages_for_inference(
     }
 
     if let Some(ref character) = character {
-        for (role, content) in
-            parse_example_dialogue(&character.example_dialogue, char_name, user_name)
-        {
+        for (role, content) in parse_example_dialogue(&character.example_dialogue, &ctx) {
             messages.push(json!({
                 "role": match role {
                     MessageRole::User => "user",
@@ -210,11 +191,7 @@ pub async fn build_messages_for_inference(
     if !settings.system_prompt_suffix.trim().is_empty() {
         messages.push(json!({
             "role": "system",
-            "content": substitute_macros(
-                settings.system_prompt_suffix.trim(),
-                char_name,
-                user_name
-            ),
+            "content": substitute_macros(settings.system_prompt_suffix.trim(), &ctx),
         }));
     }
 
@@ -225,10 +202,16 @@ pub async fn build_messages_for_inference(
 mod tests {
     use super::*;
 
-    #[test]
-    fn substitute_macros_replaces_char_and_user() {
-        let out = substitute_macros("Hello {{char}}, this is {{user}}.", "Seraphina", "Alex");
-        assert_eq!(out, "Hello Seraphina, this is Alex.");
+    fn test_ctx() -> MacroContext<'static> {
+        MacroContext {
+            char_name: "Seraphina",
+            user_name: "Alex",
+            persona: "A curious traveler.",
+            description: "A brave knight.",
+            personality: "Stoic and kind.",
+            scenario: "A rainy tavern.",
+            first_message: "Hello {{user}}.",
+        }
     }
 
     #[test]
@@ -246,7 +229,8 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
-        let prompt = build_character_system_prompt(&character, "User");
+        let ctx = test_ctx();
+        let prompt = build_character_system_prompt(&character, &ctx);
         assert!(prompt.contains("A brave knight."));
         assert!(prompt.contains("Seraphina's personality: Stoic and kind."));
         assert!(prompt.contains("Scenario: A rainy tavern."));
@@ -256,7 +240,7 @@ mod tests {
     #[test]
     fn parse_example_dialogue_splits_start_blocks() {
         let text = "<START>\n{{user}}: Hello\n{{char}}: Hi there\n<START>\n{{user}}: Bye\n{{char}}: Goodbye";
-        let parsed = parse_example_dialogue(text, "Seraphina", "User");
+        let parsed = parse_example_dialogue(text, &test_ctx());
         assert_eq!(parsed.len(), 4);
         assert_eq!(parsed[0].0, MessageRole::User);
         assert_eq!(parsed[0].1, "Hello");

@@ -1,6 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+mod macros;
+
+pub use macros::{substitute_macros, MacroContext};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
@@ -336,6 +340,7 @@ pub struct Settings {
     pub system_prompt_prefix: String,
     pub system_prompt_suffix: String,
     pub user_name: String,
+    pub persona_description: String,
     pub summarize_enabled: bool,
     pub summarize_after_messages: i64,
     pub summarize_keep_recent: i64,
@@ -354,6 +359,7 @@ pub struct SettingsUpdate {
     pub system_prompt_prefix: Option<String>,
     pub system_prompt_suffix: Option<String>,
     pub user_name: Option<String>,
+    pub persona_description: Option<String>,
     pub summarize_enabled: Option<bool>,
     pub summarize_after_messages: Option<i64>,
     pub summarize_keep_recent: Option<i64>,
