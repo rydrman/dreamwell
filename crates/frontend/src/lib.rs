@@ -1,8 +1,11 @@
 mod api;
 mod stories_ui;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use dreamwell_types::*;
-use gloo_timers::callback::Interval;
+use gloo_timers::callback::{Interval, Timeout};
 use stories_ui::{QueueBar, StoriesShell};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
@@ -234,13 +237,33 @@ struct ModeBarProps {
 
 #[function_component(ModeBar)]
 fn mode_bar(props: &ModeBarProps) -> Html {
+    let settings_open = use_state(|| false);
     html! {
-        <div class="mode-bar">
-            <button class={classes!("mode-btn", (props.mode == AppMode::Chats).then_some("active"))}
-                onclick={props.on_mode.reform(|_| AppMode::Chats)}>{"Chats"}</button>
-            <button class={classes!("mode-btn", (props.mode == AppMode::Stories).then_some("active"))}
-                onclick={props.on_mode.reform(|_| AppMode::Stories)}>{"Stories"}</button>
-        </div>
+        <>
+            if *settings_open {
+                <div class="settings-backdrop" onclick={{
+                    let settings_open = settings_open.clone();
+                    Callback::from(move |_| settings_open.set(false))
+                }} />
+            }
+            <div class="mode-bar">
+                <div class="mode-bar-tabs">
+                    <button class={classes!("mode-btn", (props.mode == AppMode::Chats).then_some("active"))}
+                        onclick={props.on_mode.reform(|_| AppMode::Chats)}>{"Chats"}</button>
+                    <button class={classes!("mode-btn", (props.mode == AppMode::Stories).then_some("active"))}
+                        onclick={props.on_mode.reform(|_| AppMode::Stories)}>{"Stories"}</button>
+                </div>
+                <button class={classes!("mode-btn", (*settings_open).then_some("active"))} onclick={{
+                    let settings_open = settings_open.clone();
+                    Callback::from(move |_| settings_open.set(!*settings_open))
+                }}>{"Settings"}</button>
+            </div>
+            if *settings_open {
+                <div class="settings-popover">
+                    <SettingsPanel />
+                </div>
+            }
+        </>
     }
 }
 
@@ -409,10 +432,6 @@ fn right_panel(props: &RightPanelProps) -> Html {
                     let tab = tab.clone();
                     Callback::from(move |_| tab.set(1))
                 }}>{"Facts"}</button>
-                <button class={classes!("tab", (*tab == 2).then_some("active"))} onclick={{
-                    let tab = tab.clone();
-                    Callback::from(move |_| tab.set(2))
-                }}>{"Settings"}</button>
             </div>
             <div class="panel-body">
                 if *tab == 0 {
@@ -421,10 +440,8 @@ fn right_panel(props: &RightPanelProps) -> Html {
                         on_character_change={props.on_character_change.clone()}
                         chat_id={props.chat_id}
                     />
-                } else if *tab == 1 {
-                    <FactsPanel chat_id={props.chat_id} />
                 } else {
-                    <SettingsPanel />
+                    <FactsPanel chat_id={props.chat_id} />
                 }
             </div>
         </aside>
@@ -805,12 +822,74 @@ fn input_callback(state: UseStateHandle<String>) -> Callback<InputEvent> {
     })
 }
 
+fn settings_to_update(current: &Settings) -> SettingsUpdate {
+    SettingsUpdate {
+        inference_url: Some(current.inference_url.clone()),
+        model: Some(current.model.clone()),
+        temperature: Some(current.temperature),
+        top_p: Some(current.top_p),
+        max_tokens: Some(current.max_tokens),
+        system_prompt_prefix: Some(current.system_prompt_prefix.clone()),
+        system_prompt_suffix: Some(current.system_prompt_suffix.clone()),
+        summarize_enabled: Some(current.summarize_enabled),
+        summarize_after_messages: Some(current.summarize_after_messages),
+        summarize_keep_recent: Some(current.summarize_keep_recent),
+        facts_enabled: Some(current.facts_enabled),
+        max_context_messages: Some(current.max_context_messages),
+        max_concurrent_jobs: Some(current.max_concurrent_jobs),
+    }
+}
+
+fn schedule_settings_save(
+    settings: UseStateHandle<Option<Settings>>,
+    saving: UseStateHandle<bool>,
+    save_timeout: Rc<RefCell<Option<Timeout>>>,
+) {
+    if let Some(timeout) = save_timeout.borrow_mut().take() {
+        drop(timeout);
+    }
+    let settings = settings.clone();
+    let saving = saving.clone();
+    let save_timeout = save_timeout.clone();
+    *save_timeout.borrow_mut() = Some(Timeout::new(400, move || {
+        let Some(current) = (*settings).clone() else {
+            return;
+        };
+        let settings = settings.clone();
+        let saving = saving.clone();
+        saving.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            let update = settings_to_update(&current);
+            if let Ok(updated) = api::update_settings(&update).await {
+                settings.set(Some(updated));
+            }
+            saving.set(false);
+        });
+    }));
+}
+
+fn update_settings_field<F>(
+    settings: UseStateHandle<Option<Settings>>,
+    saving: UseStateHandle<bool>,
+    save_timeout: Rc<RefCell<Option<Timeout>>>,
+    update: F,
+) where
+    F: FnOnce(&mut Settings),
+{
+    if let Some(mut current) = (*settings).clone() {
+        update(&mut current);
+        settings.set(Some(current));
+        schedule_settings_save(settings, saving, save_timeout);
+    }
+}
+
 #[function_component(SettingsPanel)]
 fn settings_panel() -> Html {
     let settings = use_state(|| None::<Settings>);
     let models = use_state(Vec::<ModelInfo>::new);
     let model_error = use_state(|| None::<String>);
     let saving = use_state(|| false);
+    let save_timeout = use_mut_ref(|| None::<Timeout>);
 
     {
         let settings = settings.clone();
@@ -830,16 +909,27 @@ fn settings_panel() -> Html {
 
     html! {
         <div>
+            <div class="settings-status">
+                if *saving {
+                    <span class="muted">{"Saving…"}</span>
+                } else {
+                    <span class="muted">{"Changes save automatically"}</span>
+                }
+            </div>
             <label class="field">
                 <span class="muted">{"Inference server"}</span>
                 <input value={s.inference_url.clone()} oninput={{
                     let settings = settings.clone();
+                    let saving = saving.clone();
+                    let save_timeout = save_timeout.clone();
                     Callback::from(move |e: InputEvent| {
                         let input: HtmlInputElement = e.target_unchecked_into();
-                        if let Some(mut current) = (*settings).clone() {
-                            current.inference_url = input.value();
-                            settings.set(Some(current));
-                        }
+                        update_settings_field(
+                            settings.clone(),
+                            saving.clone(),
+                            save_timeout.clone(),
+                            |current| current.inference_url = input.value(),
+                        );
                     })
                 }} />
             </label>
@@ -848,12 +938,16 @@ fn settings_panel() -> Html {
                     <span class="muted">{"Model"}</span>
                     <select onchange={{
                         let settings = settings.clone();
+                        let saving = saving.clone();
+                        let save_timeout = save_timeout.clone();
                         Callback::from(move |e: Event| {
                             let input: HtmlInputElement = e.target_unchecked_into();
-                            if let Some(mut current) = (*settings).clone() {
-                                current.model = input.value();
-                                settings.set(Some(current));
-                            }
+                            update_settings_field(
+                                settings.clone(),
+                                saving.clone(),
+                                save_timeout.clone(),
+                                |current| current.model = input.value(),
+                            );
                         })
                     }}>
                         <option value="">{"Select a model"}</option>
@@ -882,86 +976,68 @@ fn settings_panel() -> Html {
                 <p style="color:#fca5a5;">{ err }</p>
             }
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
-                <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(settings.clone(), "temperature")} /></label>
-                <label class="field"><span class="muted">{"Top P"}</span><input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(settings.clone(), "top_p")} /></label>
-                <label class="field"><span class="muted">{"Max tokens"}</span><input type="number" value={s.max_tokens.to_string()} oninput={num_input(settings.clone(), "max_tokens")} /></label>
-                <label class="field"><span class="muted">{"Max concurrent jobs"}</span><input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(settings.clone(), "max_concurrent_jobs")} /></label>
+                <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "temperature")} /></label>
+                <label class="field"><span class="muted">{"Top P"}</span><input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "top_p")} /></label>
+                <label class="field"><span class="muted">{"Max tokens"}</span><input type="number" value={s.max_tokens.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "max_tokens")} /></label>
+                <label class="field"><span class="muted">{"Max concurrent jobs"}</span><input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "max_concurrent_jobs")} /></label>
             </div>
-            <label class="field"><span class="muted">{"System prompt prefix"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(settings.clone(), "system_prompt_prefix")} /></label>
-            <label class="field"><span class="muted">{"System prompt suffix"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(settings.clone(), "system_prompt_suffix")} /></label>
+            <label class="field"><span class="muted">{"System prompt prefix"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_prefix")} /></label>
+            <label class="field"><span class="muted">{"System prompt suffix"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_suffix")} /></label>
             <div style="border:1px solid rgba(88,28,135,0.3);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.75rem;">
                 <strong>{"Auto summarize"}</strong>
                 <label style="display:flex;gap:0.5rem;margin:0.5rem 0;">
                     <input type="checkbox" checked={s.summarize_enabled} onclick={{
                         let settings = settings.clone();
+                        let saving = saving.clone();
+                        let save_timeout = save_timeout.clone();
                         Callback::from(move |_| {
-                            if let Some(mut current) = (*settings).clone() {
-                                current.summarize_enabled = !current.summarize_enabled;
-                                settings.set(Some(current));
-                            }
+                            update_settings_field(
+                                settings.clone(),
+                                saving.clone(),
+                                save_timeout.clone(),
+                                |current| current.summarize_enabled = !current.summarize_enabled,
+                            );
                         })
                     }} />
                     {"Enable summarization"}
                 </label>
-                <label class="field"><span class="muted">{"Summarize after N messages"}</span><input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(settings.clone(), "summarize_after_messages")} /></label>
-                <label class="field"><span class="muted">{"Keep recent messages"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(settings.clone(), "summarize_keep_recent")} /></label>
+                <label class="field"><span class="muted">{"Summarize after N messages"}</span><input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "summarize_after_messages")} /></label>
+                <label class="field"><span class="muted">{"Keep recent messages"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "summarize_keep_recent")} /></label>
             </div>
             <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
                 <input type="checkbox" checked={s.facts_enabled} onclick={{
                     let settings = settings.clone();
+                    let saving = saving.clone();
+                    let save_timeout = save_timeout.clone();
                     Callback::from(move |_| {
-                        if let Some(mut current) = (*settings).clone() {
-                            current.facts_enabled = !current.facts_enabled;
-                            settings.set(Some(current));
-                        }
+                        update_settings_field(
+                            settings.clone(),
+                            saving.clone(),
+                            save_timeout.clone(),
+                            |current| current.facts_enabled = !current.facts_enabled,
+                        );
                     })
                 }} />
                 {"Enable KV facts in prompts"}
             </label>
-            <button class="btn" disabled={*saving} onclick={{
-                let settings = settings.clone();
-                let saving = saving.clone();
-                Callback::from(move |_| {
-                    let Some(current) = (*settings).clone() else { return };
-                    let settings = settings.clone();
-                    let saving = saving.clone();
-                    saving.set(true);
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let update = SettingsUpdate {
-                            inference_url: Some(current.inference_url),
-                            model: Some(current.model),
-                            temperature: Some(current.temperature),
-                            top_p: Some(current.top_p),
-                            max_tokens: Some(current.max_tokens),
-                            system_prompt_prefix: Some(current.system_prompt_prefix),
-                            system_prompt_suffix: Some(current.system_prompt_suffix),
-                            summarize_enabled: Some(current.summarize_enabled),
-                            summarize_after_messages: Some(current.summarize_after_messages),
-                            summarize_keep_recent: Some(current.summarize_keep_recent),
-                            facts_enabled: Some(current.facts_enabled),
-                            max_context_messages: Some(current.max_context_messages),
-                            max_concurrent_jobs: Some(current.max_concurrent_jobs),
-                        };
-                        if let Ok(updated) = api::update_settings(&update).await {
-                            settings.set(Some(updated));
-                        }
-                        saving.set(false);
-                    });
-                })
-            }}>{ if *saving { "Saving…" } else { "Save settings" } }</button>
         </div>
     }
 }
 
 fn num_input(
     settings: UseStateHandle<Option<Settings>>,
+    saving: UseStateHandle<bool>,
+    save_timeout: Rc<RefCell<Option<Timeout>>>,
     field: &'static str,
 ) -> Callback<InputEvent> {
     Callback::from(move |e: InputEvent| {
         let input: HtmlInputElement = e.target_unchecked_into();
         if let Ok(v) = input.value().parse::<f64>() {
-            if let Some(mut current) = (*settings).clone() {
-                match field {
+            update_settings_field(
+                settings.clone(),
+                saving.clone(),
+                save_timeout.clone(),
+                move |current| match field {
                     "temperature" => current.temperature = v,
                     "top_p" => current.top_p = v,
                     "max_tokens" => current.max_tokens = v as i64,
@@ -969,27 +1045,31 @@ fn num_input(
                     "summarize_after_messages" => current.summarize_after_messages = v as i64,
                     "summarize_keep_recent" => current.summarize_keep_recent = v as i64,
                     _ => {}
-                }
-                settings.set(Some(current));
-            }
+                },
+            );
         }
     })
 }
 
 fn text_input(
     settings: UseStateHandle<Option<Settings>>,
+    saving: UseStateHandle<bool>,
+    save_timeout: Rc<RefCell<Option<Timeout>>>,
     field: &'static str,
 ) -> Callback<InputEvent> {
     Callback::from(move |e: InputEvent| {
         let input: HtmlInputElement = e.target_unchecked_into();
-        if let Some(mut current) = (*settings).clone() {
-            match field {
-                "system_prompt_prefix" => current.system_prompt_prefix = input.value(),
-                "system_prompt_suffix" => current.system_prompt_suffix = input.value(),
+        let value = input.value();
+        update_settings_field(
+            settings.clone(),
+            saving.clone(),
+            save_timeout.clone(),
+            move |current| match field {
+                "system_prompt_prefix" => current.system_prompt_prefix = value.clone(),
+                "system_prompt_suffix" => current.system_prompt_suffix = value.clone(),
                 _ => {}
-            }
-            settings.set(Some(current));
-        }
+            },
+        );
     })
 }
 

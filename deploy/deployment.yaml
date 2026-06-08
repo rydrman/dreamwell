@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dreamwell
+  namespace: dreamwell
+  labels:
+    app: dreamwell
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dreamwell
+  template:
+    metadata:
+      labels:
+        app: dreamwell
+    spec:
+      imagePullSecrets:
+        - name: ghcr-credentials
+      containers:
+        - name: dreamwell
+          image: ghcr.io/rydrman/dreamwell:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DREAMWELL_DATABASE_URL
+              value: sqlite:/app/data/dreamwell.db
+            - name: DREAMWELL_STATIC_DIR
+              value: /app/static
+            - name: DREAMWELL_HOST
+              value: 0.0.0.0
+            - name: DREAMWELL_PORT
+              value: "8080"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: dreamwell-data

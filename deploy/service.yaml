@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dreamwell
+  namespace: dreamwell
+  labels:
+    app: dreamwell
+spec:
+  type: ClusterIP
+  selector:
+    app: dreamwell
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

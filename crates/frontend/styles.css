@@ -26,10 +26,45 @@ button {
 
 .mode-bar {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 0.25rem;
   padding: 0.5rem 1rem;
   background: rgba(15, 13, 18, 0.95);
   border-bottom: 1px solid rgba(88, 28, 135, 0.3);
+  position: relative;
+  z-index: 20;
+}
+
+.mode-bar-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+}
+
+.settings-popover {
+  position: fixed;
+  top: 2.75rem;
+  right: 1rem;
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 3.5rem);
+  overflow-y: auto;
+  z-index: 25;
+  background: rgba(21, 17, 28, 0.98);
+  border: 1px solid rgba(88, 28, 135, 0.5);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  box-shadow: 0 1rem 2rem rgba(0, 0, 0, 0.45);
+}
+
+.settings-status {
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
 }
 
 .mode-btn {

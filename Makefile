@@ -1,7 +1,12 @@
 CARGO ?= cargo
 TRUNK ?= trunk
 
-.PHONY: fmt fmt-check clippy test validate install-hooks build build-front build-server run clean docker
+KUBECONFIG ?= $(HOME)/work/homelab/kube_config_talos.yaml
+IMAGE ?= ghcr.io/rydrman/dreamwell
+IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
+NAMESPACE ?= dreamwell
+
+.PHONY: fmt fmt-check clippy test validate install-hooks build build-front build-server run clean docker deploy
 
 fmt:
 	$(CARGO) fmt --all
@@ -39,3 +44,9 @@ clean:
 
 docker:
 	docker build -t dreamwell:local .
+
+deploy:
+	kubectl --kubeconfig=$(KUBECONFIG) apply -k deploy/
+	kubectl --kubeconfig=$(KUBECONFIG) -n $(NAMESPACE) set image deployment/dreamwell \
+		dreamwell=$(IMAGE):$(IMAGE_TAG)
+	kubectl --kubeconfig=$(KUBECONFIG) -n $(NAMESPACE) rollout status deployment/dreamwell
