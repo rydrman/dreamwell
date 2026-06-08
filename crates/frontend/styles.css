@@ -114,16 +114,55 @@ button {
 
 .settings-popover {
   position: fixed;
-  top: 2.75rem;
-  right: 1rem;
-  width: min(28rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 3.5rem);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
   overflow-y: auto;
   z-index: 25;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 0.5rem;
   padding: 1rem;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.settings-model-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+.settings-model-row .field {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.settings-model-name {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  word-break: break-word;
+}
+
+.settings-params-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
 }
 
 .settings-status {
@@ -819,9 +858,22 @@ button {
   }
 
   .settings-popover {
-    left: 1rem;
-    right: 1rem;
-    width: auto;
+    width: calc(100vw - 1.5rem);
+    max-height: calc(100vh - 2rem);
+    padding: 0.875rem;
+  }
+
+  .settings-model-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-model-row .btn {
+    width: 100%;
+  }
+
+  .settings-params-grid {
+    grid-template-columns: 1fr;
   }
 }
 

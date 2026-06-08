@@ -531,6 +531,13 @@ fn mode_bar(props: &ModeBarProps) -> Html {
             </div>
             if *settings_open {
                 <div class="settings-popover">
+                    <div class="settings-header">
+                        <h2>{"Settings"}</h2>
+                        <button class="btn secondary btn-compact" onclick={{
+                            let settings_open = settings_open.clone();
+                            Callback::from(move |_| settings_open.set(false))
+                        }}>{"Close"}</button>
+                    </div>
                     <SettingsPanel save_ctx={save_ctx.clone()} />
                 </div>
             }
@@ -1672,10 +1679,10 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     })
                 }} />
             </label>
-            <div style="display:flex;gap:0.5rem;align-items:end;">
-                <label class="field" style="flex:1;">
+            <div class="settings-model-row">
+                <label class="field">
                     <span class="muted">{"Model"}</span>
-                    <select onchange={{
+                    <select title={s.model.clone()} onchange={{
                         let save_ctx = save_ctx.clone();
                         Callback::from(move |e: Event| {
                             let input: HtmlInputElement = e.target_unchecked_into();
@@ -1685,6 +1692,14 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                         <option value="">{"Select a model"}</option>
                         { for models.iter().map(|m| html! { <option value={m.id.clone()} selected={m.id == s.model}>{ m.name.clone().unwrap_or(m.id.clone()) }</option> }) }
                     </select>
+                    if !s.model.is_empty() {
+                        <p class="settings-model-name muted">{
+                            models.iter()
+                                .find(|m| m.id == s.model)
+                                .map(|m| m.name.clone().unwrap_or(m.id.clone()))
+                                .unwrap_or_else(|| s.model.clone())
+                        }</p>
+                    }
                 </label>
                 <button class="btn secondary" onclick={{
                     let models = models.clone();
@@ -1707,7 +1722,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             if let Some(err) = &*model_error {
                 <p class="text-danger">{ err }</p>
             }
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+            <div class="settings-params-grid">
                 <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(save_ctx.clone(), "temperature")} /></label>
                 <label class="field"><span class="muted">{"Top P"}</span><input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(save_ctx.clone(), "top_p")} /></label>
                 <label class="field"><span class="muted">{"Max tokens"}</span><input type="number" value={s.max_tokens.to_string()} oninput={num_input(save_ctx.clone(), "max_tokens")} /></label>
