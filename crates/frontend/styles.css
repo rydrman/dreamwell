@@ -24,9 +24,31 @@ button {
   font: inherit;
 }
 
+.mode-bar {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem 1rem;
+  background: rgba(15, 13, 18, 0.95);
+  border-bottom: 1px solid rgba(88, 28, 135, 0.3);
+}
+
+.mode-btn {
+  background: transparent;
+  border: 1px solid rgba(88, 28, 135, 0.4);
+  color: #c4b5d8;
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.85rem;
+  cursor: pointer;
+}
+
+.mode-btn.active {
+  background: rgba(88, 28, 135, 0.35);
+  color: #f3e8ff;
+}
+
 .app-shell {
   display: flex;
-  height: 100vh;
+  height: calc(100vh - 2.75rem);
   overflow: hidden;
 }
 
@@ -205,4 +227,49 @@ button {
 .muted {
   color: rgba(221, 214, 254, 0.5);
   font-size: 0.875rem;
+}
+
+.story-tree {
+  margin: 0.5rem 0 0 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid rgba(88, 28, 135, 0.3);
+}
+
+.tree-item {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin-bottom: 0.15rem;
+}
+
+.tree-item.selected {
+  background: rgba(109, 40, 217, 0.3);
+}
+
+.tree-beat {
+  padding-left: 1rem;
+  font-size: 0.8rem;
+}
+
+.story-editor {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.story-form {
+  max-width: 48rem;
+}
+
+.story-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.prose-editor {
+  min-height: 16rem;
+  line-height: 1.6;
 }

@@ -212,3 +212,173 @@ impl Drop for ChatStream {
         self.source.close();
     }
 }
+
+pub async fn list_stories() -> Result<Vec<Story>, String> {
+    json(api_request("GET", "/api/stories")).await
+}
+
+pub async fn create_story(payload: &StoryCreate) -> Result<StoryDetail, String> {
+    json_body("POST", "/api/stories", payload).await
+}
+
+pub async fn get_story(id: i64) -> Result<StoryDetail, String> {
+    json(api_request("GET", &format!("/api/stories/{id}"))).await
+}
+
+pub async fn update_story(id: i64, payload: &StoryUpdate) -> Result<StoryDetail, String> {
+    json_body("PATCH", &format!("/api/stories/{id}"), payload).await
+}
+
+pub async fn delete_story(id: i64) -> Result<(), String> {
+    api_request("DELETE", &format!("/api/stories/{id}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn update_chapter(
+    story_id: i64,
+    chapter_id: i64,
+    payload: &StoryChapterUpdate,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "PATCH",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}"),
+        payload,
+    )
+    .await
+}
+
+pub async fn delete_chapter(story_id: i64, chapter_id: i64) -> Result<(), String> {
+    api_request(
+        "DELETE",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}"),
+    )
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn create_chapter(
+    story_id: i64,
+    payload: &StoryChapterCreate,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters"),
+        payload,
+    )
+    .await
+}
+
+pub async fn update_beat(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    payload: &StoryBeatUpdate,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "PATCH",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}"),
+        payload,
+    )
+    .await
+}
+
+pub async fn delete_beat(story_id: i64, chapter_id: i64, beat_id: i64) -> Result<(), String> {
+    api_request(
+        "DELETE",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}"),
+    )
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn create_beat(
+    story_id: i64,
+    chapter_id: i64,
+    payload: &StoryBeatCreate,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats"),
+        payload,
+    )
+    .await
+}
+
+pub async fn generate_chapter(
+    story_id: i64,
+    guidance_notes: &str,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/generate-chapter"),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
+pub async fn generate_beat(
+    story_id: i64,
+    chapter_id: i64,
+    guidance_notes: &str,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/generate-beat"),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
+pub async fn generate_prose(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance_notes: &str,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}/generate-prose"),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
+pub struct StoryStream {
+    source: EventSource,
+}
+
+impl StoryStream {
+    pub fn new(story_id: i64, on_update: impl Fn(StoryStreamPayload) + 'static) -> Self {
+        let url = format!("/api/stories/{story_id}/stream");
+        let source = EventSource::new(&url).expect("EventSource");
+        let on_update = std::rc::Rc::new(on_update);
+        {
+            let on_update = on_update.clone();
+            let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
+                move |event: web_sys::MessageEvent| {
+                    if let Some(text) = event.data().as_string() {
+                        if let Ok(payload) = serde_json::from_str::<StoryStreamPayload>(&text) {
+                            on_update(payload);
+                        }
+                    }
+                },
+            ) as Box<dyn FnMut(_)>);
+            source.set_onmessage(Some(callback.as_ref().unchecked_ref()));
+            callback.forget();
+        }
+        Self { source }
+    }
+}
+
+impl Drop for StoryStream {
+    fn drop(&mut self) {
+        self.source.close();
+    }
+}

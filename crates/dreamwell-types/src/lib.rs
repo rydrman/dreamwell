@@ -11,6 +11,45 @@ pub enum JobStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobType {
+    ChatMessage,
+    StoryChapterOutline,
+    StoryBeatOutline,
+    StoryBeatProse,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LengthPreset {
+    Flash,
+    #[default]
+    Short,
+    Novella,
+    Novel,
+}
+
+impl LengthPreset {
+    pub fn ref_chapters(self) -> i64 {
+        match self {
+            Self::Flash => 3,
+            Self::Short => 5,
+            Self::Novella => 8,
+            Self::Novel => 12,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Flash => "Flash (3 chapters)",
+            Self::Short => "Short (5 chapters)",
+            Self::Novella => "Novella (8 chapters)",
+            Self::Novel => "Novel (12 chapters)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
@@ -127,14 +166,150 @@ pub struct FactUpdate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Job {
     pub id: i64,
-    pub chat_id: i64,
-    pub message_id: i64,
+    pub job_type: JobType,
+    pub chat_id: Option<i64>,
+    pub message_id: Option<i64>,
+    pub story_id: Option<i64>,
+    pub chapter_id: Option<i64>,
+    pub beat_id: Option<i64>,
+    pub guidance_notes: String,
     pub status: JobStatus,
     pub error: Option<String>,
     pub position: i64,
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Story {
+    pub id: i64,
+    pub title: String,
+    pub premise: String,
+    pub tone: String,
+    pub genre: String,
+    pub pov: String,
+    pub length_preset: LengthPreset,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub active_job: Option<Job>,
+    pub queued_jobs: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryChapter {
+    pub id: i64,
+    pub story_id: i64,
+    pub title: String,
+    pub synopsis: String,
+    pub sort_order: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub beats: Vec<StoryBeat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryBeat {
+    pub id: i64,
+    pub chapter_id: i64,
+    pub title: String,
+    pub synopsis: String,
+    pub content: String,
+    pub sort_order: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub job_status: Option<JobStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryDetail {
+    pub story: Story,
+    pub chapters: Vec<StoryChapter>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoryCreate {
+    #[serde(default = "default_story_title")]
+    pub title: String,
+    #[serde(default)]
+    pub premise: String,
+    #[serde(default)]
+    pub tone: String,
+    #[serde(default)]
+    pub genre: String,
+    #[serde(default)]
+    pub pov: String,
+    #[serde(default = "default_length_preset")]
+    pub length_preset: LengthPreset,
+    #[serde(default)]
+    pub notes: String,
+}
+
+fn default_story_title() -> String {
+    "Untitled Story".to_string()
+}
+
+fn default_length_preset() -> LengthPreset {
+    LengthPreset::Short
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoryUpdate {
+    pub title: Option<String>,
+    pub premise: Option<String>,
+    pub tone: Option<String>,
+    pub genre: Option<String>,
+    pub pov: Option<String>,
+    pub length_preset: Option<LengthPreset>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoryChapterCreate {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub synopsis: String,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoryChapterUpdate {
+    pub title: Option<String>,
+    pub synopsis: Option<String>,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoryBeatCreate {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub synopsis: String,
+    #[serde(default)]
+    pub content: String,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoryBeatUpdate {
+    pub title: Option<String>,
+    pub synopsis: Option<String>,
+    pub content: Option<String>,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerateRequest {
+    #[serde(default)]
+    pub guidance_notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryStreamPayload {
+    pub detail: StoryDetail,
+    pub active_job: Option<Job>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
