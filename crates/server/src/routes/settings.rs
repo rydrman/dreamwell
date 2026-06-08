@@ -1,8 +1,4 @@
-use axum::{
-    extract::State,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::State, routing::get, Json, Router};
 use dreamwell_types::{ModelInfo, Settings, SettingsUpdate};
 
 use crate::db;
