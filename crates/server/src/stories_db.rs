@@ -6,7 +6,7 @@ use dreamwell_types::{
 };
 use sqlx::SqlitePool;
 
-use crate::db::{get_job, parse_dt, parse_job_status, job_type_str, JobRow};
+use crate::db::{get_job, job_type_str, parse_dt, parse_job_status, JobRow};
 use crate::error::{AppError, AppResult};
 
 pub async fn list_stories(pool: &SqlitePool) -> AppResult<Vec<Story>> {
@@ -178,7 +178,11 @@ async fn chapter_from_row(pool: &SqlitePool, row: ChapterRow) -> AppResult<Story
     })
 }
 
-pub async fn get_chapter(pool: &SqlitePool, story_id: i64, chapter_id: i64) -> AppResult<StoryChapter> {
+pub async fn get_chapter(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+) -> AppResult<StoryChapter> {
     let row = sqlx::query_as::<_, ChapterRow>(
         "SELECT id, story_id, title, synopsis, sort_order, created_at, updated_at FROM story_chapters WHERE id = ?1 AND story_id = ?2",
     )
@@ -196,17 +200,16 @@ pub async fn create_chapter(
     payload: StoryChapterCreate,
 ) -> AppResult<StoryChapter> {
     let _ = get_story(pool, story_id).await?;
-    let sort_order = match payload.sort_order {
-        Some(order) => order,
-        None => {
-            sqlx::query_scalar::<_, i64>(
+    let sort_order =
+        match payload.sort_order {
+            Some(order) => order,
+            None => sqlx::query_scalar::<_, i64>(
                 "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM story_chapters WHERE story_id = ?1",
             )
             .bind(story_id)
             .fetch_one(pool)
-            .await?
-        }
-    };
+            .await?,
+        };
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO story_chapters (story_id, title, synopsis, sort_order, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?5) RETURNING id",
@@ -313,17 +316,16 @@ pub async fn create_beat(
     payload: StoryBeatCreate,
 ) -> AppResult<StoryBeat> {
     let _ = get_chapter(pool, story_id, chapter_id).await?;
-    let sort_order = match payload.sort_order {
-        Some(order) => order,
-        None => {
-            sqlx::query_scalar::<_, i64>(
+    let sort_order =
+        match payload.sort_order {
+            Some(order) => order,
+            None => sqlx::query_scalar::<_, i64>(
                 "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM story_beats WHERE chapter_id = ?1",
             )
             .bind(chapter_id)
             .fetch_one(pool)
-            .await?
-        }
-    };
+            .await?,
+        };
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO story_beats (chapter_id, title, synopsis, content, sort_order, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6) RETURNING id",
@@ -394,15 +396,13 @@ pub async fn update_chapter_outline(
     synopsis: &str,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
-    sqlx::query(
-        "UPDATE story_chapters SET title=?1, synopsis=?2, updated_at=?3 WHERE id=?4",
-    )
-    .bind(title)
-    .bind(synopsis)
-    .bind(&now)
-    .bind(chapter_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE story_chapters SET title=?1, synopsis=?2, updated_at=?3 WHERE id=?4")
+        .bind(title)
+        .bind(synopsis)
+        .bind(&now)
+        .bind(chapter_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -413,15 +413,13 @@ pub async fn update_beat_outline(
     synopsis: &str,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
-    sqlx::query(
-        "UPDATE story_beats SET title=?1, synopsis=?2, updated_at=?3 WHERE id=?4",
-    )
-    .bind(title)
-    .bind(synopsis)
-    .bind(&now)
-    .bind(beat_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE story_beats SET title=?1, synopsis=?2, updated_at=?3 WHERE id=?4")
+        .bind(title)
+        .bind(synopsis)
+        .bind(&now)
+        .bind(beat_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -588,4 +586,3 @@ struct BeatRow {
     updated_at: String,
     job_status: Option<String>,
 }
-

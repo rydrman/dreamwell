@@ -20,14 +20,7 @@ pub fn prior_chapter_synopses(chapters: &[StoryChapter], before_order: i64) -> S
     chapters
         .iter()
         .filter(|c| c.sort_order < before_order)
-        .map(|c| {
-            format!(
-                "Chapter {} — {}: {}",
-                c.sort_order + 1,
-                c.title,
-                c.synopsis
-            )
-        })
+        .map(|c| format!("Chapter {} — {}: {}", c.sort_order + 1, c.title, c.synopsis))
         .collect::<Vec<_>>()
         .join("\n")
 }

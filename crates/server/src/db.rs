@@ -6,8 +6,8 @@ use dreamwell_types::{
 
 #[path = "stories_db.rs"]
 mod stories_db;
-pub use stories_db::*;
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+pub use stories_db::*;
 
 use crate::config::MAX_CONCURRENT_JOBS;
 use crate::error::{AppError, AppResult};

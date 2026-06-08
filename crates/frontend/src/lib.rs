@@ -2,8 +2,8 @@ mod api;
 mod stories_ui;
 
 use dreamwell_types::*;
-use stories_ui::{QueueBar, StoriesShell};
 use gloo_timers::callback::Interval;
+use stories_ui::{QueueBar, StoriesShell};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 

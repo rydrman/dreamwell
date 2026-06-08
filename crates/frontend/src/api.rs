@@ -311,10 +311,7 @@ pub async fn create_beat(
     .await
 }
 
-pub async fn generate_chapter(
-    story_id: i64,
-    guidance_notes: &str,
-) -> Result<StoryDetail, String> {
+pub async fn generate_chapter(story_id: i64, guidance_notes: &str) -> Result<StoryDetail, String> {
     json_body(
         "POST",
         &format!("/api/stories/{story_id}/generate-chapter"),

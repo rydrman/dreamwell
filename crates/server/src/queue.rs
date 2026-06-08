@@ -113,20 +113,17 @@ async fn run_chat_job(
     job: &dreamwell_types::Job,
     settings: &dreamwell_types::Settings,
 ) -> AppResult<()> {
-    let chat_id = job.chat_id.ok_or_else(|| AppError::internal("chat job missing chat_id"))?;
+    let chat_id = job
+        .chat_id
+        .ok_or_else(|| AppError::internal("chat job missing chat_id"))?;
     let message_id = job
         .message_id
         .ok_or_else(|| AppError::internal("chat job missing message_id"))?;
 
     let chat = db::get_chat(pool, chat_id).await?;
-    let messages = build_messages_for_inference(
-        pool,
-        chat_id,
-        &chat.summary,
-        chat.character_id,
-        settings,
-    )
-    .await?;
+    let messages =
+        build_messages_for_inference(pool, chat_id, &chat.summary, chat.character_id, settings)
+            .await?;
 
     let mut stream = stream_chat_completion(
         &settings.inference_url,
@@ -346,12 +343,8 @@ async fn run_story_beat_prose(
             Err(err) => {
                 db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
                 if accumulated.is_empty() {
-                    db::update_beat_content(
-                        pool,
-                        beat_id,
-                        &format!("[Generation failed: {err}]"),
-                    )
-                    .await?;
+                    db::update_beat_content(pool, beat_id, &format!("[Generation failed: {err}]"))
+                        .await?;
                 }
                 return Ok(());
             }

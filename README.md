@@ -23,9 +23,16 @@ Send messages across many chats, switch away, and come back later — responses 
 ## Development
 
 ```bash
-# Lint / format
+# One-shot CI checks (required before every commit)
+make validate
+
+# Install git hook so commits are blocked unless validate passes
+make install-hooks
+
+# Individual checks
 make fmt-check
 make clippy
+make test
 
 # Build frontend + server
 make build
@@ -33,6 +40,8 @@ make build
 # Run locally (serves UI + API on :8080)
 make run
 ```
+
+**Commit policy:** `rustfmt`, `clippy`, and `cargo test` must pass before committing. Run `make validate` manually, or `make install-hooks` once to enforce this via a pre-commit hook.
 
 Point **Settings → Inference server** at your OpenAI-compatible endpoint (e.g. `http://localhost:11434/v1` for Ollama), refresh models, and pick one.
 
