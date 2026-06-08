@@ -1,0 +1,9 @@
+/target/
+crates/frontend/dist/
+*.db
+/data/
+.env
+.DS_Store
+backend/
+frontend/node_modules/
+frontend/dist/
