@@ -312,7 +312,7 @@ pub async fn delete_chat(pool: &SqlitePool, id: i64) -> AppResult<()> {
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.is_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.is_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -385,6 +385,9 @@ pub async fn insert_message(
         chat_id,
         role,
         content,
+        thought_content: String::new(),
+        thought_duration_ms: None,
+        thought_in_progress: false,
         is_summary,
         created_at: parse_dt(&now)?,
         job_status: None,
@@ -401,6 +404,37 @@ pub async fn update_message_content(
         .bind(message_id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+pub async fn update_message_generation(
+    pool: &SqlitePool,
+    message_id: i64,
+    content: &str,
+    thought_content: &str,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: bool,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE messages SET content = ?1, thought_content = ?2, thought_duration_ms = ?3, thought_in_progress = ?4 WHERE id = ?5",
+    )
+    .bind(content)
+    .bind(thought_content)
+    .bind(thought_duration_ms)
+    .bind(thought_in_progress as i64)
+    .bind(message_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn clear_message_thoughts(pool: &SqlitePool, message_id: i64) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE messages SET thought_content = '', thought_duration_ms = NULL, thought_in_progress = 0 WHERE id = ?1",
+    )
+    .bind(message_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -464,7 +498,7 @@ pub async fn delete_fact(pool: &SqlitePool, chat_id: i64, key: &str) -> AppResul
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_after_messages, summarize_keep_recent, facts_enabled, max_context_messages FROM app_settings WHERE id = 1",
+        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_after_messages, summarize_keep_recent, facts_enabled, thought_blocks_enabled, max_context_messages FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
@@ -512,6 +546,9 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     if let Some(v) = payload.facts_enabled {
         current.facts_enabled = v;
     }
+    if let Some(v) = payload.thought_blocks_enabled {
+        current.thought_blocks_enabled = v;
+    }
     if let Some(v) = payload.max_context_messages {
         current.max_context_messages = v;
     }
@@ -521,7 +558,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     }
 
     sqlx::query(
-        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_after_messages=?11, summarize_keep_recent=?12, facts_enabled=?13, max_context_messages=?14 WHERE id=1",
+        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_after_messages=?11, summarize_keep_recent=?12, facts_enabled=?13, thought_blocks_enabled=?14, max_context_messages=?15 WHERE id=1",
     )
     .bind(&current.inference_url)
     .bind(&current.model)
@@ -536,6 +573,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     .bind(current.summarize_after_messages)
     .bind(current.summarize_keep_recent)
     .bind(current.facts_enabled as i64)
+    .bind(current.thought_blocks_enabled as i64)
     .bind(current.max_context_messages)
     .execute(pool)
     .await?;
@@ -691,6 +729,9 @@ fn message_from_row(row: MessageRow) -> Message {
         chat_id: row.chat_id,
         role: parse_role(&row.role),
         content: row.content,
+        thought_content: row.thought_content,
+        thought_duration_ms: row.thought_duration_ms,
+        thought_in_progress: row.thought_in_progress != 0,
         is_summary: row.is_summary != 0,
         created_at: DateTime::parse_from_rfc3339(&row.created_at)
             .map(|dt| dt.with_timezone(&Utc))
@@ -753,6 +794,9 @@ struct MessageRow {
     chat_id: i64,
     role: String,
     content: String,
+    thought_content: String,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: i64,
     is_summary: i64,
     created_at: String,
     job_status: Option<String>,
@@ -845,6 +889,7 @@ struct SettingsRow {
     summarize_after_messages: i64,
     summarize_keep_recent: i64,
     facts_enabled: i64,
+    thought_blocks_enabled: i64,
     max_context_messages: i64,
 }
 
@@ -864,6 +909,7 @@ impl SettingsRow {
             summarize_after_messages: self.summarize_after_messages,
             summarize_keep_recent: self.summarize_keep_recent,
             facts_enabled: self.facts_enabled != 0,
+            thought_blocks_enabled: self.thought_blocks_enabled != 0,
             max_context_messages: self.max_context_messages,
             max_concurrent_jobs: MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst),
         }

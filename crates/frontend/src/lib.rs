@@ -620,6 +620,59 @@ fn confirm_delete_after(count: usize) -> bool {
         .unwrap_or(false)
 }
 
+fn format_thought_duration(ms: i64) -> String {
+    let total_secs = (ms / 1000).max(0);
+    if total_secs < 60 {
+        format!("{total_secs}s")
+    } else {
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!("{mins}m{secs}s")
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct ThoughtBlockProps {
+    thought_content: String,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: bool,
+}
+
+#[function_component(ThoughtBlock)]
+fn thought_block(props: &ThoughtBlockProps) -> Html {
+    let expanded = use_state(|| false);
+
+    let label = if props.thought_in_progress {
+        "thinking...".to_string()
+    } else if let Some(ms) = props.thought_duration_ms {
+        format!("thought for {}", format_thought_duration(ms))
+    } else {
+        "thought".to_string()
+    };
+
+    let toggle = {
+        let expanded = expanded.clone();
+        Callback::from(move |_| expanded.set(!*expanded))
+    };
+
+    html! {
+        <div class="message-thought">
+            <button type="button" class="message-thought-toggle" onclick={toggle}>
+                if props.thought_in_progress {
+                    <span class="thought-spinner" aria-hidden="true"></span>
+                }
+                <span class="message-thought-label">{ label }</span>
+                <span class="message-thought-chevron" aria-hidden="true">
+                    { if *expanded { "▾" } else { "▸" } }
+                </span>
+            </button>
+            if *expanded {
+                <pre class="message-thought-body">{ &props.thought_content }</pre>
+            }
+        </div>
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum MessageBubbleMode {
     View,
@@ -633,6 +686,7 @@ struct MessageBubbleProps {
     is_last: bool,
     after_count: usize,
     rendered_content: Html,
+    show_thoughts: bool,
     on_changed: Callback<()>,
 }
 
@@ -655,6 +709,11 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let can_menu =
         !props.message.is_summary && props.message.role != MessageRole::System && !active;
     let show_regenerate = props.message.role == MessageRole::Assistant;
+    let show_thought_block = props.show_thoughts
+        && props.message.role == MessageRole::Assistant
+        && (props.message.thought_in_progress
+            || !props.message.thought_content.is_empty()
+            || props.message.thought_duration_ms.is_some());
 
     let close_menu = {
         let menu_open = menu_open.clone();
@@ -814,6 +873,13 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     </div>
                 }
             </div>
+            if show_thought_block {
+                <ThoughtBlock
+                    thought_content={props.message.thought_content.clone()}
+                    thought_duration_ms={props.message.thought_duration_ms}
+                    thought_in_progress={props.message.thought_in_progress}
+                />
+            }
             if *mode == MessageBubbleMode::Edit {
                 <textarea
                     class="message-edit-input"
@@ -891,6 +957,10 @@ fn message_list(props: &MessageListProps) -> Html {
         }
     });
     let last_id = props.messages.last().map(|m| m.id);
+    let show_thoughts = props
+        .settings
+        .as_ref()
+        .is_some_and(|s| s.thought_blocks_enabled);
     html! {
         <div class="messages">
             if props.messages.is_empty() {
@@ -919,6 +989,7 @@ fn message_list(props: &MessageListProps) -> Html {
                             is_last={is_last}
                             after_count={after_count}
                             rendered_content={rendered_content}
+                            show_thoughts={show_thoughts}
                             on_changed={props.on_messages_change.clone()}
                         />
                     }
@@ -1614,6 +1685,7 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         summarize_after_messages: Some(current.summarize_after_messages),
         summarize_keep_recent: Some(current.summarize_keep_recent),
         facts_enabled: Some(current.facts_enabled),
+        thought_blocks_enabled: Some(current.thought_blocks_enabled),
         max_context_messages: Some(current.max_context_messages),
         max_concurrent_jobs: Some(current.max_concurrent_jobs),
     }
@@ -1754,6 +1826,15 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     })
                 }} />
                 {"Enable KV facts in prompts"}
+            </label>
+            <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
+                <input type="checkbox" checked={s.thought_blocks_enabled} onclick={{
+                    let save_ctx = save_ctx.clone();
+                    Callback::from(move |_| {
+                        save_ctx.update_field(|current| current.thought_blocks_enabled = !current.thought_blocks_enabled);
+                    })
+                }} />
+                {"Extract reasoning into collapsible thought block"}
             </label>
         </div>
     }

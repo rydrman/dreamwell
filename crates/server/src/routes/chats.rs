@@ -191,6 +191,7 @@ async fn regenerate_message(
     }
 
     db::update_message_content(&state.pool, message_id, "").await?;
+    db::clear_message_thoughts(&state.pool, message_id).await?;
     let job = enqueue_generation(&state.pool, &state.queue, id, message_id).await?;
     db::touch_chat(&state.pool, id).await?;
     let mut updated = db::get_message(&state.pool, id, message_id).await?;
