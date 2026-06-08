@@ -41,10 +41,63 @@ button {
   gap: 0.25rem;
 }
 
-.settings-backdrop {
+.settings-backdrop,
+.modal-backdrop {
   position: fixed;
   inset: 0;
   z-index: 15;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  z-index: 25;
+  background: rgba(21, 17, 28, 0.98);
+  border: 1px solid rgba(88, 28, 135, 0.5);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  box-shadow: 0 1rem 2rem rgba(0, 0, 0, 0.45);
+}
+
+.modal h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.modal-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid rgba(88, 28, 135, 0.3);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.modal-item:hover {
+  background: rgba(88, 28, 135, 0.15);
+}
+
+.chat-character {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-popover {

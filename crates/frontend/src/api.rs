@@ -54,7 +54,7 @@ pub async fn list_chats() -> Result<Vec<Chat>, String> {
     json(api_request("GET", "/api/chats")).await
 }
 
-pub async fn create_chat(title: &str, character_id: Option<i64>) -> Result<Chat, String> {
+pub async fn create_chat(title: &str, character_id: i64) -> Result<Chat, String> {
     json_body(
         "POST",
         "/api/chats",
@@ -63,7 +63,7 @@ pub async fn create_chat(title: &str, character_id: Option<i64>) -> Result<Chat,
     .await
 }
 
-pub async fn update_chat(id: i64, character_id: Option<i64>) -> Result<Chat, String> {
+pub async fn update_chat(id: i64, character_id: i64) -> Result<Chat, String> {
     json_body(
         "PATCH",
         &format!("/api/chats/{id}"),

@@ -107,7 +107,8 @@ pub struct CharacterUpdate {
 pub struct Chat {
     pub id: i64,
     pub title: String,
-    pub character_id: Option<i64>,
+    pub character_id: i64,
+    pub character_name: String,
     pub summary: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -119,7 +120,7 @@ pub struct Chat {
 pub struct ChatCreate {
     #[serde(default = "default_title")]
     pub title: String,
-    pub character_id: Option<i64>,
+    pub character_id: i64,
 }
 
 fn default_title() -> String {
@@ -131,6 +132,13 @@ pub struct ChatUpdate {
     pub title: Option<String>,
     pub character_id: Option<i64>,
 }
+
+/// SillyTavern-style main prompt default.
+pub const DEFAULT_SYSTEM_PROMPT_PREFIX: &str =
+    "Write {{char}}'s next reply in a fictional chat between {{char}} and {{user}}.";
+
+/// Default user/persona name (SillyTavern `username`).
+pub const DEFAULT_USER_NAME: &str = "User";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -327,6 +335,7 @@ pub struct Settings {
     pub max_tokens: i64,
     pub system_prompt_prefix: String,
     pub system_prompt_suffix: String,
+    pub user_name: String,
     pub summarize_enabled: bool,
     pub summarize_after_messages: i64,
     pub summarize_keep_recent: i64,
@@ -344,6 +353,7 @@ pub struct SettingsUpdate {
     pub max_tokens: Option<i64>,
     pub system_prompt_prefix: Option<String>,
     pub system_prompt_suffix: Option<String>,
+    pub user_name: Option<String>,
     pub summarize_enabled: Option<bool>,
     pub summarize_after_messages: Option<i64>,
     pub summarize_keep_recent: Option<i64>,

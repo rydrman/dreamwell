@@ -20,13 +20,16 @@ enum AppMode {
 fn app() -> Html {
     let mode = use_state(|| AppMode::Chats);
     let chats = use_state(Vec::<Chat>::new);
+    let characters = use_state(Vec::<Character>::new);
     let selected_chat_id = use_state(|| None::<i64>);
     let messages = use_state(Vec::<Message>::new);
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
+    let picker_open = use_state(|| false);
 
     {
         let chats = chats.clone();
+        let characters = characters.clone();
         let selected_chat_id = selected_chat_id.clone();
         let loading = loading.clone();
         use_effect_with((), move |_| {
@@ -36,6 +39,9 @@ fn app() -> Html {
                         selected_chat_id.set(Some(first.id));
                     }
                     chats.set(list);
+                }
+                if let Ok(list) = api::list_characters().await {
+                    characters.set(list);
                 }
                 loading.set(false);
             });
@@ -122,12 +128,47 @@ fn app() -> Html {
 
     let selected = (*selected_chat_id).and_then(|id| chats.iter().find(|c| c.id == id).cloned());
 
+    let start_chat = {
+        let chats = chats.clone();
+        let selected_chat_id = selected_chat_id.clone();
+        let picker_open = picker_open.clone();
+        Callback::from(move |(character_id, title): (i64, String)| {
+            let chats = chats.clone();
+            let selected_chat_id = selected_chat_id.clone();
+            let picker_open = picker_open.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(chat) = api::create_chat(&title, character_id).await {
+                    if let Ok(list) = api::list_chats().await {
+                        chats.set(list);
+                    }
+                    selected_chat_id.set(Some(chat.id));
+                    picker_open.set(false);
+                }
+            });
+        })
+    };
+
     html! {
         <>
             <ModeBar mode={*mode} on_mode={Callback::from({
                 let mode = mode.clone();
                 move |m| mode.set(m)
             })} />
+            if *picker_open {
+                <CharacterPickerModal
+                    characters={(*characters).clone()}
+                    on_close={Callback::from({
+                        let picker_open = picker_open.clone();
+                        move |_| picker_open.set(false)
+                    })}
+                    on_select={Callback::from({
+                        let start_chat = start_chat.clone();
+                        move |character: Character| {
+                            start_chat.emit((character.id, character.name.clone()));
+                        }
+                    })}
+                />
+            }
             <div class="app-shell">
             <ChatSidebar
                 chats={(*chats).clone()}
@@ -137,23 +178,8 @@ fn app() -> Html {
                     move |id| selected_chat_id.set(Some(id))
                 })}
                 on_new={Callback::from({
-                    let chats = chats.clone();
-                    let selected_chat_id = selected_chat_id.clone();
-                    let character_id = selected.as_ref().and_then(|c| c.character_id);
-                    move |_| {
-                        let chats = chats.clone();
-                        let selected_chat_id = selected_chat_id.clone();
-                        let character_id = character_id;
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let title = format!("Chat {}", chats.len() + 1);
-                            if let Ok(chat) = api::create_chat(&title, character_id).await {
-                                if let Ok(list) = api::list_chats().await {
-                                    chats.set(list);
-                                }
-                                selected_chat_id.set(Some(chat.id));
-                            }
-                        });
-                    }
+                    let picker_open = picker_open.clone();
+                    move |_| picker_open.set(true)
                 })}
                 on_delete={Callback::from({
                     let chats = chats.clone();
@@ -177,9 +203,29 @@ fn app() -> Html {
                 <QueueBar queue={(*queue).clone()} />
                 <header class="header">
                     <h1 style="margin:0;font-size:1.1rem;">{selected.as_ref().map(|c| c.title.clone()).unwrap_or_else(|| "Select a chat".to_string())}</h1>
-                    <p class="muted" style="margin:0.25rem 0 0;">{"Responses stream on the server — switch chats freely while they generate."}</p>
+                    if let Some(chat) = selected.as_ref() {
+                        <p class="muted" style="margin:0.25rem 0 0;">{ format!("With {}", chat.character_name) }</p>
+                    } else if chats.is_empty() {
+                        <p class="muted" style="margin:0.25rem 0 0;">{"Create a character in the panel, then start a chat."}</p>
+                    } else {
+                        <p class="muted" style="margin:0.25rem 0 0;">{"Responses stream on the server — switch chats freely while they generate."}</p>
+                    }
                 </header>
-                <MessageList messages={(*messages).clone()} />
+                if chats.is_empty() {
+                    <div class="muted" style="text-align:center;padding:2rem;border:1px dashed rgba(88,28,135,0.5);border-radius:1rem;margin:1rem;">
+                        if characters.is_empty() {
+                            <p>{"No characters yet. Use the Character panel to create or import one."}</p>
+                        } else {
+                            <p>{"No chats yet. Click New in the sidebar to pick a character."}</p>
+                            <button class="btn" style="margin-top:0.75rem;" onclick={{
+                                let picker_open = picker_open.clone();
+                                Callback::from(move |_| picker_open.set(true))
+                            }}>{"Start a chat"}</button>
+                        }
+                    </div>
+                } else {
+                    <MessageList messages={(*messages).clone()} />
+                }
                 <Composer
                     disabled={selected_chat_id.is_none()}
                     on_send={Callback::from({
@@ -210,7 +256,7 @@ fn app() -> Html {
             </main>
             <RightPanel
                 chat_id={*selected_chat_id}
-                character_id={selected.as_ref().and_then(|c| c.character_id)}
+                character_id={selected.as_ref().map(|c| c.character_id)}
                 on_character_change={Callback::from({
                     let chats = chats.clone();
                     move |(chat_id, character_id)| {
@@ -219,6 +265,32 @@ fn app() -> Html {
                             let _ = api::update_chat(chat_id, character_id).await;
                             if let Ok(list) = api::list_chats().await {
                                 chats.set(list);
+                            }
+                        });
+                    }
+                })}
+                on_start_chat={start_chat.clone()}
+                on_chat_created={Callback::from({
+                    let chats = chats.clone();
+                    let selected_chat_id = selected_chat_id.clone();
+                    move |chat_id| {
+                        let chats = chats.clone();
+                        let selected_chat_id = selected_chat_id.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(list) = api::list_chats().await {
+                                chats.set(list);
+                            }
+                            selected_chat_id.set(Some(chat_id));
+                        });
+                    }
+                })}
+                on_characters_changed={Callback::from({
+                    let characters = characters.clone();
+                    move |_| {
+                        let characters = characters.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(list) = api::list_characters().await {
+                                characters.set(list);
                             }
                         });
                     }
@@ -297,6 +369,7 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
                             <div style="display:flex;gap:0.5rem;">
                                 <div style="flex:1;min-width:0;" onclick={props.on_select.reform(move |_| id)}>
                                     <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &chat.title }</div>
+                                    <div class="chat-character">{ &chat.character_name }</div>
                                     if let Some(label) = status {
                                         <span class="badge">{ label }</span>
                                     }
@@ -412,10 +485,52 @@ fn composer(props: &ComposerProps) -> Html {
 }
 
 #[derive(Properties, PartialEq)]
+struct CharacterPickerModalProps {
+    characters: Vec<Character>,
+    on_close: Callback<()>,
+    on_select: Callback<Character>,
+}
+
+#[function_component(CharacterPickerModal)]
+fn character_picker_modal(props: &CharacterPickerModalProps) -> Html {
+    html! {
+        <>
+            <div class="modal-backdrop" onclick={props.on_close.reform(|_| ())} />
+            <div class="modal">
+                <h2>{"Start a chat"}</h2>
+                <p class="muted" style="margin:0 0 0.75rem;">{"Pick a character for this conversation."}</p>
+                if props.characters.is_empty() {
+                    <p class="muted">{"No characters yet. Create or import one in the Character panel first."}</p>
+                } else {
+                    <div class="modal-list">
+                        { for props.characters.iter().map(|c| {
+                            let character = c.clone();
+                            html! {
+                                <div class="modal-item" onclick={{
+                                    let on_select = props.on_select.clone();
+                                    let character = character.clone();
+                                    Callback::from(move |_| on_select.emit(character.clone()))
+                                }}>
+                                    <span>{ &c.name }</span>
+                                </div>
+                            }
+                        }) }
+                    </div>
+                }
+                <button class="btn secondary" onclick={props.on_close.reform(|_| ())}>{"Cancel"}</button>
+            </div>
+        </>
+    }
+}
+
+#[derive(Properties, PartialEq)]
 struct RightPanelProps {
     chat_id: Option<i64>,
     character_id: Option<i64>,
-    on_character_change: Callback<(i64, Option<i64>)>,
+    on_character_change: Callback<(i64, i64)>,
+    on_start_chat: Callback<(i64, String)>,
+    on_chat_created: Callback<i64>,
+    on_characters_changed: Callback<()>,
 }
 
 #[function_component(RightPanel)]
@@ -438,6 +553,9 @@ fn right_panel(props: &RightPanelProps) -> Html {
                     <CharacterPanel
                         selected_character_id={props.character_id}
                         on_character_change={props.on_character_change.clone()}
+                        on_start_chat={props.on_start_chat.clone()}
+                        on_chat_created={props.on_chat_created.clone()}
+                        on_characters_changed={props.on_characters_changed.clone()}
                         chat_id={props.chat_id}
                     />
                 } else {
@@ -452,7 +570,10 @@ fn right_panel(props: &RightPanelProps) -> Html {
 struct CharacterPanelProps {
     selected_character_id: Option<i64>,
     chat_id: Option<i64>,
-    on_character_change: Callback<(i64, Option<i64>)>,
+    on_character_change: Callback<(i64, i64)>,
+    on_start_chat: Callback<(i64, String)>,
+    on_chat_created: Callback<i64>,
+    on_characters_changed: Callback<()>,
 }
 
 #[function_component(CharacterPanel)]
@@ -514,6 +635,8 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                     let draft = draft.clone();
                     let editing_id = editing_id.clone();
                     let on_character_change = props.on_character_change.clone();
+                    let on_chat_created = props.on_chat_created.clone();
+                    let on_characters_changed = props.on_characters_changed.clone();
                     let chat_id = props.chat_id;
                     Callback::from(move |e: Event| {
                         let input: HtmlInputElement = e.target_unchecked_into();
@@ -522,15 +645,20 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                             let draft = draft.clone();
                             let editing_id = editing_id.clone();
                             let on_character_change = on_character_change.clone();
+                            let on_chat_created = on_chat_created.clone();
+                            let on_characters_changed = on_characters_changed.clone();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(character) = api::import_character(&file).await {
                                     if let Ok(list) = api::list_characters().await {
                                         characters.set(list);
                                     }
+                                    on_characters_changed.emit(());
                                     editing_id.set(Some(character.id));
                                     draft.set(CharacterDraft::from(&character));
                                     if let Some(chat_id) = chat_id {
-                                        on_character_change.emit((chat_id, Some(character.id)));
+                                        on_character_change.emit((chat_id, character.id));
+                                    } else if let Ok(chat) = api::create_chat(&character.name, character.id).await {
+                                        on_chat_created.emit(chat.id);
                                     }
                                 }
                             });
@@ -541,8 +669,9 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
             <div style="max-height:10rem;overflow-y:auto;border:1px solid rgba(88,28,135,0.3);border-radius:0.5rem;margin-bottom:1rem;">
                 { for characters.iter().map(|c| {
                     let id = c.id;
+                    let name = c.name.clone();
                     html! {
-                        <div style="display:flex;justify-content:space-between;padding:0.5rem;cursor:pointer;"
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem;cursor:pointer;gap:0.35rem;"
                             onclick={{
                                 let draft = draft.clone();
                                 let editing_id = editing_id.clone();
@@ -552,17 +681,28 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                                     draft.set(CharacterDraft::from(&c));
                                 })
                             }}>
-                            <span>{ &c.name }</span>
-                            <button class="btn secondary" style="padding:0.1rem 0.4rem;font-size:0.75rem;" onclick={{
+                            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &c.name }</span>
+                            <button class="btn secondary" style="padding:0.1rem 0.4rem;font-size:0.75rem;flex-shrink:0;" onclick={{
+                                let on_start_chat = props.on_start_chat.clone();
+                                let name = name.clone();
+                                Callback::from(move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    on_start_chat.emit((id, name.clone()));
+                                })
+                            }}>{"Chat"}</button>
+                            <button class="btn secondary" style="padding:0.1rem 0.4rem;font-size:0.75rem;flex-shrink:0;" onclick={{
                                 let characters = characters.clone();
+                                let on_characters_changed = props.on_characters_changed.clone();
                                 Callback::from(move |e: MouseEvent| {
                                     e.stop_propagation();
                                     let characters = characters.clone();
+                                    let on_characters_changed = on_characters_changed.clone();
                                     wasm_bindgen_futures::spawn_local(async move {
                                         let _ = api::delete_character(id).await;
                                         if let Ok(list) = api::list_characters().await {
                                             characters.set(list);
                                         }
+                                        on_characters_changed.emit(());
                                     });
                                 })
                             }}>{"delete"}</button>
@@ -576,6 +716,8 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                 let editing_id = editing_id.clone();
                 let characters = characters.clone();
                 let on_character_change = props.on_character_change.clone();
+                let on_chat_created = props.on_chat_created.clone();
+                let on_characters_changed = props.on_characters_changed.clone();
                 let chat_id = props.chat_id;
                 Callback::from(move |_| {
                     let payload = draft.to_create();
@@ -584,6 +726,8 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                     let draft = draft.clone();
                     let editing_id = editing_id.clone();
                     let on_character_change = on_character_change.clone();
+                    let on_chat_created = on_chat_created.clone();
+                    let on_characters_changed = on_characters_changed.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         let character = if let Some(id) = editing_id_val {
                             api::update_character(id, &draft.to_update()).await
@@ -594,10 +738,13 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                             if let Ok(list) = api::list_characters().await {
                                 characters.set(list);
                             }
+                            on_characters_changed.emit(());
                             editing_id.set(Some(character.id));
                             draft.set(CharacterDraft::from(&character));
                             if let Some(chat_id) = chat_id {
-                                on_character_change.emit((chat_id, Some(character.id)));
+                                on_character_change.emit((chat_id, character.id));
+                            } else if let Ok(chat) = api::create_chat(&character.name, character.id).await {
+                                on_chat_created.emit(chat.id);
                             }
                         }
                     });
@@ -831,6 +978,7 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         max_tokens: Some(current.max_tokens),
         system_prompt_prefix: Some(current.system_prompt_prefix.clone()),
         system_prompt_suffix: Some(current.system_prompt_suffix.clone()),
+        user_name: Some(current.user_name.clone()),
         summarize_enabled: Some(current.summarize_enabled),
         summarize_after_messages: Some(current.summarize_after_messages),
         summarize_keep_recent: Some(current.summarize_keep_recent),
@@ -981,8 +1129,9 @@ fn settings_panel() -> Html {
                 <label class="field"><span class="muted">{"Max tokens"}</span><input type="number" value={s.max_tokens.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "max_tokens")} /></label>
                 <label class="field"><span class="muted">{"Max concurrent jobs"}</span><input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(settings.clone(), saving.clone(), save_timeout.clone(), "max_concurrent_jobs")} /></label>
             </div>
-            <label class="field"><span class="muted">{"System prompt prefix"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_prefix")} /></label>
-            <label class="field"><span class="muted">{"System prompt suffix"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_suffix")} /></label>
+            <label class="field"><span class="muted">{"User name ({{user}})"}</span><input value={s.user_name.clone()} oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "user_name")} /></label>
+            <label class="field"><span class="muted">{"Main prompt (prefix)"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_prefix")} /></label>
+            <label class="field"><span class="muted">{"Post-history instructions (suffix)"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(settings.clone(), saving.clone(), save_timeout.clone(), "system_prompt_suffix")} /></label>
             <div style="border:1px solid rgba(88,28,135,0.3);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.75rem;">
                 <strong>{"Auto summarize"}</strong>
                 <label style="display:flex;gap:0.5rem;margin:0.5rem 0;">
@@ -1067,6 +1216,7 @@ fn text_input(
             move |current| match field {
                 "system_prompt_prefix" => current.system_prompt_prefix = value.clone(),
                 "system_prompt_suffix" => current.system_prompt_suffix = value.clone(),
+                "user_name" => current.user_name = value.clone(),
                 _ => {}
             },
         );
