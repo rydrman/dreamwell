@@ -1,23 +1,41 @@
-FROM rust:1.86-bookworm AS builder
+# syntax=docker/dockerfile:1
 
+ARG RUST_VERSION=1.86
+ARG TRUNK_VERSION=v0.21.14
+ARG TRUNK_BASE_URL=https://github.com/trunk-rs/trunk/releases/download
+
+FROM rust:${RUST_VERSION}-bookworm AS dev-base
+ARG TRUNK_VERSION
+ARG TRUNK_BASE_URL
 RUN rustup target add wasm32-unknown-unknown \
-    && cargo install trunk --locked
-
+    && curl -fsSL "${TRUNK_BASE_URL}/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+    | tar -xz -C /usr/local/cargo/bin trunk
 WORKDIR /app
+
+FROM dev-base AS builder
 COPY . .
 
-RUN cd crates/frontend && trunk build --release
-RUN cargo build --release -p dreamwell-server
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cd crates/frontend && trunk build --release \
+    && cp -r dist /app/frontend-dist
 
-FROM debian:bookworm-slim
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release -p dreamwell-server \
+    && cp /app/target/release/dreamwell-server /app/dreamwell-server
+
+FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/dreamwell-server /usr/local/bin/dreamwell-server
-COPY --from=builder /app/crates/frontend/dist /app/static
+COPY --from=builder /app/dreamwell-server /usr/local/bin/dreamwell-server
+COPY --from=builder /app/frontend-dist /app/static
 
 ENV DREAMWELL_STATIC_DIR=/app/static \
     DREAMWELL_HOST=0.0.0.0 \

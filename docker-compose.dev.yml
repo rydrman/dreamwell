@@ -1,0 +1,28 @@
+name: dreamwell-dev
+
+services:
+  dreamwell:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev-base
+    working_dir: /app
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - dreamwell-cargo-registry:/usr/local/cargo/registry
+      - dreamwell-cargo-git:/usr/local/cargo/git
+      - dreamwell-target:/app/target
+      - dreamwell-data:/app/data
+    environment:
+      CARGO_HOME: /usr/local/cargo
+      DREAMWELL_STATIC_DIR: crates/frontend/dist
+      DREAMWELL_DATABASE_URL: sqlite:/app/data/dreamwell.db
+    entrypoint: ["/app/scripts/dev-run.sh"]
+
+volumes:
+  dreamwell-cargo-registry:
+  dreamwell-cargo-git:
+  dreamwell-target:
+  dreamwell-data:
