@@ -733,7 +733,10 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         });
     }
 
-    let streaming = matches!(beat.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
+    let streaming = matches!(
+        beat.job_status,
+        Some(JobStatus::Running) | Some(JobStatus::Queued)
+    );
     let story_id = props.story_id;
     let chapter_id = props.chapter_id;
     let beat_id = beat.id;

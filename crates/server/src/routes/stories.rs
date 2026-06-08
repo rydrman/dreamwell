@@ -12,9 +12,8 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    GenerateRequest, OkResponse, Story, StoryBeatCreate, StoryBeatUpdate,
-    StoryChapterCreate, StoryChapterUpdate, StoryCreate, StoryDetail,
-    StoryStreamPayload, StoryUpdate,
+    GenerateRequest, OkResponse, Story, StoryBeatCreate, StoryBeatUpdate, StoryChapterCreate,
+    StoryChapterUpdate, StoryCreate, StoryDetail, StoryStreamPayload, StoryUpdate,
 };
 
 use crate::db;
@@ -25,13 +24,13 @@ use crate::routes::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_stories).post(create_story))
-        .route("/:id", get(get_story).patch(update_story).delete(delete_story))
+        .route(
+            "/:id",
+            get(get_story).patch(update_story).delete(delete_story),
+        )
         .route("/:id/stream", get(stream_story))
         .route("/:id/generate-chapter", post(generate_chapter))
-        .route(
-            "/:id/chapters",
-            post(create_chapter),
-        )
+        .route("/:id/chapters", post(create_chapter))
         .route(
             "/:id/chapters/:chapter_id",
             axum::routing::patch(update_chapter).delete(delete_chapter),
@@ -40,10 +39,7 @@ pub fn router() -> Router<AppState> {
             "/:id/chapters/:chapter_id/generate-beat",
             post(generate_beat),
         )
-        .route(
-            "/:id/chapters/:chapter_id/beats",
-            post(create_beat),
-        )
+        .route("/:id/chapters/:chapter_id/beats", post(create_beat))
         .route(
             "/:id/chapters/:chapter_id/beats/:beat_id",
             axum::routing::patch(update_beat).delete(delete_beat),
@@ -157,8 +153,7 @@ async fn generate_beat(
     Path((id, chapter_id)): Path<(i64, i64)>,
     Json(payload): Json<GenerateRequest>,
 ) -> AppResult<Json<StoryDetail>> {
-    let (_beat, job) =
-        db::prepare_generate_beat(&state.pool, id, chapter_id, &payload).await?;
+    let (_beat, job) = db::prepare_generate_beat(&state.pool, id, chapter_id, &payload).await?;
     enqueue_story_generation(&state.queue, job).await?;
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
