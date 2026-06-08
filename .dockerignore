@@ -1,0 +1,7 @@
+target/
+crates/frontend/dist/
+.git/
+.github/
+deploy/
+*.db
+*.db-*

@@ -1,12 +1,21 @@
 CARGO ?= cargo
-TRUNK ?= trunk
+CARGO_HOME ?= $(HOME)/.cargo
+CARGO_BIN ?= $(CARGO_HOME)/bin
+# Use the Rust wasm bundler (cargo install trunk), not trunk.io's unrelated CLI on PATH.
+TRUNK ?= $(CARGO_BIN)/trunk
+TRUNK_VERSION ?= v0.21.14
+TRUNK_BASE_URL ?= https://github.com/trunk-rs/trunk/releases/download
+TRUNK_ARCHIVE ?= trunk-x86_64-unknown-linux-gnu.tar.gz
+TRUNK_URL ?= $(TRUNK_BASE_URL)/$(TRUNK_VERSION)/$(TRUNK_ARCHIVE)
 
 KUBECONFIG ?= $(HOME)/work/homelab/kube_config_talos.yaml
 IMAGE ?= ghcr.io/rydrman/dreamwell
 IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
 NAMESPACE ?= dreamwell
 
-.PHONY: fmt fmt-check clippy test validate install-hooks build build-front build-server run clean docker deploy
+COMPOSE_DEV ?= docker compose -f docker-compose.dev.yml
+
+.PHONY: fmt fmt-check clippy test validate install-hooks install-trunk build build-front build-server run run-local run-docker clean docker deploy
 
 fmt:
 	$(CARGO) fmt --all
@@ -26,7 +35,15 @@ install-hooks:
 	git config core.hooksPath .githooks
 	@echo "Git hooks installed from .githooks/ (pre-commit runs make validate)"
 
-build-front:
+install-trunk:
+	@mkdir -p $(CARGO_BIN)
+	@test -x $(TRUNK) || { \
+		echo "Installing trunk $(TRUNK_VERSION)..."; \
+		curl -fsSL "$(TRUNK_URL)" | tar -xz -C $(CARGO_BIN) trunk; \
+		chmod +x $(TRUNK); \
+	}
+
+build-front: install-trunk
 	cd crates/frontend && env -u NO_COLOR $(TRUNK) build --release
 
 build-server:
@@ -34,7 +51,13 @@ build-server:
 
 build: build-front build-server
 
-run: build
+run: run-docker
+
+run-docker:
+	chmod +x scripts/dev-run.sh
+	$(COMPOSE_DEV) run --rm --service-ports dreamwell
+
+run-local: build
 	DREAMWELL_STATIC_DIR=crates/frontend/dist \
 	$(CARGO) run --release -p dreamwell-server
 
@@ -43,7 +66,7 @@ clean:
 	rm -rf crates/frontend/dist
 
 docker:
-	docker build -t dreamwell:local .
+	DOCKER_BUILDKIT=1 docker build -t dreamwell:local .
 
 deploy:
 	kubectl --kubeconfig=$(KUBECONFIG) apply -k deploy/

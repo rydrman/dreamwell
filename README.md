@@ -38,7 +38,11 @@ make test
 make build
 
 # Run locally (serves UI + API on :8080)
+# Uses Docker with persistent cargo/target volumes so rebuilds are incremental.
 make run
+
+# Run without Docker (requires local Rust + wasm32 target)
+make run-local
 ```
 
 **Commit policy:** `rustfmt`, `clippy`, and `cargo test` must pass before committing. Run `make validate` manually, or `make install-hooks` once to enforce this via a pre-commit hook.
