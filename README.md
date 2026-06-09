@@ -63,7 +63,7 @@ Click the **queue bar** at the top of Chats or Stories to open the queue page, i
 | `DREAMWELL_PORT` | `8080` | Listen port |
 | `DREAMWELL_MAX_CONCURRENT_JOBS` | `1` | Queue concurrency |
 
-Inference HTTP timeouts are fixed at 5 minutes (connect) and 15 minutes (total request) to support slow local models.
+Inference HTTP timeouts use a 5 minute connect timeout. Non-streaming requests also have a 15 minute total timeout. Streaming requests have no total timeout; instead they fail if no data arrives for 5 minutes.
 
 ## Docker
 

@@ -1,15 +1,19 @@
+use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use dreamwell_types::ModelInfo;
-use futures_util::StreamExt;
+use futures_util::Stream;
+use futures_util::StreamExt as FuturesStreamExt;
 use reqwest::Client;
 use serde_json::Value;
+use tokio_stream::StreamExt as TokioStreamExt;
 
 use crate::error::{AppError, AppResult};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(900);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn http_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -19,6 +23,16 @@ fn http_client() -> &'static Client {
             .timeout(REQUEST_TIMEOUT)
             .build()
             .expect("http client")
+    })
+}
+
+fn streaming_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .expect("streaming http client")
     })
 }
 
@@ -66,7 +80,7 @@ pub async fn stream_chat_completion(
     temperature: f64,
     top_p: f64,
     max_tokens: i64,
-) -> AppResult<impl futures_util::Stream<Item = AppResult<String>>> {
+) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<String>> + Send>>> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let payload = serde_json::json!({
         "model": model,
@@ -76,7 +90,7 @@ pub async fn stream_chat_completion(
         "max_tokens": max_tokens,
         "stream": true,
     });
-    let response = http_client().post(url).json(&payload).send().await?;
+    let response = streaming_client().post(url).json(&payload).send().await?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -85,8 +99,22 @@ pub async fn stream_chat_completion(
         )));
     }
 
-    let stream = response.bytes_stream().map(|chunk| {
-        let chunk = chunk.map_err(AppError::from)?;
+    let stream = TokioStreamExt::timeout(
+        FuturesStreamExt::map(response.bytes_stream(), |chunk| {
+            chunk.map_err(AppError::from)
+        }),
+        STREAM_IDLE_TIMEOUT,
+    );
+    let stream = FuturesStreamExt::map(stream, |result| match result {
+        Ok(item) => item,
+        Err(_elapsed) => Err(AppError::inference(format!(
+            "Inference stream stalled (no data for {}s)",
+            STREAM_IDLE_TIMEOUT.as_secs()
+        ))),
+    });
+
+    let stream = FuturesStreamExt::map(stream, |chunk| {
+        let chunk = chunk?;
         let text = String::from_utf8_lossy(&chunk);
         let mut tokens = Vec::new();
         for line in text.lines() {
@@ -109,12 +137,12 @@ pub async fn stream_chat_completion(
         Ok(tokens)
     });
 
-    Ok(stream.flat_map(|result| {
+    Ok(Box::pin(FuturesStreamExt::flat_map(stream, |result| {
         futures_util::stream::iter(match result {
             Ok(tokens) => tokens.into_iter().map(Ok).collect::<Vec<_>>(),
             Err(err) => vec![Err(err)],
         })
-    }))
+    })))
 }
 
 pub async fn chat_completion(
