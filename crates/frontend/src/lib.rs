@@ -6,6 +6,9 @@ mod stories_ui;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
+
 use dreamwell_types::*;
 use gloo_timers::callback::{Interval, Timeout};
 use queue_ui::{AppMode, QueueBar, QueuePage};
@@ -36,6 +39,7 @@ fn app() -> Html {
     let loading = use_state(|| true);
     let picker_open = use_state(|| false);
     let mobile_pane = use_state(|| MobilePane::Main);
+    let refresh_generation = use_state(|| 0u32);
 
     {
         let chats = chats.clone();
@@ -72,42 +76,124 @@ fn app() -> Html {
         let messages_loading = messages_loading.clone();
         let chats = chats.clone();
         let selected_chat_id = *selected_chat_id;
-        use_effect_with(selected_chat_id, move |chat_id| {
-            let mut stream_holder = None::<api::ChatStream>;
-            if let Some(chat_id) = *chat_id {
-                messages_loading.set(true);
-                let messages_for_fetch = messages.clone();
-                let messages_loading_for_fetch = messages_loading.clone();
-                let chats = chats.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(msgs) = api::get_messages(chat_id).await {
-                        messages_for_fetch.set(msgs);
-                    }
-                    messages_loading_for_fetch.set(false);
-                });
-                stream_holder = api::ChatStream::new(chat_id, move |payload| {
-                    messages.set(payload.messages.clone());
+        let refresh_generation = *refresh_generation;
+        use_effect_with(
+            (selected_chat_id, refresh_generation),
+            move |(chat_id, _)| {
+                let mut stream_holder = None::<api::ChatStream>;
+                if let Some(chat_id) = *chat_id {
+                    messages_loading.set(true);
+                    let messages_for_fetch = messages.clone();
+                    let messages_loading_for_fetch = messages_loading.clone();
+                    let chats = chats.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Ok(msgs) = api::get_messages(chat_id).await {
+                            messages_for_fetch.set(msgs);
+                        }
+                        messages_loading_for_fetch.set(false);
+                    });
+                    stream_holder = Some(api::ChatStream::new(chat_id, move |payload| {
+                        messages.set(payload.messages.clone());
+                        messages_loading.set(false);
+                        let current = (*chats).clone();
+                        chats.set(sort_chats(
+                            current
+                                .into_iter()
+                                .map(|c| {
+                                    if c.id == payload.chat.id {
+                                        payload.chat.clone()
+                                    } else {
+                                        c
+                                    }
+                                })
+                                .collect(),
+                        ));
+                    }));
+                } else {
+                    messages.set(vec![]);
                     messages_loading.set(false);
-                    let current = (*chats).clone();
-                    chats.set(sort_chats(
-                        current
-                            .into_iter()
-                            .map(|c| {
-                                if c.id == payload.chat.id {
-                                    payload.chat.clone()
-                                } else {
-                                    c
-                                }
-                            })
-                            .collect(),
-                    ));
+                }
+                move || {
+                    drop(stream_holder);
+                }
+            },
+        );
+    }
+
+    {
+        let refresh_generation = refresh_generation.clone();
+        let chats = chats.clone();
+        let archived_chats = archived_chats.clone();
+        let queue = queue.clone();
+        use_effect_with((), move |_| {
+            let refresh_generation = refresh_generation.clone();
+            let chats = chats.clone();
+            let archived_chats = archived_chats.clone();
+            let queue = queue.clone();
+            let resume: Rc<dyn Fn()> = Rc::new(move || {
+                refresh_generation.set(*refresh_generation + 1);
+                let chats = chats.clone();
+                let archived_chats = archived_chats.clone();
+                let queue = queue.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(status) = api::get_queue().await {
+                        queue.set(Some(status));
+                    }
+                    if let Ok(list) = api::list_chats().await {
+                        chats.set(sort_chats(list));
+                    }
+                    if let Ok(list) = api::list_archived_chats().await {
+                        archived_chats.set(sort_archived_chats(list));
+                    }
                 });
-            } else {
-                messages.set(vec![]);
-                messages_loading.set(false);
+            });
+
+            let resume_visibility = resume.clone();
+            let visibility_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                if web_sys::window()
+                    .and_then(|window| window.document())
+                    .is_some_and(|document| {
+                        document.visibility_state() == web_sys::VisibilityState::Visible
+                    })
+                {
+                    resume_visibility();
+                }
+            }) as Box<dyn FnMut(_)>);
+
+            let document = web_sys::window().and_then(|window| window.document());
+            if let Some(document) = document.as_ref() {
+                let _ = document.add_event_listener_with_callback(
+                    "visibilitychange",
+                    visibility_callback.as_ref().unchecked_ref(),
+                );
             }
+
+            let resume_online = resume.clone();
+            let online_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                resume_online();
+            }) as Box<dyn FnMut(_)>);
+
+            let window = web_sys::window();
+            if let Some(window) = window.as_ref() {
+                let _ = window.add_event_listener_with_callback(
+                    "online",
+                    online_callback.as_ref().unchecked_ref(),
+                );
+            }
+
             move || {
-                drop(stream_holder);
+                if let Some(document) = document.as_ref() {
+                    let _ = document.remove_event_listener_with_callback(
+                        "visibilitychange",
+                        visibility_callback.as_ref().unchecked_ref(),
+                    );
+                }
+                if let Some(window) = window.as_ref() {
+                    let _ = window.remove_event_listener_with_callback(
+                        "online",
+                        online_callback.as_ref().unchecked_ref(),
+                    );
+                }
             }
         });
     }
