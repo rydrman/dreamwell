@@ -166,6 +166,7 @@ pub fn job_type_label(job_type: JobType) -> &'static str {
     match job_type {
         JobType::ChatMessage => "Chat reply",
         JobType::StoryChapterOutline => "Chapter outline",
+        JobType::StoryFullOutline => "Story outline",
         JobType::StoryBeatOutline => "Beat outline",
         JobType::StoryBeatProse => "Beat prose",
     }

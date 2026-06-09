@@ -30,6 +30,11 @@ pub fn router() -> Router<AppState> {
         )
         .route("/:id/stream", get(stream_story))
         .route("/:id/generate-chapter", post(generate_chapter))
+        .route("/:id/generate-outline", post(generate_outline))
+        .route(
+            "/:id/queue-remaining-chapters",
+            post(queue_remaining_chapters),
+        )
         .route("/:id/chapters", post(create_chapter))
         .route(
             "/:id/chapters/:chapter_id",
@@ -145,6 +150,28 @@ async fn generate_chapter(
 ) -> AppResult<Json<StoryDetail>> {
     let (_chapter, job) = db::prepare_generate_chapter(&state.pool, id, &payload).await?;
     enqueue_story_generation(&state.queue, job).await?;
+    Ok(Json(db::get_story_detail(&state.pool, id).await?))
+}
+
+async fn generate_outline(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<GenerateRequest>,
+) -> AppResult<Json<StoryDetail>> {
+    let job = db::prepare_generate_full_outline(&state.pool, id, &payload).await?;
+    enqueue_story_generation(&state.queue, job).await?;
+    Ok(Json(db::get_story_detail(&state.pool, id).await?))
+}
+
+async fn queue_remaining_chapters(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<GenerateRequest>,
+) -> AppResult<Json<StoryDetail>> {
+    let jobs = db::prepare_queue_remaining_chapters(&state.pool, id, &payload).await?;
+    for job in jobs {
+        enqueue_story_generation(&state.queue, job).await?;
+    }
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
 

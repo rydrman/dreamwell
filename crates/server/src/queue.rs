@@ -14,7 +14,7 @@ use crate::inference::{chat_completion, stream_chat_completion};
 use crate::prompts::build_messages_for_inference;
 use crate::story_prompts::{
     build_beat_outline_messages, build_beat_prose_messages, build_chapter_outline_messages,
-    parse_outline_json,
+    build_full_outline_messages, parse_full_outline_json, parse_outline_json,
 };
 use crate::summarize::maybe_summarize_chat;
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
@@ -233,6 +233,9 @@ async fn run_job(pool: &SqlitePool, job_id: i64, token: CancellationToken) -> Ap
         JobType::StoryChapterOutline => {
             run_story_chapter_outline(pool, job_id, &job, &settings, token).await
         }
+        JobType::StoryFullOutline => {
+            run_story_full_outline(pool, job_id, &job, &settings, token).await
+        }
         JobType::StoryBeatOutline => {
             run_story_beat_outline(pool, job_id, &job, &settings, token).await
         }
@@ -276,7 +279,7 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
                 }
             }
         }
-        JobType::StoryChapterOutline | JobType::StoryBeatOutline => {}
+        JobType::StoryChapterOutline | JobType::StoryFullOutline | JobType::StoryBeatOutline => {}
     }
     Ok(())
 }
@@ -305,7 +308,7 @@ async fn fail_job(
                     .await?;
             }
         }
-        JobType::StoryChapterOutline | JobType::StoryBeatOutline => {}
+        JobType::StoryChapterOutline | JobType::StoryFullOutline | JobType::StoryBeatOutline => {}
     }
     Ok(())
 }
@@ -437,6 +440,85 @@ async fn run_chat_job(
 
     db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
     maybe_summarize_chat(pool, chat_id, settings).await?;
+    Ok(())
+}
+
+async fn run_story_full_outline(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &dreamwell_types::Job,
+    settings: &dreamwell_types::Settings,
+    token: CancellationToken,
+) -> AppResult<()> {
+    let story_id = job
+        .story_id
+        .ok_or_else(|| AppError::internal("story job missing story_id"))?;
+
+    let detail = db::get_story_detail(pool, story_id).await?;
+    let indices: Vec<usize> = detail
+        .chapters
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.title.is_empty() && c.synopsis.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    if indices.is_empty() {
+        return fail_job(pool, job_id, job, "No chapters need outlines").await;
+    }
+
+    let messages = build_full_outline_messages(
+        &detail.story,
+        &detail.chapters,
+        &indices,
+        &job.guidance_notes,
+    );
+
+    let response = tokio::select! {
+        () = token.cancelled() => {
+            return cancel_job_record(pool, job).await;
+        }
+        result = chat_completion(
+            &settings.inference_url,
+            &settings.model,
+            &messages,
+            0.7,
+            settings.top_p,
+            2048,
+        ) => result,
+    };
+
+    match response {
+        Ok(text) => {
+            let text = display_generated_text(settings, &text);
+            if let Some(outlines) = parse_full_outline_json(&text) {
+                if outlines.len() != indices.len() {
+                    fail_job(
+                        pool,
+                        job_id,
+                        job,
+                        &format!(
+                            "Expected {} chapter outlines, got {}",
+                            indices.len(),
+                            outlines.len()
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                for (idx, (title, synopsis)) in indices.iter().zip(outlines) {
+                    let chapter_id = detail.chapters[*idx].id;
+                    db::update_chapter_outline(pool, chapter_id, &title, &synopsis).await?;
+                }
+                db::touch_story(pool, story_id).await?;
+                db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+            } else {
+                fail_job(pool, job_id, job, "Failed to parse full outline JSON").await?;
+            }
+        }
+        Err(err) => {
+            fail_job(pool, job_id, job, &err.to_string()).await?;
+        }
+    }
     Ok(())
 }
 

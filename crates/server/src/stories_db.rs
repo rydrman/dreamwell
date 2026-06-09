@@ -472,6 +472,105 @@ pub async fn enqueue_story_job(
     get_job(pool, id).await
 }
 
+pub async fn prepare_generate_full_outline(
+    pool: &SqlitePool,
+    story_id: i64,
+    payload: &GenerateRequest,
+) -> AppResult<Job> {
+    let detail = get_story_detail(pool, story_id).await?;
+    let target = detail.story.length_preset.ref_chapters();
+    let current = detail.chapters.len() as i64;
+    for _ in current..target {
+        create_chapter(
+            pool,
+            story_id,
+            StoryChapterCreate {
+                title: String::new(),
+                synopsis: String::new(),
+                sort_order: None,
+            },
+        )
+        .await?;
+    }
+    let detail = get_story_detail(pool, story_id).await?;
+    let needs_outline = detail
+        .chapters
+        .iter()
+        .any(|c| c.title.is_empty() && c.synopsis.is_empty());
+    if !needs_outline {
+        return Err(AppError::bad_request(
+            "All chapters already have outlines. Edit or delete chapters to regenerate.",
+        ));
+    }
+    enqueue_story_job(
+        pool,
+        JobType::StoryFullOutline,
+        story_id,
+        None,
+        None,
+        payload.guidance_notes.clone(),
+    )
+    .await
+}
+
+pub async fn prepare_queue_remaining_chapters(
+    pool: &SqlitePool,
+    story_id: i64,
+    payload: &GenerateRequest,
+) -> AppResult<Vec<Job>> {
+    let detail = get_story_detail(pool, story_id).await?;
+    let target = detail.story.length_preset.ref_chapters();
+    let current = detail.chapters.len() as i64;
+    let mut jobs = Vec::new();
+    for _ in current..target {
+        let chapter = create_chapter(
+            pool,
+            story_id,
+            StoryChapterCreate {
+                title: String::new(),
+                synopsis: String::new(),
+                sort_order: None,
+            },
+        )
+        .await?;
+        let job = enqueue_story_job(
+            pool,
+            JobType::StoryChapterOutline,
+            story_id,
+            Some(chapter.id),
+            None,
+            payload.guidance_notes.clone(),
+        )
+        .await?;
+        jobs.push(job);
+    }
+    if jobs.is_empty() {
+        let empty: Vec<_> = detail
+            .chapters
+            .iter()
+            .filter(|c| c.title.is_empty() && c.synopsis.is_empty())
+            .collect();
+        for chapter in empty {
+            let job = enqueue_story_job(
+                pool,
+                JobType::StoryChapterOutline,
+                story_id,
+                Some(chapter.id),
+                None,
+                payload.guidance_notes.clone(),
+            )
+            .await?;
+            jobs.push(job);
+        }
+    }
+    if jobs.is_empty() {
+        return Err(AppError::bad_request(
+            "All chapters already have outlines.",
+        ));
+    }
+    Ok(jobs)
+}
+
 pub async fn prepare_generate_chapter(
     pool: &SqlitePool,
     story_id: i64,
