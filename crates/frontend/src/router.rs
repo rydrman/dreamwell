@@ -292,6 +292,18 @@ impl AppRoute {
                 overlay: Some(overlay),
             } => format!("/queue/{}", overlay_segment(*overlay)),
             Self::Queue { overlay: None } => "/queue".to_string(),
+            Self::Stories {
+                story_id: None,
+                nav: StoryNav::Chapter(_),
+                overlay: None,
+                sidebar: false,
+            } => "/stories".to_string(),
+            Self::Stories {
+                story_id: None,
+                nav: StoryNav::Beat { .. },
+                overlay: None,
+                sidebar: false,
+            } => "/stories".to_string(),
             _ => "/chats".to_string(),
         }
     }
