@@ -574,6 +574,12 @@ button {
   right: auto;
 }
 
+.message-menu--above {
+  top: auto;
+  bottom: 100%;
+  margin-bottom: 0.25rem;
+}
+
 .message-menu-item {
   display: block;
   width: 100%;

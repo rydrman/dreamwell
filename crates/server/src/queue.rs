@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dreamwell_types::{Job, JobStatus, JobType};
 use futures_util::StreamExt;
@@ -21,6 +21,10 @@ use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
 use crate::variables::{
     apply_variable_updates, build_message_variable_updates, extract_variables_from_text,
 };
+
+/// Slightly above inference request timeout so hung jobs do not block the queue forever.
+const STUCK_JOB_MAX_AGE_SECS: i64 = 920;
+const QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> String {
     if settings.thought_blocks_enabled {
@@ -115,13 +119,57 @@ impl JobQueue {
         let active_tokens = self.active_tokens.clone();
         tokio::spawn(async move {
             tracing::info!("generation queue worker started");
-            while work_rx.recv().await.is_some() {
+            let mut poll = tokio::time::interval(QUEUE_POLL_INTERVAL);
+            poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            loop {
+                tokio::select! {
+                    msg = work_rx.recv() => {
+                        if msg.is_none() {
+                            break;
+                        }
+                    }
+                    _ = poll.tick() => {
+                        if let Ok(running_ids) = db::list_running_job_ids(&pool).await {
+                            let orphaned: Vec<i64> = match active_tokens.lock() {
+                                Ok(tokens) => running_ids
+                                    .into_iter()
+                                    .filter(|id| !tokens.contains_key(id))
+                                    .collect(),
+                                Err(err) => {
+                                    tracing::error!(%err, "token map poisoned during queue poll");
+                                    vec![]
+                                }
+                            };
+                            if !orphaned.is_empty() {
+                                match db::requeue_jobs_by_id(&pool, &orphaned).await {
+                                    Ok(requeued) if requeued > 0 => {
+                                        tracing::warn!(requeued, "requeued orphaned running jobs");
+                                    }
+                                    Ok(_) => {}
+                                    Err(err) => {
+                                        tracing::error!(%err, "requeue_jobs_by_id failed");
+                                    }
+                                }
+                            }
+                        }
+                        match db::requeue_stuck_jobs(&pool, STUCK_JOB_MAX_AGE_SECS).await {
+                            Ok(requeued) if requeued > 0 => {
+                                tracing::warn!(requeued, "requeued stuck running jobs");
+                            }
+                            Ok(_) => {}
+                            Err(err) => tracing::error!(%err, "requeue_stuck_jobs failed"),
+                        }
+                    }
+                }
+
                 loop {
                     let ids = match db::claim_jobs(&pool, 8).await {
                         Ok(ids) => ids,
                         Err(err) => {
                             tracing::error!(%err, "claim_jobs failed");
-                            break;
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            continue;
                         }
                     };
                     if ids.is_empty() {

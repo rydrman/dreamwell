@@ -44,8 +44,12 @@ async fn main() {
     if requeued > 0 {
         tracing::info!("requeued {requeued} stale jobs after restart");
     }
+    let pending = db::count_queued_jobs(&pool)
+        .await
+        .expect("count queued jobs");
     let queue = JobQueue::new(pool.clone());
-    if requeued > 0 {
+    if requeued > 0 || pending > 0 {
+        tracing::info!("waking generation queue ({pending} queued job(s))");
         queue.wake();
     }
 
