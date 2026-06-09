@@ -107,6 +107,13 @@ pub struct CharacterUpdate {
     pub avatar_url: Option<String>,
 }
 
+pub const CHAT_ARCHIVE_RETENTION_DAYS: i64 = 90;
+
+pub fn days_until_chat_archive_purge(archived_at: DateTime<Utc>) -> i64 {
+    let purge_at = archived_at + chrono::Duration::days(CHAT_ARCHIVE_RETENTION_DAYS);
+    (purge_at - Utc::now()).num_days().max(0)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Chat {
     pub id: i64,
@@ -116,6 +123,8 @@ pub struct Chat {
     pub summary: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     pub active_job: Option<Job>,
     pub queued_jobs: i64,
 }
