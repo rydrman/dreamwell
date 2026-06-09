@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 WORKDIR /app
 
 FROM rust-base AS builder
+WORKDIR /app
 COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
