@@ -1110,7 +1110,7 @@ fn right_panel(props: &RightPanelProps) -> Html {
                 <button class={classes!("tab", (*tab == 1).then_some("active"))} onclick={{
                     let tab = tab.clone();
                     Callback::from(move |_| tab.set(1))
-                }}>{"Facts"}</button>
+                }}>{"Variables"}</button>
             </div>
             <div class="panel-body">
                 if *tab == 0 {
@@ -1123,7 +1123,7 @@ fn right_panel(props: &RightPanelProps) -> Html {
                         chat_id={props.chat_id}
                     />
                 } else {
-                    <FactsPanel chat_id={props.chat_id} />
+                    <VariablesPanel chat_id={props.chat_id} />
                 }
             </div>
         </aside>
@@ -1437,91 +1437,91 @@ fn draft_oninput(
 }
 
 #[derive(Properties, PartialEq)]
-struct FactsPanelProps {
+struct VariablesPanelProps {
     chat_id: Option<i64>,
 }
 
-#[function_component(FactsPanel)]
-fn facts_panel(props: &FactsPanelProps) -> Html {
-    let facts = use_state(Vec::<Fact>::new);
+#[function_component(VariablesPanel)]
+fn variables_panel(props: &VariablesPanelProps) -> Html {
+    let variables = use_state(Vec::<ChatVariable>::new);
     let key = use_state(String::new);
     let value = use_state(String::new);
 
     {
-        let facts = facts.clone();
+        let variables = variables.clone();
         let chat_id = props.chat_id;
         use_effect_with(chat_id, move |chat_id| {
             if let Some(chat_id) = *chat_id {
-                let facts = facts.clone();
+                let variables = variables.clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(list) = api::get_facts(chat_id).await {
-                        facts.set(list);
+                    if let Ok(list) = api::get_variables(chat_id).await {
+                        variables.set(list);
                     }
                 });
             } else {
-                facts.set(vec![]);
+                variables.set(vec![]);
             }
             || ()
         });
     }
 
     let Some(chat_id) = props.chat_id else {
-        return html! { <p class="muted">{"Select a chat to view facts."}</p> };
+        return html! { <p class="muted">{"Select a chat to view variables."}</p> };
     };
 
     html! {
         <div>
-            <p class="muted">{"Facts are injected into the prompt. The model can update them with fact tags."}</p>
-            { for facts.iter().map(|f| {
-                let fact_key = f.key.clone();
+            <p class="muted">{"Chat variables are injected into the prompt. The model can update them with var tags."}</p>
+            { for variables.iter().map(|v| {
+                let variable_key = v.key.clone();
                 let chat_id_for_delete = chat_id;
                 html! {
-                    <div class="fact-card">
+                    <div class="variable-card">
                         <div style="display:flex;justify-content:space-between;">
-                            <strong>{ &f.key }</strong>
+                            <strong>{ &v.key }</strong>
                             <button class="btn secondary btn-compact" onclick={{
-                                let facts = facts.clone();
-                                let fact_key = fact_key.clone();
+                                let variables = variables.clone();
+                                let variable_key = variable_key.clone();
                                 let chat_id = chat_id_for_delete;
                                 Callback::from(move |_| {
-                                    let facts = facts.clone();
-                                    let key = fact_key.clone();
+                                    let variables = variables.clone();
+                                    let key = variable_key.clone();
                                     wasm_bindgen_futures::spawn_local(async move {
-                                        let _ = api::delete_fact(chat_id, &key).await;
-                                        if let Ok(list) = api::get_facts(chat_id).await {
-                                            facts.set(list);
+                                        let _ = api::delete_variable(chat_id, &key).await;
+                                        if let Ok(list) = api::get_variables(chat_id).await {
+                                            variables.set(list);
                                         }
                                     });
                                 })
                             }}>{"delete"}</button>
                         </div>
-                        <div style="white-space:pre-wrap;">{ &f.value }</div>
+                        <div style="white-space:pre-wrap;">{ &v.value }</div>
                     </div>
                 }
             }) }
             <label class="field"><span class="muted">{"Key"}</span><input value={(*key).clone()} oninput={input_callback(key.clone())} /></label>
             <label class="field"><span class="muted">{"Value"}</span><textarea value={(*value).clone()} oninput={input_callback(value.clone())} /></label>
             <button class="btn" onclick={{
-                let facts = facts.clone();
+                let variables = variables.clone();
                 let key = key.clone();
                 let value = value.clone();
                 Callback::from(move |_| {
                     if key.trim().is_empty() { return; }
-                    let facts = facts.clone();
+                    let variables = variables.clone();
                     let k = (*key).clone();
                     let v = (*value).clone();
                     let key = key.clone();
                     let value = value.clone();
                     wasm_bindgen_futures::spawn_local(async move {
-                        let _ = api::upsert_fact(chat_id, &k, &v).await;
+                        let _ = api::upsert_variable(chat_id, &k, &v).await;
                         key.set(String::new());
                         value.set(String::new());
-                        if let Ok(list) = api::get_facts(chat_id).await {
-                            facts.set(list);
+                        if let Ok(list) = api::get_variables(chat_id).await {
+                            variables.set(list);
                         }
                     });
                 })
-            }}>{"Save fact"}</button>
+            }}>{"Save variable"}</button>
         </div>
     }
 }
@@ -1684,7 +1684,7 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         summarize_enabled: Some(current.summarize_enabled),
         summarize_after_messages: Some(current.summarize_after_messages),
         summarize_keep_recent: Some(current.summarize_keep_recent),
-        facts_enabled: Some(current.facts_enabled),
+        variables_enabled: Some(current.variables_enabled),
         thought_blocks_enabled: Some(current.thought_blocks_enabled),
         max_context_messages: Some(current.max_context_messages),
         max_concurrent_jobs: Some(current.max_concurrent_jobs),
@@ -1819,13 +1819,13 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 <label class="field"><span class="muted">{"Keep recent messages"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(save_ctx.clone(), "summarize_keep_recent")} /></label>
             </div>
             <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
-                <input type="checkbox" checked={s.facts_enabled} onclick={{
+                <input type="checkbox" checked={s.variables_enabled} onclick={{
                     let save_ctx = save_ctx.clone();
                     Callback::from(move |_| {
-                        save_ctx.update_field(|current| current.facts_enabled = !current.facts_enabled);
+                        save_ctx.update_field(|current| current.variables_enabled = !current.variables_enabled);
                     })
                 }} />
-                {"Enable KV facts in prompts"}
+                {"Enable chat variables in prompts"}
             </label>
             <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
                 <input type="checkbox" checked={s.thought_blocks_enabled} onclick={{
