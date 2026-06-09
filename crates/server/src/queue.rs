@@ -18,11 +18,21 @@ use crate::story_prompts::{
 };
 use crate::summarize::maybe_summarize_chat;
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
-use crate::variables::{apply_variable_updates, extract_variables_from_text};
+use crate::variables::{
+    apply_variable_updates, build_message_variable_updates, extract_variables_from_text,
+};
 
 fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> String {
     if settings.thought_blocks_enabled {
         strip_thought_blocks(text)
+    } else {
+        text.to_string()
+    }
+}
+
+fn strip_variable_tags(settings: &dreamwell_types::Settings, text: &str) -> String {
+    if settings.variables_enabled {
+        extract_variables_from_text(text).0
     } else {
         text.to_string()
     }
@@ -295,17 +305,19 @@ async fn run_chat_job(
                     let parsed = parse_thought_blocks(&accumulated);
                     let (duration_ms, in_progress) =
                         thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
+                    let reply = strip_variable_tags(settings, &parsed.reply);
                     db::update_message_generation(
                         pool,
                         message_id,
-                        &parsed.reply,
+                        &reply,
                         &parsed.thought,
                         duration_ms,
                         in_progress,
                     )
                     .await?;
                 } else {
-                    db::update_message_content(pool, message_id, &accumulated).await?;
+                    let content = strip_variable_tags(settings, &accumulated);
+                    db::update_message_content(pool, message_id, &content).await?;
                 }
                 db::touch_chat(pool, chat_id).await?;
             }
@@ -328,7 +340,7 @@ async fn run_chat_job(
         return cancel_job_record(pool, job).await;
     }
 
-    let (processed, thought_content, thought_duration_ms, thought_in_progress) =
+    let (processed, thought_content, thought_duration_ms, _thought_in_progress) =
         if settings.thought_blocks_enabled {
             let parsed = parse_thought_blocks(&accumulated);
             let (duration_ms, in_progress) =
@@ -349,32 +361,28 @@ async fn run_chat_job(
             )
         };
 
-    let (cleaned, updates) = extract_variables_from_text(&processed);
-    if settings.variables_enabled && !updates.is_empty() {
-        if settings.thought_blocks_enabled {
-            db::update_message_generation(
-                pool,
-                message_id,
-                &cleaned,
-                &thought_content,
-                thought_duration_ms,
-                thought_in_progress,
-            )
-            .await?;
-        } else {
-            db::update_message_content(pool, message_id, &cleaned).await?;
-        }
+    let (content_to_save, updates) = if settings.variables_enabled {
+        extract_variables_from_text(&processed)
+    } else {
+        (processed.clone(), Vec::new())
+    };
+    let variable_updates = if settings.variables_enabled && !updates.is_empty() {
+        let updates_for_message = build_message_variable_updates(pool, chat_id, &updates).await?;
         apply_variable_updates(pool, chat_id, &updates).await?;
-    } else if settings.thought_blocks_enabled
-        && (thought_in_progress || thought_duration_ms.is_some() || !thought_content.is_empty())
+        updates_for_message
+    } else {
+        Vec::new()
+    };
+    if settings.thought_blocks_enabled || settings.variables_enabled || !variable_updates.is_empty()
     {
-        db::update_message_generation(
+        db::finalize_message_generation(
             pool,
             message_id,
-            &processed,
+            &content_to_save,
             &thought_content,
             thought_duration_ms,
-            thought_in_progress,
+            false,
+            &variable_updates,
         )
         .await?;
     }

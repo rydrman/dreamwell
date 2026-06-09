@@ -408,6 +408,7 @@ fn app() -> Html {
             <RightPanel
                 chat_id={*selected_chat_id}
                 character_id={selected.as_ref().map(|c| c.character_id)}
+                messages={(*messages).clone()}
                 on_character_change={Callback::from({
                     let chats = chats.clone();
                     move |(chat_id, character_id)| {
@@ -638,6 +639,62 @@ struct ThoughtBlockProps {
     thought_in_progress: bool,
 }
 
+fn format_variable_update_summary(update: &MessageVariableUpdate) -> String {
+    if let Some(previous) = &update.previous_value {
+        format!("{}: {} → {}", update.key, previous, update.value)
+    } else {
+        format!("{} → {}", update.key, update.value)
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct VariableUpdatesBlockProps {
+    updates: Vec<MessageVariableUpdate>,
+}
+
+#[function_component(VariableUpdatesBlock)]
+fn variable_updates_block(props: &VariableUpdatesBlockProps) -> Html {
+    let expanded = use_state(|| false);
+    let count = props.updates.len();
+    let summary = props
+        .updates
+        .iter()
+        .map(format_variable_update_summary)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let toggle = {
+        let expanded = expanded.clone();
+        Callback::from(move |_| expanded.set(!*expanded))
+    };
+
+    html! {
+        <div class="message-variable-updates">
+            <button type="button" class="message-variable-updates-toggle" onclick={toggle}>
+                <span class="message-variable-updates-label">
+                    { format!("Updated variables ({count})") }
+                </span>
+                <span class="message-variable-updates-chevron" aria-hidden="true">
+                    { if *expanded { "▾" } else { "▸" } }
+                </span>
+            </button>
+            if *expanded {
+                <div class="message-variable-updates-body">
+                    { for props.updates.iter().map(|update| {
+                        html! {
+                            <div class="message-variable-update-item">
+                                { format_variable_update_summary(update) }
+                            </div>
+                        }
+                    }) }
+                </div>
+            } else {
+                <div class="message-variable-updates-summary muted">{ summary }</div>
+            }
+        </div>
+    }
+}
+
 #[function_component(ThoughtBlock)]
 fn thought_block(props: &ThoughtBlockProps) -> Html {
     let expanded = use_state(|| false);
@@ -687,6 +744,7 @@ struct MessageBubbleProps {
     after_count: usize,
     rendered_content: Html,
     show_thoughts: bool,
+    show_variables: bool,
     on_changed: Callback<()>,
 }
 
@@ -714,6 +772,9 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         && (props.message.thought_in_progress
             || !props.message.thought_content.is_empty()
             || props.message.thought_duration_ms.is_some());
+    let show_variable_updates = props.show_variables
+        && props.message.role == MessageRole::Assistant
+        && !props.message.variable_updates.is_empty();
 
     let close_menu = {
         let menu_open = menu_open.clone();
@@ -920,6 +981,9 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             } else {
                 { props.rendered_content.clone() }
             }
+            if show_variable_updates {
+                <VariableUpdatesBlock updates={props.message.variable_updates.clone()} />
+            }
         </div>
     }
 }
@@ -961,6 +1025,7 @@ fn message_list(props: &MessageListProps) -> Html {
         .settings
         .as_ref()
         .is_some_and(|s| s.thought_blocks_enabled);
+    let show_variables = props.settings.as_ref().is_some_and(|s| s.variables_enabled);
     html! {
         <div class="messages">
             if props.messages.is_empty() {
@@ -990,6 +1055,7 @@ fn message_list(props: &MessageListProps) -> Html {
                             after_count={after_count}
                             rendered_content={rendered_content}
                             show_thoughts={show_thoughts}
+                            show_variables={show_variables}
                             on_changed={props.on_messages_change.clone()}
                         />
                     }
@@ -1091,6 +1157,7 @@ fn character_picker_modal(props: &CharacterPickerModalProps) -> Html {
 struct RightPanelProps {
     chat_id: Option<i64>,
     character_id: Option<i64>,
+    messages: Vec<Message>,
     on_character_change: Callback<(i64, i64)>,
     on_start_chat: Callback<(i64, String)>,
     on_chat_created: Callback<i64>,
@@ -1123,7 +1190,7 @@ fn right_panel(props: &RightPanelProps) -> Html {
                         chat_id={props.chat_id}
                     />
                 } else {
-                    <VariablesPanel chat_id={props.chat_id} />
+                    <VariablesPanel chat_id={props.chat_id} messages={props.messages.clone()} />
                 }
             </div>
         </aside>
@@ -1436,9 +1503,16 @@ fn draft_oninput(
     })
 }
 
+#[derive(Clone, PartialEq)]
+struct VariableRefreshSignal {
+    chat_id: Option<i64>,
+    message_signals: Vec<(i64, usize, Option<JobStatus>)>,
+}
+
 #[derive(Properties, PartialEq)]
 struct VariablesPanelProps {
     chat_id: Option<i64>,
+    messages: Vec<Message>,
 }
 
 #[function_component(VariablesPanel)]
@@ -1447,11 +1521,19 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
     let key = use_state(String::new);
     let value = use_state(String::new);
 
+    let refresh_signal = VariableRefreshSignal {
+        chat_id: props.chat_id,
+        message_signals: props
+            .messages
+            .iter()
+            .map(|m| (m.id, m.variable_updates.len(), m.job_status))
+            .collect(),
+    };
+
     {
         let variables = variables.clone();
-        let chat_id = props.chat_id;
-        use_effect_with(chat_id, move |chat_id| {
-            if let Some(chat_id) = *chat_id {
+        use_effect_with(refresh_signal, move |signal| {
+            if let Some(chat_id) = signal.chat_id {
                 let variables = variables.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(list) = api::get_variables(chat_id).await {
