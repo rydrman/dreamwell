@@ -564,9 +564,7 @@ pub async fn prepare_queue_remaining_chapters(
         }
     }
     if jobs.is_empty() {
-        return Err(AppError::bad_request(
-            "All chapters already have outlines.",
-        ));
+        return Err(AppError::bad_request("All chapters already have outlines."));
     }
     Ok(jobs)
 }

@@ -8,7 +8,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::queue_ui::QueueBar;
-use crate::MobilePane;
+use crate::router::{AppRoute, StoryNav};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum StorySelection {
@@ -17,53 +17,98 @@ pub enum StorySelection {
     Beat { chapter_id: i64, beat_id: i64 },
 }
 
+fn story_nav_from_selection(selection: StorySelection) -> StoryNav {
+    match selection {
+        StorySelection::Basics => StoryNav::Basics,
+        StorySelection::Chapter(id) => StoryNav::Chapter(id),
+        StorySelection::Beat {
+            chapter_id,
+            beat_id,
+        } => StoryNav::Beat {
+            chapter_id,
+            beat_id,
+        },
+    }
+}
+
+fn selection_from_story_nav(nav: StoryNav) -> StorySelection {
+    match nav {
+        StoryNav::Basics => StorySelection::Basics,
+        StoryNav::Chapter(id) => StorySelection::Chapter(id),
+        StoryNav::Beat {
+            chapter_id,
+            beat_id,
+        } => StorySelection::Beat {
+            chapter_id,
+            beat_id,
+        },
+    }
+}
+
+fn story_id_from_route(route: &AppRoute) -> Option<i64> {
+    match route {
+        AppRoute::Stories { story_id, .. } => *story_id,
+        _ => None,
+    }
+}
+
+fn story_nav_from_route(route: &AppRoute) -> StoryNav {
+    match route {
+        AppRoute::Stories { nav, .. } => *nav,
+        _ => StoryNav::Basics,
+    }
+}
+
+fn sidebar_open_from_route(route: &AppRoute) -> bool {
+    matches!(route, AppRoute::Stories { sidebar: true, .. })
+}
+
 #[derive(Properties, PartialEq)]
 pub struct StoriesShellProps {
+    pub route: AppRoute,
+    pub on_navigate: Callback<(AppRoute, bool)>,
     pub queue: Option<QueueStatus>,
     pub on_open_queue: Callback<()>,
-    #[prop_or_default]
-    pub initial_story_id: Option<i64>,
-    #[prop_or_default]
-    pub on_story_selected: Callback<Option<i64>>,
 }
 
 #[function_component(StoriesShell)]
 pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let stories = use_state(Vec::<Story>::new);
-    let selected_story_id = use_state(|| None::<i64>);
     let detail = use_state(|| None::<StoryDetail>);
-    let selection = use_state(|| StorySelection::Basics);
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
-    let mobile_pane = use_state(|| MobilePane::Main);
     let refresh_generation = use_state(|| 0u32);
+    let selected_story_id = story_id_from_route(&props.route);
+    let selection = selection_from_story_nav(story_nav_from_route(&props.route));
+    let sidebar_open = sidebar_open_from_route(&props.route);
 
     {
         let stories = stories.clone();
-        let selected_story_id = selected_story_id.clone();
         let loading = loading.clone();
-        let initial_story_id = props.initial_story_id;
+        let on_navigate = props.on_navigate.clone();
+        let route = props.route.clone();
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(list) = api::list_stories().await {
-                    if let Some(id) = initial_story_id {
-                        selected_story_id.set(Some(id));
-                    } else if let Some(first) = list.first() {
-                        selected_story_id.set(Some(first.id));
-                    }
                     stories.set(list);
+                    loading.set(false);
+                    if let AppRoute::Stories { story_id: None, .. } = route {
+                        if let Some(first) = (*stories).first() {
+                            on_navigate.emit((
+                                AppRoute::Stories {
+                                    story_id: Some(first.id),
+                                    nav: StoryNav::Basics,
+                                    overlay: None,
+                                    sidebar: false,
+                                },
+                                false,
+                            ));
+                        }
+                    }
+                } else {
+                    loading.set(false);
                 }
-                loading.set(false);
             });
-            || ()
-        });
-    }
-
-    {
-        let on_story_selected = props.on_story_selected.clone();
-        let selected_story_id = selected_story_id.clone();
-        use_effect_with(*selected_story_id, move |story_id| {
-            on_story_selected.emit(*story_id);
             || ()
         });
     }
@@ -71,42 +116,66 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     {
         let detail = detail.clone();
         let stories = stories.clone();
-        let selected_story_id = *selected_story_id;
         let refresh_generation = *refresh_generation;
-        let selection = selection.clone();
+        let route = props.route.clone();
+        use_effect_with((route.clone(), refresh_generation), move |(route, _)| {
+            let story_id = story_id_from_route(route);
+            let mut stream_holder = None::<api::StoryStream>;
+            if let Some(story_id) = story_id {
+                let detail_for_fetch = detail.clone();
+                let stories = stories.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(d) = api::get_story(story_id).await {
+                        detail_for_fetch.set(Some(d));
+                    }
+                });
+                stream_holder = Some(api::StoryStream::new(story_id, move |payload| {
+                    detail.set(Some(payload.detail.clone()));
+                    let current = (*stories).clone();
+                    stories.set(
+                        current
+                            .into_iter()
+                            .map(|s| {
+                                if s.id == payload.detail.story.id {
+                                    payload.detail.story.clone()
+                                } else {
+                                    s
+                                }
+                            })
+                            .collect(),
+                    );
+                }));
+            } else {
+                detail.set(None);
+            }
+            move || drop(stream_holder)
+        });
+    }
+
+    {
+        let stories = stories.clone();
+        let on_navigate = props.on_navigate.clone();
+        let route = props.route.clone();
         use_effect_with(
-            (selected_story_id, refresh_generation),
-            move |(story_id, _)| {
-                let mut stream_holder = None::<api::StoryStream>;
-                if let Some(story_id) = *story_id {
-                    let detail_for_fetch = detail.clone();
-                    let stories = stories.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        if let Ok(d) = api::get_story(story_id).await {
-                            detail_for_fetch.set(Some(d));
-                        }
-                    });
-                    stream_holder = Some(api::StoryStream::new(story_id, move |payload| {
-                        detail.set(Some(payload.detail.clone()));
-                        let current = (*stories).clone();
-                        stories.set(
-                            current
-                                .into_iter()
-                                .map(|s| {
-                                    if s.id == payload.detail.story.id {
-                                        payload.detail.story.clone()
-                                    } else {
-                                        s
-                                    }
-                                })
-                                .collect(),
-                        );
-                    }));
-                } else {
-                    detail.set(None);
-                    selection.set(StorySelection::Basics);
+            (route.clone(), (*stories).clone()),
+            move |(route, stories)| {
+                if let AppRoute::Stories {
+                    story_id: Some(id), ..
+                } = route
+                {
+                    if !stories.iter().any(|s| s.id == *id) {
+                        on_navigate.emit((
+                            AppRoute::Stories {
+                                story_id: stories.first().map(|s| s.id),
+                                nav: StoryNav::Basics,
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            false,
+                        ));
+                    }
                 }
-                move || drop(stream_holder)
+                || ()
             },
         );
     }
@@ -197,39 +266,51 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         return html! { <div class="loading-screen muted">{"Loading stories…"}</div> };
     }
 
+    let active_story_id = selected_story_id.or_else(|| (*detail).as_ref().map(|d| d.story.id));
+
+    let navigate_story = {
+        let on_navigate = props.on_navigate.clone();
+        let route = props.route.clone();
+        Callback::from(move |(story_id, nav): (Option<i64>, StoryNav)| {
+            let overlay = route.overlay();
+            on_navigate.emit((
+                AppRoute::Stories {
+                    story_id,
+                    nav,
+                    overlay,
+                    sidebar: false,
+                },
+                true,
+            ));
+        })
+    };
+
     html! {
         <>
-            if *mobile_pane == MobilePane::Sidebar {
+            if sidebar_open {
                 <div class="drawer-backdrop" onclick={Callback::from({
-                    let mobile_pane = mobile_pane.clone();
-                    move |_| mobile_pane.set(MobilePane::Main)
+                    let on_navigate = props.on_navigate.clone();
+                    let route = props.route.clone();
+                    move |_| on_navigate.emit((route.clone().without_sidebar(), true))
                 })} />
             }
             <div class={classes!(
                 "app-shell",
-                (*mobile_pane == MobilePane::Sidebar).then_some("pane-sidebar"),
+                sidebar_open.then_some("pane-sidebar"),
             )}>
             <StorySidebar
                 stories={(*stories).clone()}
-                selected_id={*selected_story_id}
+                selected_id={selected_story_id}
                 on_select_story={Callback::from({
-                    let selected_story_id = selected_story_id.clone();
-                    let selection = selection.clone();
-                    let mobile_pane = mobile_pane.clone();
-                    move |id| {
-                        selected_story_id.set(Some(id));
-                        selection.set(StorySelection::Basics);
-                        mobile_pane.set(MobilePane::Main);
-                    }
+                    let navigate_story = navigate_story.clone();
+                    move |id| navigate_story.emit((Some(id), StoryNav::Basics))
                 })}
                 on_new={Callback::from({
                     let stories = stories.clone();
-                    let selected_story_id = selected_story_id.clone();
-                    let selection = selection.clone();
+                    let on_navigate = props.on_navigate.clone();
                     move |_| {
                         let stories = stories.clone();
-                        let selected_story_id = selected_story_id.clone();
-                        let selection = selection.clone();
+                        let on_navigate = on_navigate.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             let payload = StoryCreate {
                                 title: format!("Story {}", stories.len() + 1),
@@ -239,23 +320,40 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                                 if let Ok(list) = api::list_stories().await {
                                     stories.set(list);
                                 }
-                                selected_story_id.set(Some(d.story.id));
-                                selection.set(StorySelection::Basics);
+                                on_navigate.emit((
+                                    AppRoute::Stories {
+                                        story_id: Some(d.story.id),
+                                        nav: StoryNav::Basics,
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
                             }
                         });
                     }
                 })}
                 on_delete={Callback::from({
                     let stories = stories.clone();
-                    let selected_story_id = selected_story_id.clone();
+                    let on_navigate = props.on_navigate.clone();
+                    let route = props.route.clone();
                     move |id| {
                         let stories = stories.clone();
-                        let selected_story_id = selected_story_id.clone();
+                        let on_navigate = on_navigate.clone();
+                        let route = route.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             let _ = api::delete_story(id).await;
                             if let Ok(list) = api::list_stories().await {
-                                if *selected_story_id == Some(id) {
-                                    selected_story_id.set(list.first().map(|s| s.id));
+                                if story_id_from_route(&route) == Some(id) {
+                                    on_navigate.emit((
+                                        AppRoute::Stories {
+                                            story_id: list.first().map(|s| s.id),
+                                            nav: StoryNav::Basics,
+                                            overlay: None,
+                                            sidebar: false,
+                                        },
+                                        false,
+                                    ));
                                 }
                                 stories.set(list);
                             }
@@ -267,7 +365,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 <QueueBar queue={props.queue.clone()} on_open={props.on_open_queue.clone()} />
                 <StoryEditor
                     detail={(*detail).clone()}
-                    selection={*selection}
+                    selection={selection}
                     guidance={(*guidance).clone()}
                     on_guidance={Callback::from({
                         let guidance = guidance.clone();
@@ -294,12 +392,21 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                         }
                     })}
                     on_selection={Callback::from({
-                        let selection = selection.clone();
-                        move |s| selection.set(s)
+                        let navigate_story = navigate_story.clone();
+                        let story_id = active_story_id;
+                        move |s| {
+                            if let Some(story_id) = story_id {
+                                navigate_story.emit((
+                                    Some(story_id),
+                                    story_nav_from_selection(s),
+                                ));
+                            }
+                        }
                     })}
                     on_open_sidebar={Callback::from({
-                        let mobile_pane = mobile_pane.clone();
-                        move |_| mobile_pane.set(MobilePane::Sidebar)
+                        let on_navigate = props.on_navigate.clone();
+                        let route = props.route.clone();
+                        move |_| on_navigate.emit((route.clone().with_sidebar(true), true))
                     })}
                 />
             </main>
