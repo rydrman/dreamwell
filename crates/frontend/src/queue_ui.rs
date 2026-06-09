@@ -14,7 +14,9 @@ fn job_type_label(job_type: JobType) -> &'static str {
     match job_type {
         JobType::ChatMessage => "chat message",
         JobType::StoryChapterOutline => "chapter outline",
+        JobType::StoryProposeChapters => "propose chapters",
         JobType::StoryBeatOutline => "beat outline",
+        JobType::StoryProposeBeats => "propose beats",
         JobType::StoryBeatProse => "beat prose",
     }
 }

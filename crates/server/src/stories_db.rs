@@ -472,6 +472,96 @@ pub async fn enqueue_story_job(
     get_job(pool, id).await
 }
 
+pub async fn prepare_propose_chapters(
+    pool: &SqlitePool,
+    story_id: i64,
+    payload: &GenerateRequest,
+) -> AppResult<Job> {
+    let _ = get_story(pool, story_id).await?;
+    enqueue_story_job(
+        pool,
+        JobType::StoryProposeChapters,
+        story_id,
+        None,
+        None,
+        payload.guidance_notes.clone(),
+    )
+    .await
+}
+
+pub async fn apply_chapter_proposal(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapters: &[(String, String)],
+) -> AppResult<()> {
+    let _ = get_story(pool, story_id).await?;
+    sqlx::query("DELETE FROM story_chapters WHERE story_id = ?1")
+        .bind(story_id)
+        .execute(pool)
+        .await?;
+    for (sort_order, (title, synopsis)) in chapters.iter().enumerate() {
+        create_chapter(
+            pool,
+            story_id,
+            StoryChapterCreate {
+                title: title.clone(),
+                synopsis: synopsis.clone(),
+                sort_order: Some(sort_order as i64),
+            },
+        )
+        .await?;
+    }
+    touch_story(pool, story_id).await?;
+    Ok(())
+}
+
+pub async fn prepare_propose_beats(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+    payload: &GenerateRequest,
+) -> AppResult<Job> {
+    let _ = get_chapter(pool, story_id, chapter_id).await?;
+    enqueue_story_job(
+        pool,
+        JobType::StoryProposeBeats,
+        story_id,
+        Some(chapter_id),
+        None,
+        payload.guidance_notes.clone(),
+    )
+    .await
+}
+
+pub async fn apply_beat_proposal(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+    beats: &[(String, String)],
+) -> AppResult<()> {
+    let _ = get_chapter(pool, story_id, chapter_id).await?;
+    sqlx::query("DELETE FROM story_beats WHERE chapter_id = ?1")
+        .bind(chapter_id)
+        .execute(pool)
+        .await?;
+    for (sort_order, (title, synopsis)) in beats.iter().enumerate() {
+        create_beat(
+            pool,
+            story_id,
+            chapter_id,
+            StoryBeatCreate {
+                title: title.clone(),
+                synopsis: synopsis.clone(),
+                content: String::new(),
+                sort_order: Some(sort_order as i64),
+            },
+        )
+        .await?;
+    }
+    touch_story(pool, story_id).await?;
+    Ok(())
+}
+
 pub async fn prepare_generate_chapter(
     pool: &SqlitePool,
     story_id: i64,

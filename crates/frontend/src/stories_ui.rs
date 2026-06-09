@@ -266,6 +266,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         return html! { <div class="loading-screen muted">{"Loading stories…"}</div> };
     }
 
+    let active_story_id = selected_story_id.or_else(|| (*detail).as_ref().map(|d| d.story.id));
+
     let navigate_story = {
         let on_navigate = props.on_navigate.clone();
         let route = props.route.clone();
@@ -298,33 +300,10 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
             )}>
             <StorySidebar
                 stories={(*stories).clone()}
-                detail={(*detail).clone()}
                 selected_id={selected_story_id}
-                selection={selection}
                 on_select_story={Callback::from({
                     let navigate_story = navigate_story.clone();
                     move |id| navigate_story.emit((Some(id), StoryNav::Basics))
-                })}
-                on_select_chapter={Callback::from({
-                    let navigate_story = navigate_story.clone();
-                    move |id| {
-                        navigate_story.emit((
-                            selected_story_id,
-                            StoryNav::Chapter(id),
-                        ));
-                    }
-                })}
-                on_select_beat={Callback::from({
-                    let navigate_story = navigate_story.clone();
-                    move |(chapter_id, beat_id)| {
-                        navigate_story.emit((
-                            selected_story_id,
-                            StoryNav::Beat {
-                                chapter_id,
-                                beat_id,
-                            },
-                        ));
-                    }
                 })}
                 on_new={Callback::from({
                     let stories = stories.clone();
@@ -414,7 +393,15 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     })}
                     on_selection={Callback::from({
                         let navigate_story = navigate_story.clone();
-                        move |s| navigate_story.emit((selected_story_id, story_nav_from_selection(s)))
+                        let story_id = active_story_id;
+                        move |s| {
+                            if let Some(story_id) = story_id {
+                                navigate_story.emit((
+                                    Some(story_id),
+                                    story_nav_from_selection(s),
+                                ));
+                            }
+                        }
                     })}
                     on_open_sidebar={Callback::from({
                         let on_navigate = props.on_navigate.clone();
@@ -431,12 +418,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct StorySidebarProps {
     stories: Vec<Story>,
-    detail: Option<StoryDetail>,
     selected_id: Option<i64>,
-    selection: StorySelection,
     on_select_story: Callback<i64>,
-    on_select_chapter: Callback<i64>,
-    on_select_beat: Callback<(i64, i64)>,
     on_new: Callback<()>,
     on_delete: Callback<i64>,
 }
@@ -468,50 +451,12 @@ fn story_sidebar(props: &StorySidebarProps) -> Html {
                                 </div>
                                 <button class="btn secondary btn-compact" onclick={props.on_delete.reform(move |_| id)}>{"✕"}</button>
                             </div>
-                            if selected {
-                                if let Some(detail) = &props.detail {
-                                    <div class="story-tree">
-                                        <div class={tree_item_class(props.selection == StorySelection::Basics)}
-                                            onclick={props.on_select_story.reform(move |_| id)}>
-                                            {"Story basics"}
-                                        </div>
-                                        { for detail.chapters.iter().map(|ch| {
-                                            let ch_id = ch.id;
-                                            let ch_selected = props.selection == StorySelection::Chapter(ch_id);
-                                            html! {
-                                                <>
-                                                    <div class={tree_item_class(ch_selected)}
-                                                        onclick={props.on_select_chapter.reform(move |_| ch_id)}>
-                                                        { format!("Ch. {} — {}", ch.sort_order + 1, if ch.title.is_empty() { "…" } else { &ch.title }) }
-                                                    </div>
-                                                    { for ch.beats.iter().map(|beat| {
-                                                        let beat_id = beat.id;
-                                                        let beat_selected = props.selection == StorySelection::Beat { chapter_id: ch_id, beat_id };
-                                                        let streaming = matches!(beat.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
-                                                        html! {
-                                                            <div class={classes!(tree_item_class(beat_selected), "tree-beat")}
-                                                                onclick={props.on_select_beat.reform(move |_| (ch_id, beat_id))}>
-                                                                { format!("  Beat {} — {}", beat.sort_order + 1, if beat.title.is_empty() { "…" } else { &beat.title }) }
-                                                                if streaming { <span class="badge">{"…"}</span> }
-                                                            </div>
-                                                        }
-                                                    }) }
-                                                </>
-                                            }
-                                        }) }
-                                    </div>
-                                }
-                            }
                         </div>
                     }
                 }) }
             </div>
         </aside>
     }
-}
-
-fn tree_item_class(selected: bool) -> Classes {
-    classes!("tree-item", selected.then_some("selected"))
 }
 
 fn story_status(story: &Story) -> Option<String> {
@@ -556,8 +501,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
         };
     };
 
-    let story_id = detail.story.id;
-    let generating = detail.story.active_job.is_some();
+    let queued = detail.story.queued_jobs;
 
     html! {
         <>
@@ -567,135 +511,255 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                 </div>
                 <h1 class="header-title">{ detail.story.title.clone() }</h1>
                 <p class="header-subtitle muted">
-                    { format!("{} · {} chapters target", detail.story.length_preset.label(), detail.story.length_preset.ref_chapters()) }
+                    { format!(
+                        "{} · {} of {} chapters",
+                        detail.story.length_preset.label(),
+                        detail.chapters.len(),
+                        detail.story.length_preset.ref_chapters(),
+                    ) }
+                    if queued > 0 {
+                        { format!(" · {} queued", queued) }
+                    }
                 </p>
             </header>
             <div class="story-editor">
-                { match props.selection {
-                    StorySelection::Basics => html! {
-                        <StoryBasicsForm
-                            story={detail.story.clone()}
-                            on_save={Callback::from({
-                                let on_detail = props.on_detail.clone();
-                                move |updated: StoryBasics| {
-                                    let on_detail = on_detail.clone();
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        if let Ok(d) = api::update_story(updated.id, &StoryUpdate {
-                                            title: Some(updated.title),
-                                            premise: Some(updated.premise),
-                                            tone: Some(updated.tone),
-                                            genre: Some(updated.genre),
-                                            pov: Some(updated.pov),
-                                            length_preset: Some(updated.length_preset),
-                                            notes: Some(updated.notes),
-                                        }).await {
-                                            on_detail.emit(d);
-                                        }
-                                    });
-                                }
-                            })}
-                        />
-                    },
-                    StorySelection::Chapter(chapter_id) => {
-                        let chapter = detail.chapters.iter().find(|c| c.id == chapter_id).cloned();
-                        html! {
-                            <ChapterEditor
-                                story_id={story_id}
-                                chapter={chapter}
-                                guidance={props.guidance.clone()}
-                                generating={generating}
-                                on_guidance={props.on_guidance.clone()}
-                                on_detail={props.on_detail.clone()}
-                            />
-                        }
-                    }
-                    StorySelection::Beat { chapter_id, beat_id } => {
-                        let chapter = detail.chapters.iter().find(|c| c.id == chapter_id);
-                        let beat = chapter.and_then(|c| c.beats.iter().find(|b| b.id == beat_id)).cloned();
-                        html! {
-                            <BeatEditor
-                                story_id={story_id}
-                                chapter_id={chapter_id}
-                                beat={beat}
-                                guidance={props.guidance.clone()}
-                                generating={generating}
-                                on_guidance={props.on_guidance.clone()}
-                                on_detail={props.on_detail.clone()}
-                            />
-                        }
-                    }
-                } }
-                <GuidanceBox
+                <StoryBlockList
+                    detail={detail}
+                    selection={props.selection}
                     guidance={props.guidance.clone()}
                     on_guidance={props.on_guidance.clone()}
-                    visible={!matches!(props.selection, StorySelection::Basics)}
+                    on_detail={props.on_detail.clone()}
+                    on_selection={props.on_selection.clone()}
                 />
-                if matches!(props.selection, StorySelection::Basics) {
-                    <div class="story-actions">
-                        <button class="btn" disabled={generating} onclick={{
-                            let on_detail = props.on_detail.clone();
-                            let guidance = props.guidance.clone();
-                            Callback::from(move |_| {
-                                let on_detail = on_detail.clone();
-                                let notes = guidance.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(d) = api::generate_chapter(story_id, &notes).await {
-                                        on_detail.emit(d);
-                                    }
-                                });
-                            })
-                        }}>{"Generate next chapter"}</button>
-                        <button class="btn secondary" onclick={{
-                            let on_detail = props.on_detail.clone();
-                            let on_selection = props.on_selection.clone();
-                            Callback::from(move |_| {
-                                let on_detail = on_detail.clone();
-                                let on_selection = on_selection.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(d) = api::create_chapter(story_id, &StoryChapterCreate::default()).await {
-                                        if let Some(ch) = d.chapters.last() {
-                                            on_selection.emit(StorySelection::Chapter(ch.id));
-                                        }
-                                        on_detail.emit(d);
-                                    }
-                                });
-                            })
-                        }}>{"Add chapter manually"}</button>
-                    </div>
-                }
             </div>
         </>
     }
 }
 
 #[derive(Properties, PartialEq)]
-struct GuidanceBoxProps {
+struct StoryBlockListProps {
+    detail: StoryDetail,
+    selection: StorySelection,
     guidance: String,
     on_guidance: Callback<String>,
-    visible: bool,
+    on_detail: Callback<StoryDetail>,
+    on_selection: Callback<StorySelection>,
 }
 
-#[function_component(GuidanceBox)]
-fn guidance_box(props: &GuidanceBoxProps) -> Html {
-    if !props.visible {
-        return html! {};
-    }
+#[function_component(StoryBlockList)]
+fn story_block_list(props: &StoryBlockListProps) -> Html {
+    let story_id = props.detail.story.id;
+    let target = props.detail.story.length_preset.ref_chapters();
+    let chapter_count = props.detail.chapters.len() as i64;
+    let proposing_chapters = props.detail.story.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryProposeChapters
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
+
     html! {
-        <label class="field" style="margin-top:1rem;">
-            <span class="muted">{"Guidance for next generation"}</span>
-            <textarea
-                placeholder="Optional notes for the AI…"
-                value={props.guidance.clone()}
-                rows="3"
-                oninput={Callback::from({
-                    let on_guidance = props.on_guidance.clone();
-                    move |e: InputEvent| {
-                        let input: HtmlInputElement = e.target_unchecked_into();
-                        on_guidance.emit(input.value());
-                    }
-                })}
+        <div class="story-blocks">
+            <StoryBlockHeader
+                label={"Story basics".to_string()}
+                subtitle={props.detail.story.title.clone()}
+                open={props.selection == StorySelection::Basics}
+                on_toggle={props.on_selection.reform(|_| StorySelection::Basics)}
             />
-        </label>
+            if props.selection == StorySelection::Basics {
+                <div class="story-block-body">
+                    <StoryBasicsForm
+                        story={props.detail.story.clone()}
+                        on_save={Callback::from({
+                            let on_detail = props.on_detail.clone();
+                            move |updated: StoryBasics| {
+                                let on_detail = on_detail.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(d) = api::update_story(updated.id, &StoryUpdate {
+                                        title: Some(updated.title),
+                                        premise: Some(updated.premise),
+                                        tone: Some(updated.tone),
+                                        genre: Some(updated.genre),
+                                        pov: Some(updated.pov),
+                                        length_preset: Some(updated.length_preset),
+                                        notes: Some(updated.notes),
+                                    }).await {
+                                        on_detail.emit(d);
+                                    }
+                                });
+                            }
+                        })}
+                    />
+                    <label class="field" style="margin-top:1rem;">
+                        <span class="muted">{"Guidance for proposal"}</span>
+                        <textarea
+                            placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
+                            value={props.guidance.clone()}
+                            rows="3"
+                            oninput={guidance_input(props.on_guidance.clone())}
+                        />
+                    </label>
+                    <div class="story-actions">
+                        <button class="btn" disabled={proposing_chapters} onclick={propose_chapters_action(story_id, props.guidance.clone(), props.on_detail.clone())}>
+                            { if proposing_chapters {
+                                "Proposing chapters…".to_string()
+                            } else if chapter_count == 0 {
+                                format!("Propose chapters (~{target})")
+                            } else {
+                                "Propose chapters".to_string()
+                            }}
+                        </button>
+                        <button class="btn secondary" onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}>
+                            {"Add chapter manually"}
+                        </button>
+                    </div>
+                    <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
+                        {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
+                    </p>
+                </div>
+            }
+
+            { for props.detail.chapters.iter().map(|ch| {
+                let ch_id = ch.id;
+                let ch_open = props.selection == StorySelection::Chapter(ch_id);
+                let ch_label = format!("Chapter {}", ch.sort_order + 1);
+                let ch_subtitle = if ch.title.is_empty() { "…".to_string() } else { ch.title.clone() };
+                let generating = ch.title.is_empty() && ch.synopsis.is_empty()
+                    && props.detail.story.active_job.is_some();
+                html! {
+                    <>
+                        <StoryBlockHeader
+                            label={ch_label}
+                            subtitle={ch_subtitle}
+                            open={ch_open}
+                            badge={generating.then_some("generating…".to_string())}
+                            on_toggle={props.on_selection.reform(move |_| StorySelection::Chapter(ch_id))}
+                        />
+                        if ch_open {
+                            <div class="story-block-body">
+                                <ChapterEditor
+                                    story_id={story_id}
+                                    chapter={Some(ch.clone())}
+                                    proposing_beats={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                        job.job_type == JobType::StoryProposeBeats
+                                            && job.chapter_id == Some(ch_id)
+                                            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                                    })}
+                                    guidance={props.guidance.clone()}
+                                    on_guidance={props.on_guidance.clone()}
+                                    on_detail={props.on_detail.clone()}
+                                />
+                            </div>
+                        }
+                        { for ch.beats.iter().map(|beat| {
+                            let beat_id = beat.id;
+                            let beat_open = props.selection == StorySelection::Beat { chapter_id: ch_id, beat_id };
+                            let beat_label = format!("Beat {}", beat.sort_order + 1);
+                            let beat_subtitle = if beat.title.is_empty() { "…".to_string() } else { beat.title.clone() };
+                            let streaming = matches!(beat.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
+                            html! {
+                                <>
+                                    <StoryBlockHeader
+                                        label={beat_label}
+                                        subtitle={beat_subtitle}
+                                        open={beat_open}
+                                        indent={true}
+                                        badge={streaming.then_some("…".to_string())}
+                                        on_toggle={props.on_selection.reform(move |_| StorySelection::Beat { chapter_id: ch_id, beat_id })}
+                                    />
+                                    if beat_open {
+                                        <div class="story-block-body story-block-body-nested">
+                                            <BeatEditor
+                                                story_id={story_id}
+                                                chapter_id={ch_id}
+                                                beat={Some(beat.clone())}
+                                                guidance={props.guidance.clone()}
+                                                on_guidance={props.on_guidance.clone()}
+                                                on_detail={props.on_detail.clone()}
+                                            />
+                                        </div>
+                                    }
+                                </>
+                            }
+                        }) }
+                    </>
+                }
+            }) }
+        </div>
+    }
+}
+
+fn propose_chapters_action(
+    story_id: i64,
+    guidance: String,
+    on_detail: Callback<StoryDetail>,
+) -> Callback<MouseEvent> {
+    Callback::from(move |_| {
+        let on_detail = on_detail.clone();
+        let notes = guidance.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(d) = api::propose_chapters(story_id, &notes).await {
+                on_detail.emit(d);
+            }
+        });
+    })
+}
+
+fn add_chapter_action(
+    story_id: i64,
+    on_detail: Callback<StoryDetail>,
+    on_selection: Callback<StorySelection>,
+) -> Callback<MouseEvent> {
+    Callback::from(move |_| {
+        let on_detail = on_detail.clone();
+        let on_selection = on_selection.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(d) = api::create_chapter(story_id, &StoryChapterCreate::default()).await {
+                if let Some(ch) = d.chapters.last() {
+                    on_selection.emit(StorySelection::Chapter(ch.id));
+                }
+                on_detail.emit(d);
+            }
+        });
+    })
+}
+
+fn guidance_input(on_guidance: Callback<String>) -> Callback<InputEvent> {
+    Callback::from(move |e: InputEvent| {
+        let input: HtmlInputElement = e.target_unchecked_into();
+        on_guidance.emit(input.value());
+    })
+}
+
+#[derive(Properties, PartialEq)]
+struct StoryBlockHeaderProps {
+    label: String,
+    subtitle: String,
+    open: bool,
+    #[prop_or_default]
+    indent: bool,
+    #[prop_or_default]
+    badge: Option<String>,
+    on_toggle: Callback<()>,
+}
+
+#[function_component(StoryBlockHeader)]
+fn story_block_header(props: &StoryBlockHeaderProps) -> Html {
+    html! {
+        <button
+            type="button"
+            class={classes!(
+                "story-block-header",
+                props.open.then_some("open"),
+                props.indent.then_some("indented"),
+            )}
+            onclick={props.on_toggle.reform(|_| ())}
+        >
+            <span class="story-block-chevron">{ if props.open { "▾" } else { "▸" } }</span>
+            <span class="story-block-label">{ &props.label }</span>
+            <span class="story-block-subtitle muted">{ &props.subtitle }</span>
+            if let Some(badge) = &props.badge {
+                <span class="badge">{ badge }</span>
+            }
+        </button>
     }
 }
 
@@ -829,8 +893,9 @@ fn basics_input(draft: UseStateHandle<StoryBasics>, field: &'static str) -> Call
 struct ChapterEditorProps {
     story_id: i64,
     chapter: Option<StoryChapter>,
+    #[prop_or(false)]
+    proposing_beats: bool,
     guidance: String,
-    generating: bool,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
 }
@@ -856,15 +921,24 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
 
     let story_id = props.story_id;
     let chapter_id = chapter.id;
+    let proposing_beats = props.proposing_beats;
 
     html! {
         <div class="story-form">
-            <h2 style="margin:0 0 1rem;font-size:1rem;">{ format!("Chapter {}", chapter.sort_order + 1) }</h2>
             <label class="field"><span class="muted">{"Title"}</span>
                 <input type="text" value={(*title).clone()} oninput={string_input(title.clone())} />
             </label>
             <label class="field"><span class="muted">{"Synopsis"}</span>
                 <textarea value={(*synopsis).clone()} rows="5" oninput={string_input(synopsis.clone())} />
+            </label>
+            <label class="field">
+                <span class="muted">{"Guidance for proposal"}</span>
+                <textarea
+                    placeholder="Optional notes — e.g. split the confrontation into two beats…"
+                    value={props.guidance.clone()}
+                    rows="3"
+                    oninput={guidance_input(props.on_guidance.clone())}
+                />
             </label>
             <div class="story-actions">
                 <button class="btn secondary" onclick={{
@@ -886,19 +960,19 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                         });
                     })
                 }}>{"Save chapter"}</button>
-                <button class="btn" disabled={props.generating} onclick={{
+                <button class="btn" disabled={proposing_beats} onclick={{
                     let on_detail = props.on_detail.clone();
                     let guidance = props.guidance.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
                         let notes = guidance.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::generate_beat(story_id, chapter_id, &notes).await {
+                            if let Ok(d) = api::propose_beats(story_id, chapter_id, &notes).await {
                                 on_detail.emit(d);
                             }
                         });
                     })
-                }}>{"Generate next beat"}</button>
+                }}>{ if proposing_beats { "Proposing beats…" } else { "Propose beats" } }</button>
                 <button class="btn secondary" onclick={{
                     let on_detail = props.on_detail.clone();
                     Callback::from(move |_| {
@@ -923,6 +997,9 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     })
                 }}>{"Delete chapter"}</button>
             </div>
+            <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
+                {"Propose beats reviews this chapter and returns a full beat list — it may add, remove, reorder, or rewrite beats. Existing prose is noted but may be replaced."}
+            </p>
         </div>
     }
 }
@@ -933,7 +1010,6 @@ struct BeatEditorProps {
     chapter_id: i64,
     beat: Option<StoryBeat>,
     guidance: String,
-    generating: bool,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
 }
@@ -970,7 +1046,6 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
 
     html! {
         <div class="story-form">
-            <h2 style="margin:0 0 1rem;font-size:1rem;">{ format!("Beat {}", beat.sort_order + 1) }</h2>
             <label class="field"><span class="muted">{"Title"}</span>
                 <input type="text" value={(*title).clone()} oninput={string_input(title.clone())} />
             </label>
@@ -983,6 +1058,15 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     value={ if (*content).is_empty() && streaming { "…".to_string() } else { (*content).clone() } }
                     rows="12"
                     oninput={string_input(content.clone())}
+                />
+            </label>
+            <label class="field">
+                <span class="muted">{"Guidance for generation"}</span>
+                <textarea
+                    placeholder="Optional notes for the AI…"
+                    value={props.guidance.clone()}
+                    rows="3"
+                    oninput={guidance_input(props.on_guidance.clone())}
                 />
             </label>
             <div class="story-actions">
@@ -1008,7 +1092,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                         });
                     })
                 }}>{"Save beat"}</button>
-                <button class="btn" disabled={props.generating} onclick={{
+                <button class="btn" onclick={{
                     let on_detail = props.on_detail.clone();
                     let guidance = props.guidance.clone();
                     Callback::from(move |_| {

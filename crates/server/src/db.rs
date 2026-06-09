@@ -78,7 +78,9 @@ pub(crate) fn parse_job_status(s: &str) -> JobStatus {
 pub(crate) fn parse_job_type(s: &str) -> JobType {
     match s {
         "story_chapter_outline" => JobType::StoryChapterOutline,
+        "story_full_outline" | "story_propose_chapters" => JobType::StoryProposeChapters,
         "story_beat_outline" => JobType::StoryBeatOutline,
+        "story_propose_beats" => JobType::StoryProposeBeats,
         "story_beat_prose" => JobType::StoryBeatProse,
         _ => JobType::ChatMessage,
     }
@@ -88,7 +90,9 @@ pub(crate) fn job_type_str(job_type: JobType) -> &'static str {
     match job_type {
         JobType::ChatMessage => "chat_message",
         JobType::StoryChapterOutline => "story_chapter_outline",
+        JobType::StoryProposeChapters => "story_propose_chapters",
         JobType::StoryBeatOutline => "story_beat_outline",
+        JobType::StoryProposeBeats => "story_propose_beats",
         JobType::StoryBeatProse => "story_beat_prose",
     }
 }
@@ -809,7 +813,19 @@ pub async fn claim_jobs(pool: &SqlitePool, limit: i64) -> AppResult<Vec<i64>> {
         return Ok(vec![]);
     }
     let ids = sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM generation_jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?1",
+        "SELECT id FROM generation_jobs j
+         WHERE j.status = 'queued'
+         AND NOT (
+           j.job_type IN ('story_chapter_outline', 'story_full_outline', 'story_propose_chapters', 'story_propose_beats')
+           AND j.story_id IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM generation_jobs r
+             WHERE r.story_id = j.story_id
+             AND r.status = 'running'
+             AND r.job_type IN ('story_chapter_outline', 'story_full_outline', 'story_propose_chapters', 'story_propose_beats')
+           )
+         )
+         ORDER BY j.created_at ASC LIMIT ?1",
     )
     .bind(slots)
     .fetch_all(&mut *tx)
