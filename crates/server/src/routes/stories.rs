@@ -30,11 +30,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/:id/stream", get(stream_story))
         .route("/:id/generate-chapter", post(generate_chapter))
-        .route("/:id/generate-outline", post(generate_outline))
-        .route(
-            "/:id/queue-remaining-chapters",
-            post(queue_remaining_chapters),
-        )
+        .route("/:id/propose-chapters", post(propose_chapters))
         .route("/:id/chapters", post(create_chapter))
         .route(
             "/:id/chapters/:chapter_id",
@@ -43,6 +39,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/:id/chapters/:chapter_id/generate-beat",
             post(generate_beat),
+        )
+        .route(
+            "/:id/chapters/:chapter_id/propose-beats",
+            post(propose_beats),
         )
         .route("/:id/chapters/:chapter_id/beats", post(create_beat))
         .route(
@@ -153,25 +153,23 @@ async fn generate_chapter(
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
 
-async fn generate_outline(
+async fn propose_chapters(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(payload): Json<GenerateRequest>,
 ) -> AppResult<Json<StoryDetail>> {
-    let job = db::prepare_generate_full_outline(&state.pool, id, &payload).await?;
+    let job = db::prepare_propose_chapters(&state.pool, id, &payload).await?;
     enqueue_story_generation(&state.queue, job).await?;
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
 
-async fn queue_remaining_chapters(
+async fn propose_beats(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path((id, chapter_id)): Path<(i64, i64)>,
     Json(payload): Json<GenerateRequest>,
 ) -> AppResult<Json<StoryDetail>> {
-    let jobs = db::prepare_queue_remaining_chapters(&state.pool, id, &payload).await?;
-    for job in jobs {
-        enqueue_story_generation(&state.queue, job).await?;
-    }
+    let job = db::prepare_propose_beats(&state.pool, id, chapter_id, &payload).await?;
+    enqueue_story_generation(&state.queue, job).await?;
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
 

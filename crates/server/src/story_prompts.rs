@@ -144,31 +144,80 @@ pub fn build_beat_prose_messages(
     ]
 }
 
-pub fn build_full_outline_messages(
+fn chapter_snapshot(chapter: &StoryChapter, index: usize) -> String {
+    let beat_count = chapter.beats.len();
+    let prose_beats = chapter
+        .beats
+        .iter()
+        .filter(|b| b.content.chars().count() > 80)
+        .count();
+    let title = if chapter.title.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        chapter.title.clone()
+    };
+    let synopsis = if chapter.synopsis.is_empty() {
+        "(no synopsis)".to_string()
+    } else {
+        chapter.synopsis.clone()
+    };
+    let mut line = format!("Chapter {} — {}: {}", index + 1, title, synopsis);
+    if beat_count > 0 {
+        line.push_str(&format!(" [{beat_count} beats"));
+        if prose_beats > 0 {
+            line.push_str(&format!(", {prose_beats} with substantial prose"));
+        }
+        line.push(']');
+    }
+    line
+}
+
+fn beat_snapshot(beat: &StoryBeat, index: usize) -> String {
+    let title = if beat.title.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        beat.title.clone()
+    };
+    let synopsis = if beat.synopsis.is_empty() {
+        "(no synopsis)".to_string()
+    } else {
+        beat.synopsis.clone()
+    };
+    let prose_chars = beat.content.chars().count();
+    let mut line = format!("Beat {} — {}: {}", index + 1, title, synopsis);
+    if prose_chars > 80 {
+        line.push_str(&format!(
+            " [{prose_chars} chars of prose — preserve unless restructuring requires otherwise]"
+        ));
+    }
+    line
+}
+
+pub fn build_propose_chapters_messages(
     story: &Story,
     chapters: &[StoryChapter],
-    chapter_indices: &[usize],
     guidance: &str,
 ) -> Vec<Value> {
-    let filled: Vec<String> = chapters
-        .iter()
-        .enumerate()
-        .filter(|(i, c)| !chapter_indices.contains(i) && !c.title.is_empty())
-        .map(|(i, c)| format!("Chapter {} — {}: {}", i + 1, c.title, c.synopsis))
-        .collect();
-    let to_generate: Vec<String> = chapter_indices
-        .iter()
-        .map(|i| format!("Chapter {}", i + 1))
-        .collect();
+    let target = story.length_preset.ref_chapters();
     let mut user = format!(
-        "Plan a {}-chapter story outline. Generate outlines for: {}.\n\nRespond with ONLY valid JSON: {{\"chapters\":[{{\"title\":\"...\",\"synopsis\":\"...\"}}, ...]}}\nEach synopsis should be 2-4 sentences. Return exactly {} chapter object(s) in order.",
-        story.length_preset.ref_chapters(),
-        to_generate.join(", "),
-        chapter_indices.len(),
+        "Review this story and propose a complete chapter outline (~{target} chapters for this length preset, but use your judgment).\n\n\
+         You may add, remove, merge, split, reorder, or rewrite chapters. \
+         Prefer to keep chapters that already have substantial beat prose unless the author guidance says otherwise.\n\n\
+         Respond with ONLY valid JSON: {{\"chapters\":[{{\"title\":\"...\",\"synopsis\":\"...\"}}, ...]}}\n\
+         Each synopsis should be 2-4 sentences. Return the full proposed chapter list in reading order.",
     );
-    if !filled.is_empty() {
-        user.push_str("\n\nAlready planned chapters (keep consistent with these):\n");
-        user.push_str(&filled.join("\n"));
+    if chapters.is_empty() {
+        user.push_str("\n\nThere are no chapters yet — propose the full outline from the premise.");
+    } else {
+        user.push_str("\n\nCurrent chapters:\n");
+        user.push_str(
+            &chapters
+                .iter()
+                .enumerate()
+                .map(|(i, c)| chapter_snapshot(c, i))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the author:\n");
@@ -186,7 +235,74 @@ pub fn build_full_outline_messages(
     ]
 }
 
-pub fn parse_full_outline_json(text: &str) -> Option<Vec<(String, String)>> {
+pub fn build_propose_beats_messages(
+    story: &Story,
+    chapters: &[StoryChapter],
+    chapter: &StoryChapter,
+    guidance: &str,
+) -> Vec<Value> {
+    let prior_chapters = prior_chapter_synopses(chapters, chapter.sort_order);
+    let mut user = format!(
+        "Review chapter \"{}\" and propose a complete beat breakdown for it.\n\n\
+         Chapter synopsis: {}\n\n\
+         You may add, remove, reorder, or rewrite beats. \
+         Prefer to keep beats that already have substantial prose unless the author guidance says otherwise.\n\n\
+         Respond with ONLY valid JSON: {{\"beats\":[{{\"title\":\"...\",\"synopsis\":\"...\"}}, ...]}}\n\
+         Each synopsis should be 1-3 sentences. Return the full proposed beat list in reading order.",
+        if chapter.title.is_empty() {
+            "Untitled chapter"
+        } else {
+            &chapter.title
+        },
+        if chapter.synopsis.is_empty() {
+            "(no synopsis yet)"
+        } else {
+            &chapter.synopsis
+        },
+    );
+    if !prior_chapters.is_empty() {
+        user.push_str("\n\nPrior chapters (synopses only):\n");
+        user.push_str(&prior_chapters);
+    }
+    if chapter.beats.is_empty() {
+        user.push_str("\n\nThere are no beats yet — propose a beat breakdown for this chapter.");
+    } else {
+        user.push_str("\n\nCurrent beats:\n");
+        user.push_str(
+            &chapter
+                .beats
+                .iter()
+                .enumerate()
+                .map(|(i, b)| beat_snapshot(b, i))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    if !guidance.trim().is_empty() {
+        user.push_str("\n\nGuidance from the author:\n");
+        user.push_str(guidance.trim());
+    }
+    vec![
+        serde_json::json!({
+            "role": "system",
+            "content": format!(
+                "You are a story structure assistant. Output strict JSON only — no markdown fences.\n\n{}",
+                story_basics(story)
+            ),
+        }),
+        serde_json::json!({ "role": "user", "content": user }),
+    ]
+}
+
+pub fn parse_chapters_proposal_json(text: &str) -> Option<Vec<(String, String)>> {
+    parse_proposal_array_json(text, "chapters")
+}
+
+pub fn parse_beats_proposal_json(text: &str) -> Option<Vec<(String, String)>> {
+    parse_proposal_array_json(text, "beats")
+}
+
+fn parse_proposal_array_json(text: &str, key: &str) -> Option<Vec<(String, String)>> {
     let trimmed = text.trim();
     let json_str = trimmed
         .strip_prefix("```json")
@@ -195,11 +311,11 @@ pub fn parse_full_outline_json(text: &str) -> Option<Vec<(String, String)>> {
         .map(str::trim)
         .unwrap_or(trimmed);
     let value: Value = serde_json::from_str(json_str).ok()?;
-    let chapters = value.get("chapters")?.as_array()?;
-    let mut out = Vec::with_capacity(chapters.len());
-    for ch in chapters {
-        let title = ch.get("title")?.as_str()?.trim().to_string();
-        let synopsis = ch.get("synopsis")?.as_str()?.trim().to_string();
+    let items = value.get(key)?.as_array()?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let title = item.get("title")?.as_str()?.trim().to_string();
+        let synopsis = item.get("synopsis")?.as_str()?.trim().to_string();
         if title.is_empty() {
             return None;
         }

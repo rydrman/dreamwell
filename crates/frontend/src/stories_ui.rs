@@ -551,13 +551,10 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
     let story_id = props.detail.story.id;
     let target = props.detail.story.length_preset.ref_chapters();
     let chapter_count = props.detail.chapters.len() as i64;
-    let next_chapter_num = chapter_count + 1;
-    let remaining = (target - chapter_count).max(0);
-    let has_empty = props
-        .detail
-        .chapters
-        .iter()
-        .any(|c| c.title.is_empty() && c.synopsis.is_empty());
+    let proposing_chapters = props.detail.story.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryProposeChapters
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
 
     html! {
         <div class="story-blocks">
@@ -592,40 +589,30 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                         })}
                     />
                     <label class="field" style="margin-top:1rem;">
-                        <span class="muted">{"Guidance for generation"}</span>
+                        <span class="muted">{"Guidance for proposal"}</span>
                         <textarea
-                            placeholder="Optional notes for the AI…"
+                            placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
                             value={props.guidance.clone()}
                             rows="3"
                             oninput={guidance_input(props.on_guidance.clone())}
                         />
                     </label>
                     <div class="story-actions">
-                        if chapter_count < target || has_empty {
-                            <button class="btn" onclick={generate_outline_action(story_id, props.guidance.clone(), props.on_detail.clone())}>
-                                { if chapter_count == 0 {
-                                    format!("Generate outline ({} chapters)", target)
-                                } else {
-                                    format!("Generate outline ({} remaining)", (target - chapter_count).max(1))
-                                }}
-                            </button>
-                        }
-                        if remaining > 0 {
-                            <button class="btn secondary" onclick={queue_remaining_action(story_id, props.guidance.clone(), props.on_detail.clone())}>
-                                { format!("Queue {} chapter{} individually", remaining, if remaining == 1 { "" } else { "s" }) }
-                            </button>
-                        }
-                        if next_chapter_num <= target {
-                            <button class="btn secondary" onclick={generate_chapter_action(story_id, props.guidance.clone(), props.on_detail.clone(), props.on_selection.clone())}>
-                                { format!("Generate chapter {}", next_chapter_num) }
-                            </button>
-                        }
+                        <button class="btn" disabled={proposing_chapters} onclick={propose_chapters_action(story_id, props.guidance.clone(), props.on_detail.clone())}>
+                            { if proposing_chapters {
+                                "Proposing chapters…".to_string()
+                            } else if chapter_count == 0 {
+                                format!("Propose chapters (~{target})")
+                            } else {
+                                "Propose chapters".to_string()
+                            }}
+                        </button>
                         <button class="btn secondary" onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}>
                             {"Add chapter manually"}
                         </button>
                     </div>
                     <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
-                        {"Generate outline plans all chapters at once from your premise. Queue individually runs one chapter at a time in order."}
+                        {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
                     </p>
                 </div>
             }
@@ -651,6 +638,11 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                 <ChapterEditor
                                     story_id={story_id}
                                     chapter={Some(ch.clone())}
+                                    proposing_beats={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                        job.job_type == JobType::StoryProposeBeats
+                                            && job.chapter_id == Some(ch_id)
+                                            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                                    })}
                                     guidance={props.guidance.clone()}
                                     on_guidance={props.on_guidance.clone()}
                                     on_detail={props.on_detail.clone()}
@@ -695,7 +687,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
     }
 }
 
-fn generate_outline_action(
+fn propose_chapters_action(
     story_id: i64,
     guidance: String,
     on_detail: Callback<StoryDetail>,
@@ -704,44 +696,7 @@ fn generate_outline_action(
         let on_detail = on_detail.clone();
         let notes = guidance.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(d) = api::generate_outline(story_id, &notes).await {
-                on_detail.emit(d);
-            }
-        });
-    })
-}
-
-fn queue_remaining_action(
-    story_id: i64,
-    guidance: String,
-    on_detail: Callback<StoryDetail>,
-) -> Callback<MouseEvent> {
-    Callback::from(move |_| {
-        let on_detail = on_detail.clone();
-        let notes = guidance.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(d) = api::queue_remaining_chapters(story_id, &notes).await {
-                on_detail.emit(d);
-            }
-        });
-    })
-}
-
-fn generate_chapter_action(
-    story_id: i64,
-    guidance: String,
-    on_detail: Callback<StoryDetail>,
-    on_selection: Callback<StorySelection>,
-) -> Callback<MouseEvent> {
-    Callback::from(move |_| {
-        let on_detail = on_detail.clone();
-        let on_selection = on_selection.clone();
-        let notes = guidance.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(d) = api::generate_chapter(story_id, &notes).await {
-                if let Some(ch) = d.chapters.last() {
-                    on_selection.emit(StorySelection::Chapter(ch.id));
-                }
+            if let Ok(d) = api::propose_chapters(story_id, &notes).await {
                 on_detail.emit(d);
             }
         });
@@ -938,6 +893,8 @@ fn basics_input(draft: UseStateHandle<StoryBasics>, field: &'static str) -> Call
 struct ChapterEditorProps {
     story_id: i64,
     chapter: Option<StoryChapter>,
+    #[prop_or(false)]
+    proposing_beats: bool,
     guidance: String,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
@@ -964,7 +921,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
 
     let story_id = props.story_id;
     let chapter_id = chapter.id;
-    let next_beat_num = chapter.beats.len() as i64 + 1;
+    let proposing_beats = props.proposing_beats;
 
     html! {
         <div class="story-form">
@@ -975,9 +932,9 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                 <textarea value={(*synopsis).clone()} rows="5" oninput={string_input(synopsis.clone())} />
             </label>
             <label class="field">
-                <span class="muted">{"Guidance for next generation"}</span>
+                <span class="muted">{"Guidance for proposal"}</span>
                 <textarea
-                    placeholder="Optional notes for the AI…"
+                    placeholder="Optional notes — e.g. split the confrontation into two beats…"
                     value={props.guidance.clone()}
                     rows="3"
                     oninput={guidance_input(props.on_guidance.clone())}
@@ -1003,19 +960,19 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                         });
                     })
                 }}>{"Save chapter"}</button>
-                <button class="btn" onclick={{
+                <button class="btn" disabled={proposing_beats} onclick={{
                     let on_detail = props.on_detail.clone();
                     let guidance = props.guidance.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
                         let notes = guidance.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::generate_beat(story_id, chapter_id, &notes).await {
+                            if let Ok(d) = api::propose_beats(story_id, chapter_id, &notes).await {
                                 on_detail.emit(d);
                             }
                         });
                     })
-                }}>{ format!("Generate beat {}", next_beat_num) }</button>
+                }}>{ if proposing_beats { "Proposing beats…" } else { "Propose beats" } }</button>
                 <button class="btn secondary" onclick={{
                     let on_detail = props.on_detail.clone();
                     Callback::from(move |_| {
@@ -1040,6 +997,9 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     })
                 }}>{"Delete chapter"}</button>
             </div>
+            <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
+                {"Propose beats reviews this chapter and returns a full beat list — it may add, remove, reorder, or rewrite beats. Existing prose is noted but may be replaced."}
+            </p>
         </div>
     }
 }
