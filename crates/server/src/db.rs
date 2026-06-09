@@ -4,6 +4,7 @@ use dreamwell_types::{
     JobType, Message, MessageRole, Settings, SettingsUpdate, DEFAULT_SYSTEM_PROMPT_PREFIX,
     DEFAULT_USER_NAME,
 };
+use std::time::Duration;
 
 #[path = "stories_db.rs"]
 mod stories_db;
@@ -17,11 +18,23 @@ pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
     let url = database_url.strip_prefix("sqlite:").unwrap_or(database_url);
     let options = SqliteConnectOptions::new()
         .filename(url)
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(10));
     let pool = SqlitePool::connect_with(options).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     ensure_settings(&pool).await?;
+    prepare_on_startup(&pool).await?;
     Ok(pool)
+}
+
+/// Release stale WAL locks and normalize journal state after an unclean shutdown.
+pub async fn prepare_on_startup(pool: &SqlitePool) -> AppResult<()> {
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 async fn ensure_settings(pool: &SqlitePool) -> AppResult<()> {
@@ -710,6 +723,14 @@ pub async fn claim_jobs(pool: &SqlitePool, limit: i64) -> AppResult<Vec<i64>> {
     Ok(ids)
 }
 
+pub async fn count_queued_jobs(pool: &SqlitePool) -> AppResult<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT COUNT(*) FROM generation_jobs WHERE status = 'queued'")
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
 pub async fn requeue_stale_jobs(pool: &SqlitePool) -> AppResult<i64> {
     let result = sqlx::query(
         "UPDATE generation_jobs SET status = 'queued', started_at = NULL WHERE status = 'running'",
@@ -717,6 +738,44 @@ pub async fn requeue_stale_jobs(pool: &SqlitePool) -> AppResult<i64> {
     .execute(pool)
     .await?;
     Ok(result.rows_affected() as i64)
+}
+
+pub async fn requeue_stuck_jobs(pool: &SqlitePool, max_age_secs: i64) -> AppResult<i64> {
+    let cutoff = (Utc::now() - chrono::Duration::seconds(max_age_secs)).to_rfc3339();
+    let result = sqlx::query(
+        "UPDATE generation_jobs SET status = 'queued', started_at = NULL \
+         WHERE status = 'running' AND (started_at IS NULL OR started_at < ?1)",
+    )
+    .bind(&cutoff)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() as i64)
+}
+
+pub async fn list_running_job_ids(pool: &SqlitePool) -> AppResult<Vec<i64>> {
+    Ok(
+        sqlx::query_scalar("SELECT id FROM generation_jobs WHERE status = 'running'")
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+pub async fn requeue_jobs_by_id(pool: &SqlitePool, ids: &[i64]) -> AppResult<i64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut requeued = 0_i64;
+    for id in ids {
+        let result = sqlx::query(
+            "UPDATE generation_jobs SET status = 'queued', started_at = NULL \
+             WHERE id = ?1 AND status = 'running'",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+        requeued += result.rows_affected() as i64;
+    }
+    Ok(requeued)
 }
 
 pub async fn complete_job(

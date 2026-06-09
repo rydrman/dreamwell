@@ -10,7 +10,7 @@ use dreamwell_types::*;
 use gloo_timers::callback::{Interval, Timeout};
 use queue_ui::{AppMode, QueueBar, QueuePage};
 use stories_ui::StoriesShell;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlElement, HtmlInputElement};
 use yew::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -908,7 +908,13 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                             {"⋯"}
                         </button>
                         if *menu_open {
-                            <div class="message-menu" onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}>
+                            <div
+                                class={classes!(
+                                    "message-menu",
+                                    props.is_last.then_some("message-menu--above")
+                                )}
+                                onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
+                            >
                                 <button type="button" class="message-menu-item" onclick={start_edit}>{"Edit"}</button>
                                 if show_regenerate {
                                     <button type="button" class="message-menu-item" onclick={regenerate}>{"Regenerate"}</button>
@@ -1001,6 +1007,24 @@ struct MessageListProps {
 
 #[function_component(MessageList)]
 fn message_list(props: &MessageListProps) -> Html {
+    let messages_ref = use_node_ref();
+
+    use_effect_with((props.chat_id, props.loading, props.messages.len()), {
+        let messages_ref = messages_ref.clone();
+        move |(chat_id, loading, len)| {
+            if chat_id.is_some() && !*loading && *len > 0 {
+                let messages_ref = messages_ref.clone();
+                Timeout::new(0, move || {
+                    if let Some(el) = messages_ref.cast::<HtmlElement>() {
+                        el.set_scroll_top(el.scroll_height());
+                    }
+                })
+                .forget();
+            }
+            || ()
+        }
+    });
+
     let macro_ctx = props.settings.as_ref().map(|settings| {
         if let Some(character) = props.character.as_ref() {
             MacroContext::from_character_and_settings(
@@ -1027,7 +1051,7 @@ fn message_list(props: &MessageListProps) -> Html {
         .is_some_and(|s| s.thought_blocks_enabled);
     let show_variables = props.settings.as_ref().is_some_and(|s| s.variables_enabled);
     html! {
-        <div class="messages">
+        <div class="messages" ref={messages_ref}>
             if props.messages.is_empty() {
                 <div class="empty-state muted">
                     if props.loading {
