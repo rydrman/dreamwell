@@ -3,7 +3,7 @@ use yew::prelude::*;
 
 use crate::api;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AppMode {
     Chats,
     Stories,
