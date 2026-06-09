@@ -26,6 +26,7 @@ fn app() -> Html {
     let return_mode = use_state(|| AppMode::Chats);
     let pending_story_id = use_state(|| None::<i64>);
     let chats = use_state(Vec::<Chat>::new);
+    let archived_chats = use_state(Vec::<Chat>::new);
     let characters = use_state(Vec::<Character>::new);
     let selected_chat_id = use_state(|| None::<i64>);
     let messages = use_state(Vec::<Message>::new);
@@ -38,6 +39,7 @@ fn app() -> Html {
 
     {
         let chats = chats.clone();
+        let archived_chats = archived_chats.clone();
         let characters = characters.clone();
         let selected_chat_id = selected_chat_id.clone();
         let settings = settings.clone();
@@ -49,6 +51,9 @@ fn app() -> Html {
                         selected_chat_id.set(Some(first.id));
                     }
                     chats.set(sort_chats(list));
+                }
+                if let Ok(list) = api::list_archived_chats().await {
+                    archived_chats.set(sort_archived_chats(list));
                 }
                 if let Ok(list) = api::list_characters().await {
                     characters.set(list);
@@ -126,18 +131,24 @@ fn app() -> Html {
     {
         let queue = queue.clone();
         let chats = chats.clone();
+        let archived_chats = archived_chats.clone();
         use_effect_with((), move |_| {
             let queue = queue.clone();
             let chats = chats.clone();
+            let archived_chats = archived_chats.clone();
             let handle = Interval::new(3000, move || {
                 let queue = queue.clone();
                 let chats = chats.clone();
+                let archived_chats = archived_chats.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(status) = api::get_queue().await {
                         queue.set(Some(status));
                     }
                     if let Ok(list) = api::list_chats().await {
                         chats.set(sort_chats(list));
+                    }
+                    if let Ok(list) = api::list_archived_chats().await {
+                        archived_chats.set(sort_archived_chats(list));
                     }
                 });
             });
@@ -282,6 +293,7 @@ fn app() -> Html {
             )}>
             <ChatSidebar
                 chats={(*chats).clone()}
+                archived_chats={(*archived_chats).clone()}
                 selected_id={*selected_chat_id}
                 on_select={Callback::from({
                     let selected_chat_id = selected_chat_id.clone();
@@ -295,20 +307,61 @@ fn app() -> Html {
                     let picker_open = picker_open.clone();
                     move |_| picker_open.set(true)
                 })}
-                on_delete={Callback::from({
+                on_archive={Callback::from({
                     let chats = chats.clone();
+                    let archived_chats = archived_chats.clone();
                     let selected_chat_id = selected_chat_id.clone();
                     move |id| {
                         let chats = chats.clone();
+                        let archived_chats = archived_chats.clone();
                         let selected_chat_id = selected_chat_id.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::delete_chat(id).await;
+                            let _ = api::archive_chat(id).await;
                             if let Ok(list) = api::list_chats().await {
                                 let list = sort_chats(list);
                                 if *selected_chat_id == Some(id) {
                                     selected_chat_id.set(list.first().map(|c| c.id));
                                 }
                                 chats.set(list);
+                            }
+                            if let Ok(list) = api::list_archived_chats().await {
+                                archived_chats.set(sort_archived_chats(list));
+                            }
+                        });
+                    }
+                })}
+                on_restore={Callback::from({
+                    let chats = chats.clone();
+                    let archived_chats = archived_chats.clone();
+                    let selected_chat_id = selected_chat_id.clone();
+                    move |id| {
+                        let chats = chats.clone();
+                        let archived_chats = archived_chats.clone();
+                        let selected_chat_id = selected_chat_id.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if api::restore_chat(id).await.is_ok() {
+                                if let Ok(list) = api::list_chats().await {
+                                    chats.set(sort_chats(list));
+                                }
+                                if let Ok(list) = api::list_archived_chats().await {
+                                    archived_chats.set(sort_archived_chats(list));
+                                }
+                                selected_chat_id.set(Some(id));
+                            }
+                        });
+                    }
+                })}
+                on_permanent_delete={Callback::from({
+                    let archived_chats = archived_chats.clone();
+                    move |id| {
+                        let archived_chats = archived_chats.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if !confirm_permanent_chat_delete() {
+                                return;
+                            }
+                            let _ = api::permanently_delete_chat(id).await;
+                            if let Ok(list) = api::list_archived_chats().await {
+                                archived_chats.set(sort_archived_chats(list));
                             }
                         });
                     }
@@ -442,9 +495,11 @@ fn app() -> Html {
                 })}
                 on_chats_changed={Callback::from({
                     let chats = chats.clone();
+                    let archived_chats = archived_chats.clone();
                     let selected_chat_id = selected_chat_id.clone();
                     move |_| {
                         let chats = chats.clone();
+                        let archived_chats = archived_chats.clone();
                         let selected_chat_id = selected_chat_id.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(list) = api::list_chats().await {
@@ -455,6 +510,9 @@ fn app() -> Html {
                                     selected_chat_id.set(list.first().map(|c| c.id));
                                 }
                                 chats.set(list);
+                            }
+                            if let Ok(list) = api::list_archived_chats().await {
+                                archived_chats.set(sort_archived_chats(list));
                             }
                         });
                     }
@@ -569,14 +627,20 @@ fn mode_bar(props: &ModeBarProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct ChatSidebarProps {
     chats: Vec<Chat>,
+    archived_chats: Vec<Chat>,
     selected_id: Option<i64>,
     on_select: Callback<i64>,
     on_new: Callback<()>,
-    on_delete: Callback<i64>,
+    on_archive: Callback<i64>,
+    on_restore: Callback<i64>,
+    on_permanent_delete: Callback<i64>,
 }
 
 #[function_component(ChatSidebar)]
 fn chat_sidebar(props: &ChatSidebarProps) -> Html {
+    let archive_open = use_state(|| false);
+    let archive_count = props.archived_chats.len();
+
     html! {
         <aside class="sidebar">
             <div class="header sidebar-header">
@@ -601,12 +665,46 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
                                         <span class="badge">{ label }</span>
                                     }
                                 </div>
-                                <button class="btn secondary btn-compact" onclick={props.on_delete.reform(move |_| id)}>{"✕"}</button>
+                                <button class="btn secondary btn-compact" title="Archive chat" onclick={props.on_archive.reform(move |_| id)}>{"✕"}</button>
                             </div>
                         </div>
                     }
                 }) }
             </div>
+            if archive_count > 0 {
+                <div class="archive-panel">
+                    <button class="archive-toggle" onclick={{
+                        let archive_open = archive_open.clone();
+                        Callback::from(move |_| archive_open.set(!*archive_open))
+                    }}>
+                        <span>{ if *archive_open { "▾" } else { "▸" } }</span>
+                        <span>{ format!("Archive ({archive_count})") }</span>
+                    </button>
+                    if *archive_open {
+                        <div class="archive-list">
+                            { for props.archived_chats.iter().map(|chat| {
+                                let id = chat.id;
+                                let days_left = chat
+                                    .archived_at
+                                    .map(dreamwell_types::days_until_chat_archive_purge);
+                                html! {
+                                    <div class="chat-item archived">
+                                        <div class="archive-item-title">{ &chat.title }</div>
+                                        <div class="chat-character">{ &chat.character_name }</div>
+                                        if let Some(days) = days_left {
+                                            <div class="archive-meta muted">{ format!("{days} days left") }</div>
+                                        }
+                                        <div class="archive-actions">
+                                            <button class="btn secondary btn-compact" onclick={props.on_restore.reform(move |_| id)}>{"Restore"}</button>
+                                            <button class="btn secondary btn-compact text-danger" onclick={props.on_permanent_delete.reform(move |_| id)}>{"Delete"}</button>
+                                        </div>
+                                    </div>
+                                }
+                            }) }
+                        </div>
+                    }
+                </div>
+            }
         </aside>
     }
 }
@@ -618,6 +716,24 @@ fn sort_chats(mut chats: Vec<Chat>) -> Vec<Chat> {
             .then_with(|| b.id.cmp(&a.id))
     });
     chats
+}
+
+fn sort_archived_chats(mut chats: Vec<Chat>) -> Vec<Chat> {
+    chats.sort_by(|a, b| {
+        b.archived_at
+            .cmp(&a.archived_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    chats
+}
+
+fn confirm_permanent_chat_delete() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.confirm_with_message("Permanently delete this archived chat? This cannot be undone.")
+                .ok()
+        })
+        .unwrap_or(false)
 }
 
 fn chat_status(chat: &Chat) -> Option<String> {

@@ -25,8 +25,14 @@ use crate::routes::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/queue", get(get_queue))
+        .route("/archived", get(list_archived_chats))
         .route("/", get(list_chats).post(create_chat))
-        .route("/:id", get(get_chat).patch(update_chat).delete(delete_chat))
+        .route(
+            "/:id",
+            get(get_chat).patch(update_chat).delete(archive_chat),
+        )
+        .route("/:id/restore", post(restore_chat))
+        .route("/:id/permanent", delete(permanently_delete_chat))
         .route("/:id/messages", get(list_messages).post(send_message))
         .route(
             "/:id/messages/:message_id",
@@ -43,6 +49,10 @@ pub fn router() -> Router<AppState> {
 
 async fn list_chats(State(state): State<AppState>) -> AppResult<Json<Vec<Chat>>> {
     Ok(Json(db::list_chats(&state.pool).await?))
+}
+
+async fn list_archived_chats(State(state): State<AppState>) -> AppResult<Json<Vec<Chat>>> {
+    Ok(Json(db::list_archived_chats(&state.pool).await?))
 }
 
 async fn create_chat(
@@ -71,11 +81,27 @@ async fn update_chat(
     Ok(Json(db::update_chat(&state.pool, id, payload).await?))
 }
 
-async fn delete_chat(
+async fn archive_chat(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<OkResponse>> {
-    db::delete_chat(&state.pool, id).await?;
+    let _ = db::get_chat(&state.pool, id).await?;
+    for job in db::list_active_jobs_for_chat(&state.pool, id).await? {
+        let _ = state.queue.cancel_job(&state.pool, job.id).await;
+    }
+    db::archive_chat(&state.pool, id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn restore_chat(State(state): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Chat>> {
+    Ok(Json(db::restore_chat(&state.pool, id).await?))
+}
+
+async fn permanently_delete_chat(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<OkResponse>> {
+    db::permanently_delete_chat(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 

@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
     Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, ChatVariable, Job, JobStatus,
-    JobType, Message, MessageRole, Settings, SettingsUpdate, DEFAULT_SYSTEM_PROMPT_PREFIX,
-    DEFAULT_USER_NAME,
+    JobType, Message, MessageRole, Settings, SettingsUpdate, CHAT_ARCHIVE_RETENTION_DAYS,
+    DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
 };
 use std::time::Duration;
 
@@ -34,6 +34,7 @@ pub async fn prepare_on_startup(pool: &SqlitePool) -> AppResult<()> {
     sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
         .execute(pool)
         .await?;
+    purge_expired_archived_chats(pool).await?;
     Ok(())
 }
 
@@ -201,10 +202,12 @@ pub async fn delete_character(pool: &SqlitePool, id: i64) -> AppResult<()> {
 }
 
 pub async fn list_chats(pool: &SqlitePool) -> AppResult<Vec<Chat>> {
+    purge_expired_archived_chats(pool).await?;
     let rows = sqlx::query_as::<_, ChatRow>(
-        "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at
+        "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at, c.archived_at
          FROM chats c
          JOIN characters ch ON ch.id = c.character_id
+         WHERE c.archived_at IS NULL
          ORDER BY c.updated_at DESC",
     )
     .fetch_all(pool)
@@ -216,28 +219,76 @@ pub async fn list_chats(pool: &SqlitePool) -> AppResult<Vec<Chat>> {
     Ok(chats)
 }
 
-pub async fn get_chat(pool: &SqlitePool, id: i64) -> AppResult<Chat> {
-    let row = sqlx::query_as::<_, ChatRow>(
-        "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at
+pub async fn list_archived_chats(pool: &SqlitePool) -> AppResult<Vec<Chat>> {
+    purge_expired_archived_chats(pool).await?;
+    let rows = sqlx::query_as::<_, ChatRow>(
+        "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at, c.archived_at
          FROM chats c
          JOIN characters ch ON ch.id = c.character_id
-         WHERE c.id = ?1",
+         WHERE c.archived_at IS NOT NULL
+         ORDER BY c.archived_at DESC",
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Chat not found"))?;
+    .fetch_all(pool)
+    .await?;
+    let mut chats = Vec::with_capacity(rows.len());
+    for row in rows {
+        chats.push(chat_from_row(pool, row).await?);
+    }
+    Ok(chats)
+}
+
+pub async fn get_chat(pool: &SqlitePool, id: i64) -> AppResult<Chat> {
+    let row = fetch_chat_row(pool, id, false)
+        .await?
+        .ok_or_else(|| AppError::not_found("Chat not found"))?;
     chat_from_row(pool, row).await
 }
 
+async fn fetch_chat_row(
+    pool: &SqlitePool,
+    id: i64,
+    include_archived: bool,
+) -> AppResult<Option<ChatRow>> {
+    let row = if include_archived {
+        sqlx::query_as::<_, ChatRow>(
+            "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at, c.archived_at
+             FROM chats c
+             JOIN characters ch ON ch.id = c.character_id
+             WHERE c.id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, ChatRow>(
+            "SELECT c.id, c.title, c.character_id, ch.name AS character_name, c.summary, c.created_at, c.updated_at, c.archived_at
+             FROM chats c
+             JOIN characters ch ON ch.id = c.character_id
+             WHERE c.id = ?1 AND c.archived_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+    };
+    Ok(row)
+}
+
 async fn chat_from_row(pool: &SqlitePool, row: ChatRow) -> AppResult<Chat> {
-    let active_job = get_active_job(pool, row.id).await?;
-    let queued_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM generation_jobs WHERE chat_id = ?1 AND job_type = 'chat_message' AND status = 'queued'",
-    )
-    .bind(row.id)
-    .fetch_one(pool)
-    .await?;
+    let active_job = if row.archived_at.is_none() {
+        get_active_job(pool, row.id).await?
+    } else {
+        None
+    };
+    let queued_jobs: i64 = if row.archived_at.is_none() {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM generation_jobs WHERE chat_id = ?1 AND job_type = 'chat_message' AND status = 'queued'",
+        )
+        .bind(row.id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        0
+    };
     Ok(Chat {
         id: row.id,
         title: row.title,
@@ -246,6 +297,7 @@ async fn chat_from_row(pool: &SqlitePool, row: ChatRow) -> AppResult<Chat> {
         summary: row.summary,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
+        archived_at: row.archived_at.as_deref().map(parse_dt).transpose()?,
         active_job,
         queued_jobs,
     })
@@ -310,15 +362,67 @@ pub async fn update_chat(pool: &SqlitePool, id: i64, payload: ChatUpdate) -> App
     get_chat(pool, id).await
 }
 
-pub async fn delete_chat(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM chats WHERE id = ?1")
+pub async fn archive_chat(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let exists = fetch_chat_row(pool, id, false).await?;
+    if exists.is_none() {
+        return Err(AppError::not_found("Chat not found"));
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE chats SET archived_at = ?1 WHERE id = ?2 AND archived_at IS NULL")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn restore_chat(pool: &SqlitePool, id: i64) -> AppResult<Chat> {
+    let exists = fetch_chat_row(pool, id, true).await?;
+    if exists
+        .as_ref()
+        .and_then(|row| row.archived_at.as_deref())
+        .is_none()
+    {
+        return Err(AppError::not_found("Archived chat not found"));
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE chats SET archived_at = NULL, updated_at = ?1 WHERE id = ?2")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    get_chat(pool, id).await
+}
+
+pub async fn permanently_delete_chat(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM chats WHERE id = ?1 AND archived_at IS NOT NULL")
         .bind(id)
         .execute(pool)
         .await?;
     if result.rows_affected() == 0 {
-        return Err(AppError::not_found("Chat not found"));
+        return Err(AppError::not_found("Archived chat not found"));
     }
     Ok(())
+}
+
+pub async fn purge_expired_archived_chats(pool: &SqlitePool) -> AppResult<u64> {
+    let cutoff = (Utc::now() - chrono::Duration::days(CHAT_ARCHIVE_RETENTION_DAYS)).to_rfc3339();
+    let result =
+        sqlx::query("DELETE FROM chats WHERE archived_at IS NOT NULL AND archived_at < ?1")
+            .bind(&cutoff)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected())
+}
+
+pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Job>> {
+    let rows = sqlx::query_as::<_, JobRow>(
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type = 'chat_message' AND status IN ('queued','running') ORDER BY created_at ASC",
+    )
+    .bind(chat_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
@@ -887,6 +991,7 @@ pub struct ChatRow {
     pub summary: String,
     pub created_at: String,
     pub updated_at: String,
+    pub archived_at: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]

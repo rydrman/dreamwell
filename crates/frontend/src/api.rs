@@ -54,6 +54,10 @@ pub async fn list_chats() -> Result<Vec<Chat>, String> {
     json(api_request("GET", "/api/chats")).await
 }
 
+pub async fn list_archived_chats() -> Result<Vec<Chat>, String> {
+    json(api_request("GET", "/api/chats/archived")).await
+}
+
 pub async fn create_chat(title: &str, character_id: i64) -> Result<Chat, String> {
     json_body(
         "POST",
@@ -72,8 +76,25 @@ pub async fn update_chat(id: i64, character_id: i64) -> Result<Chat, String> {
     .await
 }
 
-pub async fn delete_chat(id: i64) -> Result<(), String> {
+pub async fn archive_chat(id: i64) -> Result<(), String> {
     api_request("DELETE", &format!("/api/chats/{id}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub async fn restore_chat(id: i64) -> Result<Chat, String> {
+    json_body(
+        "POST",
+        &format!("/api/chats/{id}/restore"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn permanently_delete_chat(id: i64) -> Result<(), String> {
+    api_request("DELETE", &format!("/api/chats/{id}/permanent"))
         .send()
         .await
         .map_err(|e| e.to_string())?;
