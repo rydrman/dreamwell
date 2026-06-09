@@ -3,22 +3,32 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-make_pid=
+TRUNK="${CARGO_HOME:-/usr/local/cargo}/bin/trunk"
+
+trunk_pid=
+
 cleanup() {
-  if [[ -n "${make_pid:-}" ]] && kill -0 "$make_pid" 2>/dev/null; then
-    kill -INT "$make_pid" 2>/dev/null || true
-    wait "$make_pid" 2>/dev/null || true
+  if [[ -n "${trunk_pid:-}" ]] && kill -0 "$trunk_pid" 2>/dev/null; then
+    kill -TERM "$trunk_pid" 2>/dev/null || true
+    wait "$trunk_pid" 2>/dev/null || true
   fi
-  exit 130
 }
-trap cleanup INT TERM
 
-make build &
-make_pid=$!
-wait "$make_pid"
-make_pid=
-trap - INT TERM
+trap 'cleanup; exit 130' INT TERM
 
-exec env DREAMWELL_STATIC_DIR=crates/frontend/dist \
-  DREAMWELL_DATABASE_URL="${DREAMWELL_DATABASE_URL:-sqlite:/app/data/dreamwell.db}" \
-  cargo run --release -p dreamwell-server
+make build
+
+(cd crates/frontend && env -u NO_COLOR "$TRUNK" watch --release) &
+trunk_pid=$!
+
+export DREAMWELL_STATIC_DIR=crates/frontend/dist
+export DREAMWELL_DATABASE_URL="${DREAMWELL_DATABASE_URL:-sqlite:/app/data/dreamwell.db}"
+
+cargo watch \
+  -w crates/server \
+  -w crates/dreamwell-types \
+  -w Cargo.toml \
+  -w Cargo.lock \
+  -x 'run --release -p dreamwell-server'
+
+cleanup

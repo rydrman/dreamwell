@@ -16,6 +16,8 @@ services:
       - dreamwell-cargo-git:/usr/local/cargo/git
       - dreamwell-target:/app/target
       - dreamwell-data:/app/data
+      - dreamwell-frontend-dist:/app/crates/frontend/dist
+      - dreamwell-trunk-cache:/root/.cache/trunk
     environment:
       CARGO_HOME: /usr/local/cargo
       DREAMWELL_STATIC_DIR: crates/frontend/dist
@@ -28,20 +30,12 @@ services:
         - action: rebuild
           path: docker-compose.dev.yml
         - action: restart
-          path: ./crates
-          ignore:
-            - frontend/dist/
-        - action: restart
-          path: ./scripts
-        - action: restart
-          path: Cargo.toml
-        - action: restart
-          path: Cargo.lock
-        - action: restart
-          path: Makefile
+          path: ./scripts/dev-run.sh
 
 volumes:
   dreamwell-cargo-registry:
   dreamwell-cargo-git:
   dreamwell-target:
   dreamwell-data:
+  dreamwell-frontend-dist:
+  dreamwell-trunk-cache:

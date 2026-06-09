@@ -4,15 +4,20 @@ ARG RUST_VERSION=1.86
 ARG TRUNK_VERSION=v0.21.14
 ARG TRUNK_BASE_URL=https://github.com/trunk-rs/trunk/releases/download
 
-FROM rust:${RUST_VERSION}-bookworm AS dev-base
+FROM rust:${RUST_VERSION}-bookworm AS rust-base
 ARG TRUNK_VERSION
 ARG TRUNK_BASE_URL
 RUN rustup target add wasm32-unknown-unknown \
     && curl -fsSL "${TRUNK_BASE_URL}/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
     | tar -xz -C /usr/local/cargo/bin trunk
+
+FROM rust-base AS dev-base
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install cargo-watch --locked
 WORKDIR /app
 
-FROM dev-base AS builder
+FROM rust-base AS builder
 COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
