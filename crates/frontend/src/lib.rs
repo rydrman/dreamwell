@@ -1,5 +1,6 @@
 mod api;
 mod markdown;
+mod notifications;
 mod queue_ui;
 mod stories_ui;
 
@@ -28,7 +29,9 @@ fn app() -> Html {
     let mode = use_state(|| AppMode::Chats);
     let return_mode = use_state(|| AppMode::Chats);
     let pending_story_id = use_state(|| None::<i64>);
+    let selected_story_id = use_state(|| None::<i64>);
     let chats = use_state(Vec::<Chat>::new);
+    let stories = use_state(Vec::<Story>::new);
     let archived_chats = use_state(Vec::<Chat>::new);
     let characters = use_state(Vec::<Character>::new);
     let selected_chat_id = use_state(|| None::<i64>);
@@ -40,6 +43,7 @@ fn app() -> Html {
     let picker_open = use_state(|| false);
     let mobile_pane = use_state(|| MobilePane::Main);
     let refresh_generation = use_state(|| 0u32);
+    let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
 
     {
         let chats = chats.clone();
@@ -215,26 +219,113 @@ fn app() -> Html {
     };
 
     {
+        let mode = mode.clone();
+        let selected_chat_id = selected_chat_id.clone();
+        let selected_story_id = selected_story_id.clone();
+        let pending_story_id = pending_story_id.clone();
+        let load_messages_for_chat = load_messages_for_chat.clone();
+        use_effect_with((), move |_| {
+            let actions = Rc::new(notifications::NotificationActions {
+                open_chat: Callback::from({
+                    let mode = mode.clone();
+                    let selected_chat_id = selected_chat_id.clone();
+                    let load_messages_for_chat = load_messages_for_chat.clone();
+                    move |chat_id| {
+                        mode.set(AppMode::Chats);
+                        selected_chat_id.set(Some(chat_id));
+                        load_messages_for_chat.emit(chat_id);
+                    }
+                }),
+                open_story: Callback::from({
+                    let mode = mode.clone();
+                    let pending_story_id = pending_story_id.clone();
+                    let selected_story_id = selected_story_id.clone();
+                    move |story_id| {
+                        pending_story_id.set(Some(story_id));
+                        selected_story_id.set(Some(story_id));
+                        mode.set(AppMode::Stories);
+                    }
+                }),
+            });
+            notifications::set_actions(actions);
+            || notifications::clear_actions()
+        });
+    }
+
+    {
         let queue = queue.clone();
         let chats = chats.clone();
         let archived_chats = archived_chats.clone();
+        let stories = stories.clone();
+        let mode = mode.clone();
+        let selected_chat_id = selected_chat_id.clone();
+        let selected_story_id = selected_story_id.clone();
+        let job_tracker = job_tracker.clone();
         use_effect_with((), move |_| {
             let queue = queue.clone();
             let chats = chats.clone();
             let archived_chats = archived_chats.clone();
+            let stories = stories.clone();
+            let mode = mode.clone();
+            let selected_chat_id = selected_chat_id.clone();
+            let selected_story_id = selected_story_id.clone();
+            let job_tracker = job_tracker.clone();
             let handle = Interval::new(3000, move || {
                 let queue = queue.clone();
                 let chats = chats.clone();
                 let archived_chats = archived_chats.clone();
+                let stories = stories.clone();
+                let view = notifications::ViewContext {
+                    mode: *mode,
+                    selected_chat_id: *selected_chat_id,
+                    selected_story_id: *selected_story_id,
+                };
+                let notifications_on = notifications::is_enabled();
+                let job_tracker = job_tracker.clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(status) = api::get_queue().await {
+                    let status = api::get_queue().await.ok();
+                    let chat_list = api::list_chats().await.ok().map(sort_chats);
+                    let archived_list = api::list_archived_chats()
+                        .await
+                        .ok()
+                        .map(sort_archived_chats);
+                    let story_list = if notifications_on {
+                        api::list_stories().await.ok()
+                    } else {
+                        None
+                    };
+
+                    if let Some(status) = status.as_ref() {
+                        let completed = job_tracker.borrow_mut().update(status);
+                        if notifications_on {
+                            let fallback_chats = (*chats).clone();
+                            let fallback_stories = (*stories).clone();
+                            let chats_for_copy = chat_list.as_deref().unwrap_or(&fallback_chats);
+                            let stories_for_copy =
+                                story_list.as_deref().unwrap_or(&fallback_stories);
+                            for job in completed {
+                                if notifications::should_notify(&job, view) {
+                                    let (title, body) = notifications::notification_copy(
+                                        &job,
+                                        chats_for_copy,
+                                        stories_for_copy,
+                                    );
+                                    notifications::notify_completion(&job, &title, &body);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(status) = status {
                         queue.set(Some(status));
                     }
-                    if let Ok(list) = api::list_chats().await {
-                        chats.set(sort_chats(list));
+                    if let Some(list) = chat_list {
+                        chats.set(list);
                     }
-                    if let Ok(list) = api::list_archived_chats().await {
-                        archived_chats.set(sort_archived_chats(list));
+                    if let Some(list) = archived_list {
+                        archived_chats.set(list);
+                    }
+                    if let Some(list) = story_list {
+                        stories.set(list);
                     }
                 });
             });
@@ -282,8 +373,10 @@ fn app() -> Html {
                     on_open_story={Callback::from({
                         let mode = mode.clone();
                         let pending_story_id = pending_story_id.clone();
+                        let selected_story_id = selected_story_id.clone();
                         move |story_id| {
                             pending_story_id.set(Some(story_id));
+                            selected_story_id.set(Some(story_id));
                             mode.set(AppMode::Stories);
                         }
                     })}
@@ -307,6 +400,16 @@ fn app() -> Html {
                     queue={(*queue).clone()}
                     on_open_queue={open_queue.clone()}
                     initial_story_id={*pending_story_id}
+                    on_story_selected={Callback::from({
+                        let selected_story_id = selected_story_id.clone();
+                        let pending_story_id = pending_story_id.clone();
+                        move |story_id| {
+                            selected_story_id.set(story_id);
+                            if story_id.is_some() {
+                                pending_story_id.set(None);
+                            }
+                        }
+                    })}
                 />
             </>
         };
@@ -2212,6 +2315,74 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 }} />
                 {"Extract reasoning into collapsible thought block"}
             </label>
+            <NotificationSettings />
+        </div>
+    }
+}
+
+#[function_component(NotificationSettings)]
+fn notification_settings() -> Html {
+    let enabled = use_state(notifications::is_enabled);
+    let permission = use_state(notifications::permission_label);
+    let busy = use_state(|| false);
+    let supported = notifications::is_supported();
+
+    let toggle = {
+        let enabled = enabled.clone();
+        let permission = permission.clone();
+        let busy = busy.clone();
+        Callback::from(move |_| {
+            if *busy || !supported {
+                return;
+            }
+            let next = !*enabled;
+            if next {
+                busy.set(true);
+                let enabled = enabled.clone();
+                let permission = permission.clone();
+                let busy = busy.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let granted = notifications::request_permission().await;
+                    if granted {
+                        notifications::set_enabled(true);
+                        enabled.set(true);
+                    }
+                    permission.set(notifications::permission_label());
+                    busy.set(false);
+                });
+            } else {
+                notifications::set_enabled(false);
+                enabled.set(false);
+            }
+        })
+    };
+
+    html! {
+        <div class="settings-group">
+            <strong>{"Browser notifications"}</strong>
+            <p class="muted" style="margin:0.35rem 0 0.5rem;">
+                {"Get notified when a queued generation finishes while you are in another tab or chat."}
+            </p>
+            if !supported {
+                <p class="muted">{"This browser does not support notifications."}</p>
+            } else {
+                <label style="display:flex;gap:0.5rem;align-items:center;margin:0.5rem 0;">
+                    <input
+                        type="checkbox"
+                        checked={*enabled}
+                        disabled={*busy || notifications::permission_denied()}
+                        onclick={toggle}
+                    />
+                    if *busy {
+                        <span>{"Requesting permission…"}</span>
+                    } else {
+                        <span>{"Notify when generations complete"}</span>
+                    }
+                </label>
+                <p class="muted" style="margin:0;">
+                    { format!("Permission: {}", *permission) }
+                </p>
+            }
         </div>
     }
 }

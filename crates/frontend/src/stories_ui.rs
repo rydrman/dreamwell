@@ -23,6 +23,8 @@ pub struct StoriesShellProps {
     pub on_open_queue: Callback<()>,
     #[prop_or_default]
     pub initial_story_id: Option<i64>,
+    #[prop_or_default]
+    pub on_story_selected: Callback<Option<i64>>,
 }
 
 #[function_component(StoriesShell)]
@@ -53,6 +55,15 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 }
                 loading.set(false);
             });
+            || ()
+        });
+    }
+
+    {
+        let on_story_selected = props.on_story_selected.clone();
+        let selected_story_id = selected_story_id.clone();
+        use_effect_with(*selected_story_id, move |story_id| {
+            on_story_selected.emit(*story_id);
             || ()
         });
     }
