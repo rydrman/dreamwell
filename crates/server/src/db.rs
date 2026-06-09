@@ -182,22 +182,21 @@ pub async fn update_character(
 }
 
 pub async fn delete_character(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    let linked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats WHERE character_id = ?1")
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM characters WHERE id = ?1)")
         .bind(id)
         .fetch_one(pool)
         .await?;
-    if linked > 0 {
-        return Err(AppError::bad_request(
-            "Cannot delete character while chats are linked to it",
-        ));
+    if !exists {
+        return Err(AppError::not_found("Character not found"));
     }
-    let result = sqlx::query("DELETE FROM characters WHERE id = ?1")
+    sqlx::query("DELETE FROM chats WHERE character_id = ?1")
         .bind(id)
         .execute(pool)
         .await?;
-    if result.rows_affected() == 0 {
-        return Err(AppError::not_found("Character not found"));
-    }
+    sqlx::query("DELETE FROM characters WHERE id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

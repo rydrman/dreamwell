@@ -48,7 +48,7 @@ fn app() -> Html {
                     if let Some(first) = list.first() {
                         selected_chat_id.set(Some(first.id));
                     }
-                    chats.set(list);
+                    chats.set(sort_chats(list));
                 }
                 if let Ok(list) = api::list_characters().await {
                     characters.set(list);
@@ -84,7 +84,7 @@ fn app() -> Html {
                     messages.set(payload.messages.clone());
                     messages_loading.set(false);
                     let current = (*chats).clone();
-                    chats.set(
+                    chats.set(sort_chats(
                         current
                             .into_iter()
                             .map(|c| {
@@ -95,7 +95,7 @@ fn app() -> Html {
                                 }
                             })
                             .collect(),
-                    );
+                    ));
                 });
             } else {
                 messages.set(vec![]);
@@ -137,7 +137,7 @@ fn app() -> Html {
                         queue.set(Some(status));
                     }
                     if let Ok(list) = api::list_chats().await {
-                        chats.set(list);
+                        chats.set(sort_chats(list));
                     }
                 });
             });
@@ -231,7 +231,7 @@ fn app() -> Html {
                 match api::create_chat(&title, character_id).await {
                     Ok(chat) => {
                         if let Ok(list) = api::list_chats().await {
-                            chats.set(list);
+                            chats.set(sort_chats(list));
                         }
                         selected_chat_id.set(Some(chat.id));
                         load_messages_for_chat.emit(chat.id);
@@ -304,6 +304,7 @@ fn app() -> Html {
                         wasm_bindgen_futures::spawn_local(async move {
                             let _ = api::delete_chat(id).await;
                             if let Ok(list) = api::list_chats().await {
+                                let list = sort_chats(list);
                                 if *selected_chat_id == Some(id) {
                                     selected_chat_id.set(list.first().map(|c| c.id));
                                 }
@@ -395,7 +396,7 @@ fn app() -> Html {
                                     messages.set(msgs);
                                 }
                                 if let Ok(list) = api::list_chats().await {
-                                    chats.set(list);
+                                    chats.set(sort_chats(list));
                                 }
                                 if let Ok(status) = api::get_queue().await {
                                     queue.set(Some(status));
@@ -416,7 +417,7 @@ fn app() -> Html {
                         wasm_bindgen_futures::spawn_local(async move {
                             let _ = api::update_chat(chat_id, character_id).await;
                             if let Ok(list) = api::list_chats().await {
-                                chats.set(list);
+                                chats.set(sort_chats(list));
                             }
                         });
                     }
@@ -432,10 +433,29 @@ fn app() -> Html {
                         let load_messages_for_chat = load_messages_for_chat.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(list) = api::list_chats().await {
-                                chats.set(list);
+                                chats.set(sort_chats(list));
                             }
                             selected_chat_id.set(Some(chat_id));
                             load_messages_for_chat.emit(chat_id);
+                        });
+                    }
+                })}
+                on_chats_changed={Callback::from({
+                    let chats = chats.clone();
+                    let selected_chat_id = selected_chat_id.clone();
+                    move |_| {
+                        let chats = chats.clone();
+                        let selected_chat_id = selected_chat_id.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(list) = api::list_chats().await {
+                                let list = sort_chats(list);
+                                if selected_chat_id
+                                    .is_some_and(|id| !list.iter().any(|c| c.id == id))
+                                {
+                                    selected_chat_id.set(list.first().map(|c| c.id));
+                                }
+                                chats.set(list);
+                            }
                         });
                     }
                 })}
@@ -591,6 +611,15 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
     }
 }
 
+fn sort_chats(mut chats: Vec<Chat>) -> Vec<Chat> {
+    chats.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    chats
+}
+
 fn chat_status(chat: &Chat) -> Option<String> {
     let job = chat.active_job.as_ref()?;
     match job.status {
@@ -604,6 +633,17 @@ fn chat_status(chat: &Chat) -> Option<String> {
         }
         _ => Some(format!("{:?}", job.status).to_lowercase()),
     }
+}
+
+fn confirm_character_delete(name: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.confirm_with_message(&format!(
+                "Delete character \"{name}\"? Linked chats will also be deleted."
+            ))
+            .ok()
+        })
+        .unwrap_or(false)
 }
 
 fn confirm_delete_after(count: usize) -> bool {
@@ -1185,6 +1225,7 @@ struct RightPanelProps {
     on_character_change: Callback<(i64, i64)>,
     on_start_chat: Callback<(i64, String)>,
     on_chat_created: Callback<i64>,
+    on_chats_changed: Callback<()>,
     on_characters_changed: Callback<()>,
 }
 
@@ -1210,6 +1251,7 @@ fn right_panel(props: &RightPanelProps) -> Html {
                         on_character_change={props.on_character_change.clone()}
                         on_start_chat={props.on_start_chat.clone()}
                         on_chat_created={props.on_chat_created.clone()}
+                        on_chats_changed={props.on_chats_changed.clone()}
                         on_characters_changed={props.on_characters_changed.clone()}
                         chat_id={props.chat_id}
                     />
@@ -1228,6 +1270,7 @@ struct CharacterPanelProps {
     on_character_change: Callback<(i64, i64)>,
     on_start_chat: Callback<(i64, String)>,
     on_chat_created: Callback<i64>,
+    on_chats_changed: Callback<()>,
     on_characters_changed: Callback<()>,
 }
 
@@ -1325,6 +1368,7 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                 { for characters.iter().map(|c| {
                     let id = c.id;
                     let name = c.name.clone();
+                    let delete_name = name.clone();
                     html! {
                         <div class="list-row"
                             onclick={{
@@ -1347,17 +1391,41 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                             }}>{"Chat"}</button>
                             <button class="btn secondary btn-compact" onclick={{
                                 let characters = characters.clone();
+                                let draft = draft.clone();
+                                let editing_id = editing_id.clone();
                                 let on_characters_changed = props.on_characters_changed.clone();
+                                let on_chats_changed = props.on_chats_changed.clone();
                                 Callback::from(move |e: MouseEvent| {
                                     e.stop_propagation();
+                                    if !confirm_character_delete(&delete_name) {
+                                        return;
+                                    }
                                     let characters = characters.clone();
+                                    let draft = draft.clone();
+                                    let editing_id = editing_id.clone();
                                     let on_characters_changed = on_characters_changed.clone();
+                                    let on_chats_changed = on_chats_changed.clone();
                                     wasm_bindgen_futures::spawn_local(async move {
-                                        let _ = api::delete_character(id).await;
-                                        if let Ok(list) = api::list_characters().await {
-                                            characters.set(list);
+                                        match api::delete_character(id).await {
+                                            Ok(()) => {
+                                                if *editing_id == Some(id) {
+                                                    editing_id.set(None);
+                                                    draft.set(CharacterDraft::default());
+                                                }
+                                                if let Ok(list) = api::list_characters().await {
+                                                    characters.set(list);
+                                                }
+                                                on_characters_changed.emit(());
+                                                on_chats_changed.emit(());
+                                            }
+                                            Err(err) => {
+                                                if let Some(window) = web_sys::window() {
+                                                    let _ = window.alert_with_message(&format!(
+                                                        "Could not delete character: {err}"
+                                                    ));
+                                                }
+                                            }
                                         }
-                                        on_characters_changed.emit(());
                                     });
                                 })
                             }}>{"delete"}</button>
