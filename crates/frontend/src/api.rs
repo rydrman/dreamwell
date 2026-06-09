@@ -1,8 +1,118 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use dreamwell_types::*;
 use gloo_net::http::{Request, RequestBuilder};
+use gloo_timers::callback::Timeout;
 use serde::Serialize;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::EventSource;
+use web_sys::{Event, EventSource, MessageEvent};
+
+struct ReconnectingEventSource {
+    url: String,
+    on_message: Rc<dyn Fn(String)>,
+    source: RefCell<Option<EventSource>>,
+    timeout: RefCell<Option<Timeout>>,
+    stopped: RefCell<bool>,
+    attempt: RefCell<u32>,
+}
+
+impl ReconnectingEventSource {
+    fn new(url: String, on_message: impl Fn(String) + 'static) -> Rc<Self> {
+        let inner = Rc::new(Self {
+            url,
+            on_message: Rc::new(on_message),
+            source: RefCell::new(None),
+            timeout: RefCell::new(None),
+            stopped: RefCell::new(false),
+            attempt: RefCell::new(0),
+        });
+        inner.connect();
+        inner
+    }
+
+    fn connect(self: &Rc<Self>) {
+        if *self.stopped.borrow() {
+            return;
+        }
+        self.close_source();
+        self.timeout.borrow_mut().take();
+
+        let Some(source) = EventSource::new(&self.url).ok() else {
+            self.schedule_reconnect();
+            return;
+        };
+
+        {
+            let on_message = self.on_message.clone();
+            let inner = self.clone();
+            let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
+                inner.attempt.replace(0);
+                if let Some(text) = event.data().as_string() {
+                    on_message(text);
+                }
+            }) as Box<dyn FnMut(_)>);
+            source.set_onmessage(Some(callback.as_ref().unchecked_ref()));
+            callback.forget();
+        }
+
+        {
+            let inner = self.clone();
+            let callback = Closure::wrap(Box::new(move |_event: Event| {
+                inner.stopped.replace(true);
+                inner.close_source();
+            }) as Box<dyn FnMut(_)>);
+            let _ =
+                source.add_event_listener_with_callback("idle", callback.as_ref().unchecked_ref());
+            callback.forget();
+        }
+
+        {
+            let inner = self.clone();
+            let callback = Closure::wrap(Box::new(move |_event: Event| {
+                if *inner.stopped.borrow() {
+                    return;
+                }
+                inner.close_source();
+                inner.schedule_reconnect();
+            }) as Box<dyn FnMut(_)>);
+            source.set_onerror(Some(callback.as_ref().unchecked_ref()));
+            callback.forget();
+        }
+
+        *self.source.borrow_mut() = Some(source);
+    }
+
+    fn close_source(&self) {
+        if let Some(source) = self.source.borrow_mut().take() {
+            source.close();
+        }
+    }
+
+    fn schedule_reconnect(self: &Rc<Self>) {
+        if *self.stopped.borrow() {
+            return;
+        }
+        self.timeout.borrow_mut().take();
+        let attempt = *self.attempt.borrow();
+        *self.attempt.borrow_mut() = attempt.saturating_add(1);
+        let delay_ms = 1_000u32
+            .saturating_mul(2u32.saturating_pow(attempt.min(5)))
+            .min(30_000);
+        let inner = self.clone();
+        let timeout = Timeout::new(delay_ms, move || {
+            inner.connect();
+        });
+        *self.timeout.borrow_mut() = Some(timeout);
+    }
+
+    fn stop(&self) {
+        *self.stopped.borrow_mut() = true;
+        self.timeout.borrow_mut().take();
+        self.close_source();
+    }
+}
 
 fn api_request(method: &str, path: &str) -> RequestBuilder {
     (match method {
@@ -251,35 +361,24 @@ pub async fn import_character(file: &web_sys::File) -> Result<Character, String>
 }
 
 pub struct ChatStream {
-    source: EventSource,
+    inner: Rc<ReconnectingEventSource>,
 }
 
 impl ChatStream {
-    pub fn new(chat_id: i64, on_update: impl Fn(ChatStreamPayload) + 'static) -> Option<Self> {
+    pub fn new(chat_id: i64, on_update: impl Fn(ChatStreamPayload) + 'static) -> Self {
         let url = format!("/api/chats/{chat_id}/stream");
-        let source = EventSource::new(&url).ok()?;
-        let on_update = std::rc::Rc::new(on_update);
-        {
-            let on_update = on_update.clone();
-            let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
-                move |event: web_sys::MessageEvent| {
-                    if let Some(text) = event.data().as_string() {
-                        if let Ok(payload) = serde_json::from_str::<ChatStreamPayload>(&text) {
-                            on_update(payload);
-                        }
-                    }
-                },
-            ) as Box<dyn FnMut(_)>);
-            source.set_onmessage(Some(callback.as_ref().unchecked_ref()));
-            callback.forget();
-        }
-        Some(Self { source })
+        let inner = ReconnectingEventSource::new(url, move |text| {
+            if let Ok(payload) = serde_json::from_str::<ChatStreamPayload>(&text) {
+                on_update(payload);
+            }
+        });
+        Self { inner }
     }
 }
 
 impl Drop for ChatStream {
     fn drop(&mut self) {
-        self.source.close();
+        self.inner.stop();
     }
 }
 
@@ -418,34 +517,23 @@ pub async fn generate_prose(
 }
 
 pub struct StoryStream {
-    source: EventSource,
+    inner: Rc<ReconnectingEventSource>,
 }
 
 impl StoryStream {
     pub fn new(story_id: i64, on_update: impl Fn(StoryStreamPayload) + 'static) -> Self {
         let url = format!("/api/stories/{story_id}/stream");
-        let source = EventSource::new(&url).expect("EventSource");
-        let on_update = std::rc::Rc::new(on_update);
-        {
-            let on_update = on_update.clone();
-            let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
-                move |event: web_sys::MessageEvent| {
-                    if let Some(text) = event.data().as_string() {
-                        if let Ok(payload) = serde_json::from_str::<StoryStreamPayload>(&text) {
-                            on_update(payload);
-                        }
-                    }
-                },
-            ) as Box<dyn FnMut(_)>);
-            source.set_onmessage(Some(callback.as_ref().unchecked_ref()));
-            callback.forget();
-        }
-        Self { source }
+        let inner = ReconnectingEventSource::new(url, move |text| {
+            if let Ok(payload) = serde_json::from_str::<StoryStreamPayload>(&text) {
+                on_update(payload);
+            }
+        });
+        Self { inner }
     }
 }
 
 impl Drop for StoryStream {
     fn drop(&mut self) {
-        self.source.close();
+        self.inner.stop();
     }
 }

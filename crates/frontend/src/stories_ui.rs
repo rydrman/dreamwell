@@ -1,4 +1,8 @@
+use std::rc::Rc;
+
 use dreamwell_types::*;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -30,6 +34,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
     let mobile_pane = use_state(|| MobilePane::Main);
+    let refresh_generation = use_state(|| 0u32);
 
     {
         let stories = stories.clone();
@@ -56,38 +61,108 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         let detail = detail.clone();
         let stories = stories.clone();
         let selected_story_id = *selected_story_id;
+        let refresh_generation = *refresh_generation;
         let selection = selection.clone();
-        use_effect_with(selected_story_id, move |story_id| {
-            let mut stream_holder = None::<api::StoryStream>;
-            if let Some(story_id) = *story_id {
-                let detail_for_fetch = detail.clone();
+        use_effect_with(
+            (selected_story_id, refresh_generation),
+            move |(story_id, _)| {
+                let mut stream_holder = None::<api::StoryStream>;
+                if let Some(story_id) = *story_id {
+                    let detail_for_fetch = detail.clone();
+                    let stories = stories.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Ok(d) = api::get_story(story_id).await {
+                            detail_for_fetch.set(Some(d));
+                        }
+                    });
+                    stream_holder = Some(api::StoryStream::new(story_id, move |payload| {
+                        detail.set(Some(payload.detail.clone()));
+                        let current = (*stories).clone();
+                        stories.set(
+                            current
+                                .into_iter()
+                                .map(|s| {
+                                    if s.id == payload.detail.story.id {
+                                        payload.detail.story.clone()
+                                    } else {
+                                        s
+                                    }
+                                })
+                                .collect(),
+                        );
+                    }));
+                } else {
+                    detail.set(None);
+                    selection.set(StorySelection::Basics);
+                }
+                move || drop(stream_holder)
+            },
+        );
+    }
+
+    {
+        let refresh_generation = refresh_generation.clone();
+        let stories = stories.clone();
+        use_effect_with((), move |_| {
+            let refresh_generation = refresh_generation.clone();
+            let stories = stories.clone();
+            let resume: Rc<dyn Fn()> = Rc::new(move || {
+                refresh_generation.set(*refresh_generation + 1);
                 let stories = stories.clone();
                 wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(d) = api::get_story(story_id).await {
-                        detail_for_fetch.set(Some(d));
+                    if let Ok(list) = api::list_stories().await {
+                        stories.set(list);
                     }
                 });
-                stream_holder = Some(api::StoryStream::new(story_id, move |payload| {
-                    detail.set(Some(payload.detail.clone()));
-                    let current = (*stories).clone();
-                    stories.set(
-                        current
-                            .into_iter()
-                            .map(|s| {
-                                if s.id == payload.detail.story.id {
-                                    payload.detail.story.clone()
-                                } else {
-                                    s
-                                }
-                            })
-                            .collect(),
-                    );
-                }));
-            } else {
-                detail.set(None);
-                selection.set(StorySelection::Basics);
+            });
+
+            let resume_visibility = resume.clone();
+            let visibility_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                if web_sys::window()
+                    .and_then(|window| window.document())
+                    .is_some_and(|document| {
+                        document.visibility_state() == web_sys::VisibilityState::Visible
+                    })
+                {
+                    resume_visibility();
+                }
+            }) as Box<dyn FnMut(_)>);
+
+            let document = web_sys::window().and_then(|window| window.document());
+            if let Some(document) = document.as_ref() {
+                let _ = document.add_event_listener_with_callback(
+                    "visibilitychange",
+                    visibility_callback.as_ref().unchecked_ref(),
+                );
             }
-            move || drop(stream_holder)
+
+            let resume_online = resume.clone();
+            let online_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                resume_online();
+            }) as Box<dyn FnMut(_)>);
+
+            let window = web_sys::window();
+            if let Some(window) = window.as_ref() {
+                let _ = window.add_event_listener_with_callback(
+                    "online",
+                    online_callback.as_ref().unchecked_ref(),
+                );
+            }
+
+            move || {
+                if let Some(document) = document.as_ref() {
+                    let _ = document.remove_event_listener_with_callback(
+                        "visibilitychange",
+                        visibility_callback.as_ref().unchecked_ref(),
+                    );
+                }
+                if let Some(window) = window.as_ref() {
+                    let _ = window.remove_event_listener_with_callback(
+                        "online",
+                        online_callback.as_ref().unchecked_ref(),
+                    );
+                }
+            }
         });
     }
 
