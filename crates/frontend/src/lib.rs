@@ -2,6 +2,7 @@ mod api;
 mod markdown;
 mod notifications;
 mod queue_ui;
+mod router;
 mod stories_ui;
 
 use std::cell::RefCell;
@@ -13,51 +14,68 @@ use wasm_bindgen::JsCast;
 use dreamwell_types::*;
 use gloo_timers::callback::{Interval, Timeout};
 use queue_ui::{AppMode, QueueBar, QueuePage};
+use router::{use_router, AppRoute, Overlay, StoryNav};
 use stories_ui::StoriesShell;
 use web_sys::{HtmlElement, HtmlInputElement};
 use yew::prelude::*;
 
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum MobilePane {
-    Main,
-    Sidebar,
-    Panel,
+fn chat_id_from_route(route: &AppRoute) -> Option<i64> {
+    match route {
+        AppRoute::Chats { chat_id, .. } => *chat_id,
+        _ => None,
+    }
+}
+
+fn story_id_from_route(route: &AppRoute) -> Option<i64> {
+    match route {
+        AppRoute::Stories { story_id, .. } => *story_id,
+        _ => None,
+    }
 }
 
 #[function_component(App)]
 fn app() -> Html {
-    let mode = use_state(|| AppMode::Chats);
-    let return_mode = use_state(|| AppMode::Chats);
-    let pending_story_id = use_state(|| None::<i64>);
-    let selected_story_id = use_state(|| None::<i64>);
+    let router = use_router();
+    let route = router.route();
+    let mode = route.mode();
+    let selected_chat_id = chat_id_from_route(&route);
+    let _selected_story_id = story_id_from_route(&route);
     let chats = use_state(Vec::<Chat>::new);
     let stories = use_state(Vec::<Story>::new);
     let archived_chats = use_state(Vec::<Chat>::new);
     let characters = use_state(Vec::<Character>::new);
-    let selected_chat_id = use_state(|| None::<i64>);
     let messages = use_state(Vec::<Message>::new);
     let messages_loading = use_state(|| false);
     let settings = use_state(|| None::<Settings>);
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
-    let picker_open = use_state(|| false);
-    let mobile_pane = use_state(|| MobilePane::Main);
     let refresh_generation = use_state(|| 0u32);
     let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
+
+    let navigate = {
+        let router = router.clone();
+        Callback::from(move |(next, push): (AppRoute, bool)| router.navigate(next, push))
+    };
+
+    let close_overlay = {
+        let router = router.clone();
+        let route = route.clone();
+        Callback::from(move |_| {
+            if route.overlay().is_some() {
+                router.back();
+            }
+        })
+    };
 
     {
         let chats = chats.clone();
         let archived_chats = archived_chats.clone();
         let characters = characters.clone();
-        let selected_chat_id = selected_chat_id.clone();
         let settings = settings.clone();
         let loading = loading.clone();
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(list) = api::list_chats().await {
-                    if let Some(first) = list.first() {
-                        selected_chat_id.set(Some(first.id));
-                    }
                     chats.set(sort_chats(list));
                 }
                 if let Ok(list) = api::list_archived_chats().await {
@@ -76,10 +94,47 @@ fn app() -> Html {
     }
 
     {
+        let chats = chats.clone();
+        let router = router.clone();
+        let route = route.clone();
+        use_effect_with((route.clone(), (*chats).clone()), move |(route, chats)| {
+            if !chats.is_empty() {
+                match route {
+                    AppRoute::Chats { chat_id: None, .. } => {
+                        if let Some(first) = chats.first() {
+                            router.navigate(
+                                AppRoute::Chats {
+                                    chat_id: Some(first.id),
+                                    overlay: None,
+                                    sidebar: false,
+                                },
+                                false,
+                            );
+                        }
+                    }
+                    AppRoute::Chats {
+                        chat_id: Some(id), ..
+                    } if !chats.iter().any(|c| c.id == *id) => {
+                        router.navigate(
+                            AppRoute::Chats {
+                                chat_id: chats.first().map(|c| c.id),
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            false,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            || ()
+        });
+    }
+
+    {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
         let chats = chats.clone();
-        let selected_chat_id = *selected_chat_id;
         let refresh_generation = *refresh_generation;
         use_effect_with(
             (selected_chat_id, refresh_generation),
@@ -219,31 +274,37 @@ fn app() -> Html {
     };
 
     {
-        let mode = mode.clone();
-        let selected_chat_id = selected_chat_id.clone();
-        let selected_story_id = selected_story_id.clone();
-        let pending_story_id = pending_story_id.clone();
+        let router = router.clone();
         let load_messages_for_chat = load_messages_for_chat.clone();
         use_effect_with((), move |_| {
             let actions = Rc::new(notifications::NotificationActions {
                 open_chat: Callback::from({
-                    let mode = mode.clone();
-                    let selected_chat_id = selected_chat_id.clone();
+                    let router = router.clone();
                     let load_messages_for_chat = load_messages_for_chat.clone();
                     move |chat_id| {
-                        mode.set(AppMode::Chats);
-                        selected_chat_id.set(Some(chat_id));
+                        router.navigate(
+                            AppRoute::Chats {
+                                chat_id: Some(chat_id),
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            true,
+                        );
                         load_messages_for_chat.emit(chat_id);
                     }
                 }),
                 open_story: Callback::from({
-                    let mode = mode.clone();
-                    let pending_story_id = pending_story_id.clone();
-                    let selected_story_id = selected_story_id.clone();
+                    let router = router.clone();
                     move |story_id| {
-                        pending_story_id.set(Some(story_id));
-                        selected_story_id.set(Some(story_id));
-                        mode.set(AppMode::Stories);
+                        router.navigate(
+                            AppRoute::Stories {
+                                story_id: Some(story_id),
+                                nav: StoryNav::Basics,
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            true,
+                        );
                     }
                 }),
             });
@@ -257,28 +318,25 @@ fn app() -> Html {
         let chats = chats.clone();
         let archived_chats = archived_chats.clone();
         let stories = stories.clone();
-        let mode = mode.clone();
-        let selected_chat_id = selected_chat_id.clone();
-        let selected_story_id = selected_story_id.clone();
+        let router = router.clone();
         let job_tracker = job_tracker.clone();
         use_effect_with((), move |_| {
             let queue = queue.clone();
             let chats = chats.clone();
             let archived_chats = archived_chats.clone();
             let stories = stories.clone();
-            let mode = mode.clone();
-            let selected_chat_id = selected_chat_id.clone();
-            let selected_story_id = selected_story_id.clone();
+            let router = router.clone();
             let job_tracker = job_tracker.clone();
             let handle = Interval::new(3000, move || {
                 let queue = queue.clone();
                 let chats = chats.clone();
                 let archived_chats = archived_chats.clone();
                 let stories = stories.clone();
+                let current = router.route();
                 let view = notifications::ViewContext {
-                    mode: *mode,
-                    selected_chat_id: *selected_chat_id,
-                    selected_story_id: *selected_story_id,
+                    mode: current.mode(),
+                    selected_chat_id: chat_id_from_route(&current),
+                    selected_story_id: story_id_from_route(&current),
                 };
                 let notifications_on = notifications::is_enabled();
                 let job_tracker = job_tracker.clone();
@@ -334,50 +392,83 @@ fn app() -> Html {
     }
 
     let open_queue = {
-        let mode = mode.clone();
-        let return_mode = return_mode.clone();
-        Callback::from(move |_| {
-            return_mode.set(*mode);
-            mode.set(AppMode::Queue);
-        })
+        let navigate = navigate.clone();
+        Callback::from(move |_| navigate.emit((AppRoute::Queue { overlay: None }, true)))
     };
 
-    if *loading && *mode == AppMode::Chats {
+    if *loading && mode == AppMode::Chats {
         return html! { <div class="loading-screen muted">{"Loading Dreamwell…"}</div> };
     }
 
-    if *mode == AppMode::Queue {
+    let on_mode = {
+        let navigate = navigate.clone();
+        let route = route.clone();
+        Callback::from(move |next_mode: AppMode| {
+            let next = match next_mode {
+                AppMode::Chats => AppRoute::Chats {
+                    chat_id: chat_id_from_route(&route),
+                    overlay: None,
+                    sidebar: false,
+                },
+                AppMode::Stories => AppRoute::Stories {
+                    story_id: story_id_from_route(&route),
+                    nav: StoryNav::Basics,
+                    overlay: None,
+                    sidebar: false,
+                },
+                AppMode::Queue => AppRoute::Queue { overlay: None },
+            };
+            navigate.emit((next, true));
+        })
+    };
+
+    if mode == AppMode::Queue {
         return html! {
             <>
-                <ModeBar mode={AppMode::Chats} settings={settings.clone()} on_mode={Callback::from({
-                    let mode = mode.clone();
-                    move |m| mode.set(m)
-                })} />
+                <ModeBar
+                    mode={AppMode::Chats}
+                    route={route.clone()}
+                    settings={settings.clone()}
+                    on_mode={on_mode.clone()}
+                    on_navigate={navigate.clone()}
+                    on_close_overlay={close_overlay.clone()}
+                />
+                if route.overlay() == Some(Overlay::Settings) {
+                    <SettingsOverlay settings={settings.clone()} on_close={close_overlay.clone()} />
+                }
                 <QueuePage
                     queue={(*queue).clone()}
                     on_back={Callback::from({
-                        let mode = mode.clone();
-                        let return_mode = return_mode.clone();
-                        move |_| mode.set(*return_mode)
+                        let router = router.clone();
+                        move |_| router.back()
                     })}
                     on_open_chat={Callback::from({
-                        let mode = mode.clone();
-                        let selected_chat_id = selected_chat_id.clone();
+                        let navigate = navigate.clone();
                         let load_messages_for_chat = load_messages_for_chat.clone();
                         move |chat_id| {
-                            mode.set(AppMode::Chats);
-                            selected_chat_id.set(Some(chat_id));
+                            navigate.emit((
+                                AppRoute::Chats {
+                                    chat_id: Some(chat_id),
+                                    overlay: None,
+                                    sidebar: false,
+                                },
+                                true,
+                            ));
                             load_messages_for_chat.emit(chat_id);
                         }
                     })}
                     on_open_story={Callback::from({
-                        let mode = mode.clone();
-                        let pending_story_id = pending_story_id.clone();
-                        let selected_story_id = selected_story_id.clone();
+                        let navigate = navigate.clone();
                         move |story_id| {
-                            pending_story_id.set(Some(story_id));
-                            selected_story_id.set(Some(story_id));
-                            mode.set(AppMode::Stories);
+                            navigate.emit((
+                                AppRoute::Stories {
+                                    story_id: Some(story_id),
+                                    nav: StoryNav::Basics,
+                                    overlay: None,
+                                    sidebar: false,
+                                },
+                                true,
+                            ));
                         }
                     })}
                     on_queue_change={Callback::from({
@@ -389,43 +480,43 @@ fn app() -> Html {
         };
     }
 
-    if *mode == AppMode::Stories {
+    if mode == AppMode::Stories {
         return html! {
             <>
-                <ModeBar mode={*mode} settings={settings.clone()} on_mode={Callback::from({
-                    let mode = mode.clone();
-                    move |m| mode.set(m)
-                })} />
+                <ModeBar
+                    mode={mode}
+                    route={route.clone()}
+                    settings={settings.clone()}
+                    on_mode={on_mode.clone()}
+                    on_navigate={navigate.clone()}
+                    on_close_overlay={close_overlay.clone()}
+                />
+                if route.overlay() == Some(Overlay::Settings) {
+                    <SettingsOverlay settings={settings.clone()} on_close={close_overlay.clone()} />
+                }
                 <StoriesShell
+                    route={route.clone()}
+                    on_navigate={navigate.clone()}
                     queue={(*queue).clone()}
                     on_open_queue={open_queue.clone()}
-                    initial_story_id={*pending_story_id}
-                    on_story_selected={Callback::from({
-                        let selected_story_id = selected_story_id.clone();
-                        let pending_story_id = pending_story_id.clone();
-                        move |story_id| {
-                            selected_story_id.set(story_id);
-                            if story_id.is_some() {
-                                pending_story_id.set(None);
-                            }
-                        }
-                    })}
                 />
             </>
         };
     }
 
-    let selected = (*selected_chat_id).and_then(|id| chats.iter().find(|c| c.id == id).cloned());
+    let selected = selected_chat_id.and_then(|id| chats.iter().find(|c| c.id == id).cloned());
+
+    let sidebar_open = matches!(route, AppRoute::Chats { sidebar: true, .. });
+    let overlay = route.overlay();
+    let picker_open = overlay == Some(Overlay::NewChat);
 
     let start_chat = {
         let chats = chats.clone();
-        let selected_chat_id = selected_chat_id.clone();
-        let picker_open = picker_open.clone();
+        let navigate = navigate.clone();
         let load_messages_for_chat = load_messages_for_chat.clone();
         Callback::from(move |(character_id, title): (i64, String)| {
             let chats = chats.clone();
-            let selected_chat_id = selected_chat_id.clone();
-            let picker_open = picker_open.clone();
+            let navigate = navigate.clone();
             let load_messages_for_chat = load_messages_for_chat.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 match api::create_chat(&title, character_id).await {
@@ -433,9 +524,15 @@ fn app() -> Html {
                         if let Ok(list) = api::list_chats().await {
                             chats.set(sort_chats(list));
                         }
-                        selected_chat_id.set(Some(chat.id));
+                        navigate.emit((
+                            AppRoute::Chats {
+                                chat_id: Some(chat.id),
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            true,
+                        ));
                         load_messages_for_chat.emit(chat.id);
-                        picker_open.set(false);
                     }
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
@@ -450,17 +547,18 @@ fn app() -> Html {
 
     html! {
         <>
-            <ModeBar mode={*mode} settings={settings.clone()} on_mode={Callback::from({
-                let mode = mode.clone();
-                move |m| mode.set(m)
-            })} />
-            if *picker_open {
+            <ModeBar
+                mode={mode}
+                route={route.clone()}
+                settings={settings.clone()}
+                on_mode={on_mode}
+                on_navigate={navigate.clone()}
+                on_close_overlay={close_overlay.clone()}
+            />
+            if picker_open {
                 <CharacterPickerModal
                     characters={(*characters).clone()}
-                    on_close={Callback::from({
-                        let picker_open = picker_open.clone();
-                        move |_| picker_open.set(false)
-                    })}
+                    on_close={close_overlay.clone()}
                     on_select={Callback::from({
                         let start_chat = start_chat.clone();
                         move |character: Character| {
@@ -469,47 +567,165 @@ fn app() -> Html {
                     })}
                 />
             }
-            if *mobile_pane != MobilePane::Main {
+            if overlay == Some(Overlay::Settings) {
+                <SettingsOverlay settings={settings.clone()} on_close={close_overlay.clone()} />
+            }
+            if overlay == Some(Overlay::Character) || overlay == Some(Overlay::Variables) {
+                <ChatPanelOverlay
+                    overlay={overlay.unwrap()}
+                    chat_id={selected_chat_id}
+                    character_id={selected.as_ref().map(|c| c.character_id)}
+                    messages={(*messages).clone()}
+                    on_close={close_overlay.clone()}
+                    on_character_change={Callback::from({
+                        let chats = chats.clone();
+                        move |(chat_id, character_id)| {
+                            let chats = chats.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let _ = api::update_chat(chat_id, character_id).await;
+                                if let Ok(list) = api::list_chats().await {
+                                    chats.set(sort_chats(list));
+                                }
+                            });
+                        }
+                    })}
+                    on_start_chat={start_chat.clone()}
+                    on_chat_created={Callback::from({
+                        let chats = chats.clone();
+                        let navigate = navigate.clone();
+                        let load_messages_for_chat = load_messages_for_chat.clone();
+                        move |chat_id| {
+                            let chats = chats.clone();
+                            let navigate = navigate.clone();
+                            let load_messages_for_chat = load_messages_for_chat.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(list) = api::list_chats().await {
+                                    chats.set(sort_chats(list));
+                                }
+                                navigate.emit((
+                                    AppRoute::Chats {
+                                        chat_id: Some(chat_id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                                load_messages_for_chat.emit(chat_id);
+                            });
+                        }
+                    })}
+                    on_chats_changed={Callback::from({
+                        let chats = chats.clone();
+                        let archived_chats = archived_chats.clone();
+                        let navigate = navigate.clone();
+                        let route = route.clone();
+                        move |_| {
+                            let chats = chats.clone();
+                            let archived_chats = archived_chats.clone();
+                            let navigate = navigate.clone();
+                            let route = route.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(list) = api::list_chats().await {
+                                    let list = sort_chats(list);
+                                    if let AppRoute::Chats {
+                                        chat_id: Some(id),
+                                        ..
+                                    } = route
+                                    {
+                                        if !list.iter().any(|c| c.id == id) {
+                                            navigate.emit((
+                                                AppRoute::Chats {
+                                                    chat_id: list.first().map(|c| c.id),
+                                                    overlay: None,
+                                                    sidebar: false,
+                                                },
+                                                false,
+                                            ));
+                                        }
+                                    }
+                                    chats.set(list);
+                                }
+                                if let Ok(list) = api::list_archived_chats().await {
+                                    archived_chats.set(sort_archived_chats(list));
+                                }
+                            });
+                        }
+                    })}
+                    on_characters_changed={Callback::from({
+                        let characters = characters.clone();
+                        move |_| {
+                            let characters = characters.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(list) = api::list_characters().await {
+                                    characters.set(list);
+                                }
+                            });
+                        }
+                    })}
+                />
+            }
+            if sidebar_open {
                 <div class="drawer-backdrop" onclick={Callback::from({
-                    let mobile_pane = mobile_pane.clone();
-                    move |_| mobile_pane.set(MobilePane::Main)
+                    let router = router.clone();
+                    move |_| router.back()
                 })} />
             }
             <div class={classes!(
                 "app-shell",
-                (*mobile_pane == MobilePane::Sidebar).then_some("pane-sidebar"),
-                (*mobile_pane == MobilePane::Panel).then_some("pane-panel"),
+                sidebar_open.then_some("pane-sidebar"),
             )}>
             <ChatSidebar
                 chats={(*chats).clone()}
                 archived_chats={(*archived_chats).clone()}
-                selected_id={*selected_chat_id}
+                selected_id={selected_chat_id}
                 on_select={Callback::from({
-                    let selected_chat_id = selected_chat_id.clone();
-                    let mobile_pane = mobile_pane.clone();
+                    let navigate = navigate.clone();
                     move |id| {
-                        selected_chat_id.set(Some(id));
-                        mobile_pane.set(MobilePane::Main);
+                        navigate.emit((
+                            AppRoute::Chats {
+                                chat_id: Some(id),
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            true,
+                        ));
                     }
                 })}
                 on_new={Callback::from({
-                    let picker_open = picker_open.clone();
-                    move |_| picker_open.set(true)
+                    let navigate = navigate.clone();
+                    let route = route.clone();
+                    move |_| {
+                        let next = AppRoute::Chats {
+                            chat_id: chat_id_from_route(&route),
+                            overlay: Some(Overlay::NewChat),
+                            sidebar: false,
+                        };
+                        navigate.emit((next, true));
+                    }
                 })}
                 on_archive={Callback::from({
                     let chats = chats.clone();
                     let archived_chats = archived_chats.clone();
-                    let selected_chat_id = selected_chat_id.clone();
+                    let navigate = navigate.clone();
+                    let route = route.clone();
                     move |id| {
                         let chats = chats.clone();
                         let archived_chats = archived_chats.clone();
-                        let selected_chat_id = selected_chat_id.clone();
+                        let navigate = navigate.clone();
+                        let route = route.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             let _ = api::archive_chat(id).await;
                             if let Ok(list) = api::list_chats().await {
                                 let list = sort_chats(list);
-                                if *selected_chat_id == Some(id) {
-                                    selected_chat_id.set(list.first().map(|c| c.id));
+                                if chat_id_from_route(&route) == Some(id) {
+                                    navigate.emit((
+                                        AppRoute::Chats {
+                                            chat_id: list.first().map(|c| c.id),
+                                            overlay: None,
+                                            sidebar: false,
+                                        },
+                                        false,
+                                    ));
                                 }
                                 chats.set(list);
                             }
@@ -522,11 +738,11 @@ fn app() -> Html {
                 on_restore={Callback::from({
                     let chats = chats.clone();
                     let archived_chats = archived_chats.clone();
-                    let selected_chat_id = selected_chat_id.clone();
+                    let navigate = navigate.clone();
                     move |id| {
                         let chats = chats.clone();
                         let archived_chats = archived_chats.clone();
-                        let selected_chat_id = selected_chat_id.clone();
+                        let navigate = navigate.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             if api::restore_chat(id).await.is_ok() {
                                 if let Ok(list) = api::list_chats().await {
@@ -535,7 +751,14 @@ fn app() -> Html {
                                 if let Ok(list) = api::list_archived_chats().await {
                                     archived_chats.set(sort_archived_chats(list));
                                 }
-                                selected_chat_id.set(Some(id));
+                                navigate.emit((
+                                    AppRoute::Chats {
+                                        chat_id: Some(id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
                             }
                         });
                     }
@@ -561,19 +784,34 @@ fn app() -> Html {
                 <header class="header">
                     <div class="mobile-toolbar">
                         <button class="btn secondary" onclick={Callback::from({
-                            let mobile_pane = mobile_pane.clone();
-                            move |_| mobile_pane.set(MobilePane::Sidebar)
+                            let navigate = navigate.clone();
+                            let route = route.clone();
+                            move |_| {
+                                let next = match route {
+                                    AppRoute::Chats {
+                                        chat_id,
+                                        overlay,
+                                        ..
+                                    } => AppRoute::Chats {
+                                        chat_id,
+                                        overlay,
+                                        sidebar: true,
+                                    },
+                                    _ => AppRoute::Chats {
+                                        chat_id: None,
+                                        overlay: None,
+                                        sidebar: true,
+                                    },
+                                };
+                                navigate.emit((next, true));
+                            }
                         })}>{"Chats"}</button>
-                        <button class="btn secondary" onclick={Callback::from({
-                            let mobile_pane = mobile_pane.clone();
-                            move |_| mobile_pane.set(MobilePane::Panel)
-                        })}>{"Character"}</button>
                     </div>
                     <h1 class="header-title">{selected.as_ref().map(|c| c.title.clone()).unwrap_or_else(|| "Select a chat".to_string())}</h1>
                     if let Some(chat) = selected.as_ref() {
                         <p class="header-subtitle muted">{ format!("With {}", chat.character_name) }</p>
                     } else if chats.is_empty() {
-                        <p class="header-subtitle muted">{"Create a character in the panel, then start a chat."}</p>
+                        <p class="header-subtitle muted">{"Create a character from the menu, then start a chat."}</p>
                     } else {
                         <p class="header-subtitle muted">{"Responses stream on the server — switch chats freely while they generate."}</p>
                     }
@@ -581,18 +819,28 @@ fn app() -> Html {
                 if chats.is_empty() {
                     <div class="empty-state muted">
                         if characters.is_empty() {
-                            <p>{"No characters yet. Use the Character panel to create or import one."}</p>
+                            <p>{"No characters yet. Open Character from the menu to create or import one."}</p>
                         } else {
                             <p>{"No chats yet. Click New in the sidebar to pick a character."}</p>
                             <button class="btn" style="margin-top:0.75rem;" onclick={{
-                                let picker_open = picker_open.clone();
-                                Callback::from(move |_| picker_open.set(true))
+                                let navigate = navigate.clone();
+                                let route = route.clone();
+                                Callback::from(move |_| {
+                                    navigate.emit((
+                                        AppRoute::Chats {
+                                            chat_id: chat_id_from_route(&route),
+                                            overlay: Some(Overlay::NewChat),
+                                            sidebar: false,
+                                        },
+                                        true,
+                                    ));
+                                })
                             }}>{"Start a chat"}</button>
                         }
                     </div>
                 } else {
                     <MessageList
-                        chat_id={*selected_chat_id}
+                        chat_id={selected_chat_id}
                         messages={(*messages).clone()}
                         loading={*messages_loading}
                         settings={(*settings).clone()}
@@ -601,11 +849,10 @@ fn app() -> Html {
                         })}
                         char_name={selected.as_ref().map(|c| c.character_name.clone())}
                         on_messages_change={Callback::from({
-                            let selected_chat_id = selected_chat_id.clone();
                             let messages = messages.clone();
                             let queue = queue.clone();
                             move |_| {
-                                let Some(chat_id) = *selected_chat_id else { return };
+                                let Some(chat_id) = selected_chat_id else { return };
                                 let messages = messages.clone();
                                 let queue = queue.clone();
                                 wasm_bindgen_futures::spawn_local(async move {
@@ -623,12 +870,11 @@ fn app() -> Html {
                 <Composer
                     disabled={selected_chat_id.is_none()}
                     on_send={Callback::from({
-                        let selected_chat_id = selected_chat_id.clone();
                         let messages = messages.clone();
                         let chats = chats.clone();
                         let queue = queue.clone();
                         move |content: String| {
-                            let Some(chat_id) = *selected_chat_id else { return };
+                            let Some(chat_id) = selected_chat_id else { return };
                             let messages = messages.clone();
                             let chats = chats.clone();
                             let queue = queue.clone();
@@ -648,76 +894,6 @@ fn app() -> Html {
                     })}
                 />
             </main>
-            <RightPanel
-                chat_id={*selected_chat_id}
-                character_id={selected.as_ref().map(|c| c.character_id)}
-                messages={(*messages).clone()}
-                on_character_change={Callback::from({
-                    let chats = chats.clone();
-                    move |(chat_id, character_id)| {
-                        let chats = chats.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::update_chat(chat_id, character_id).await;
-                            if let Ok(list) = api::list_chats().await {
-                                chats.set(sort_chats(list));
-                            }
-                        });
-                    }
-                })}
-                on_start_chat={start_chat.clone()}
-                on_chat_created={Callback::from({
-                    let chats = chats.clone();
-                    let selected_chat_id = selected_chat_id.clone();
-                    let load_messages_for_chat = load_messages_for_chat.clone();
-                    move |chat_id| {
-                        let chats = chats.clone();
-                        let selected_chat_id = selected_chat_id.clone();
-                        let load_messages_for_chat = load_messages_for_chat.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(list) = api::list_chats().await {
-                                chats.set(sort_chats(list));
-                            }
-                            selected_chat_id.set(Some(chat_id));
-                            load_messages_for_chat.emit(chat_id);
-                        });
-                    }
-                })}
-                on_chats_changed={Callback::from({
-                    let chats = chats.clone();
-                    let archived_chats = archived_chats.clone();
-                    let selected_chat_id = selected_chat_id.clone();
-                    move |_| {
-                        let chats = chats.clone();
-                        let archived_chats = archived_chats.clone();
-                        let selected_chat_id = selected_chat_id.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(list) = api::list_chats().await {
-                                let list = sort_chats(list);
-                                if selected_chat_id
-                                    .is_some_and(|id| !list.iter().any(|c| c.id == id))
-                                {
-                                    selected_chat_id.set(list.first().map(|c| c.id));
-                                }
-                                chats.set(list);
-                            }
-                            if let Ok(list) = api::list_archived_chats().await {
-                                archived_chats.set(sort_archived_chats(list));
-                            }
-                        });
-                    }
-                })}
-                on_characters_changed={Callback::from({
-                    let characters = characters.clone();
-                    move |_| {
-                        let characters = characters.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(list) = api::list_characters().await {
-                                characters.set(list);
-                            }
-                        });
-                    }
-                })}
-            />
         </div>
         </>
     }
@@ -726,13 +902,94 @@ fn app() -> Html {
 #[derive(Properties, PartialEq)]
 struct ModeBarProps {
     mode: AppMode,
+    route: AppRoute,
     settings: UseStateHandle<Option<Settings>>,
     on_mode: Callback<AppMode>,
+    on_navigate: Callback<(AppRoute, bool)>,
+    on_close_overlay: Callback<()>,
 }
 
 #[function_component(ModeBar)]
 fn mode_bar(props: &ModeBarProps) -> Html {
-    let settings_open = use_state(|| false);
+    let menu_open = use_state(|| false);
+    let active_overlay = props.route.overlay();
+    let chat_panels = props.mode == AppMode::Chats;
+
+    let open_overlay = {
+        let on_navigate = props.on_navigate.clone();
+        let route = props.route.clone();
+        let menu_open = menu_open.clone();
+        Callback::from(move |overlay: Overlay| {
+            menu_open.set(false);
+            on_navigate.emit((route.clone().with_overlay(overlay), true));
+        })
+    };
+
+    html! {
+        <>
+            if active_overlay.is_some() {
+                <div class="settings-backdrop" onclick={props.on_close_overlay.reform(|_| ())} />
+            }
+            <div class="mode-bar">
+                <div class="mode-bar-tabs">
+                    <button class={classes!("mode-btn", (props.mode == AppMode::Chats).then_some("active"))}
+                        onclick={props.on_mode.reform(|_| AppMode::Chats)}>{"Chats"}</button>
+                    <button class={classes!("mode-btn", (props.mode == AppMode::Stories).then_some("active"))}
+                        onclick={props.on_mode.reform(|_| AppMode::Stories)}>{"Stories"}</button>
+                </div>
+                <div class="mode-bar-menu">
+                    <button
+                        class={classes!("mode-btn", "mode-btn-menu", active_overlay.is_some().then_some("active"))}
+                        aria-label="Open panels menu"
+                        aria-expanded={if *menu_open { "true" } else { "false" }}
+                        onclick={{
+                            let menu_open = menu_open.clone();
+                            Callback::from(move |_| menu_open.set(!*menu_open))
+                        }}
+                    >
+                        {"☰"}
+                    </button>
+                    if *menu_open {
+                        <>
+                            <div class="mode-bar-menu-backdrop" onclick={{
+                                let menu_open = menu_open.clone();
+                                Callback::from(move |_| menu_open.set(false))
+                            }} />
+                            <div class="mode-bar-menu-dropdown" role="menu">
+                                if chat_panels {
+                                    <button
+                                        class={classes!("mode-menu-item", (active_overlay == Some(Overlay::Character)).then_some("active"))}
+                                        role="menuitem"
+                                        onclick={open_overlay.reform(|_| Overlay::Character)}
+                                    >{"Character"}</button>
+                                    <button
+                                        class={classes!("mode-menu-item", (active_overlay == Some(Overlay::Variables)).then_some("active"))}
+                                        role="menuitem"
+                                        onclick={open_overlay.reform(|_| Overlay::Variables)}
+                                    >{"Variables"}</button>
+                                }
+                                <button
+                                    class={classes!("mode-menu-item", (active_overlay == Some(Overlay::Settings)).then_some("active"))}
+                                    role="menuitem"
+                                    onclick={open_overlay.reform(|_| Overlay::Settings)}
+                                >{"Settings"}</button>
+                            </div>
+                        </>
+                    }
+                </div>
+            </div>
+        </>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct SettingsOverlayProps {
+    settings: UseStateHandle<Option<Settings>>,
+    on_close: Callback<()>,
+}
+
+#[function_component(SettingsOverlay)]
+fn settings_overlay(props: &SettingsOverlayProps) -> Html {
     let draft = use_state(|| None::<Settings>);
     let draft_ref = use_mut_ref(|| None::<Settings>);
     let last_saved = use_state(|| None::<Settings>);
@@ -761,55 +1018,75 @@ fn mode_bar(props: &ModeBarProps) -> Html {
 
     {
         let save_ctx = save_ctx.clone();
-        use_effect_with(*settings_open, move |open| {
-            if *open {
-                save_ctx.ensure_loaded();
-                if (*save_ctx.draft).is_none() {
-                    wasm_bindgen_futures::spawn_local(async move {
-                        if let Ok(settings) = api::get_settings().await {
-                            save_ctx.parent_settings.set(Some(settings.clone()));
-                            save_ctx.load_from(settings);
-                        }
-                    });
-                }
+        use_effect_with((), move |_| {
+            save_ctx.ensure_loaded();
+            if (*save_ctx.draft).is_none() {
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(settings) = api::get_settings().await {
+                        save_ctx.parent_settings.set(Some(settings.clone()));
+                        save_ctx.load_from(settings);
+                    }
+                });
             }
             || ()
         });
     }
 
     html! {
-        <>
-            if *settings_open {
-                <div class="settings-backdrop" onclick={{
-                    let settings_open = settings_open.clone();
-                    Callback::from(move |_| settings_open.set(false))
-                }} />
-            }
-            <div class="mode-bar">
-                <div class="mode-bar-tabs">
-                    <button class={classes!("mode-btn", (props.mode == AppMode::Chats).then_some("active"))}
-                        onclick={props.on_mode.reform(|_| AppMode::Chats)}>{"Chats"}</button>
-                    <button class={classes!("mode-btn", (props.mode == AppMode::Stories).then_some("active"))}
-                        onclick={props.on_mode.reform(|_| AppMode::Stories)}>{"Stories"}</button>
-                </div>
-                <button class={classes!("mode-btn", (*settings_open).then_some("active"))} onclick={{
-                    let settings_open = settings_open.clone();
-                    Callback::from(move |_| settings_open.set(!*settings_open))
-                }}>{"Settings"}</button>
+        <div class="settings-popover panel-overlay">
+            <div class="settings-header">
+                <h2>{"Settings"}</h2>
+                <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
             </div>
-            if *settings_open {
-                <div class="settings-popover">
-                    <div class="settings-header">
-                        <h2>{"Settings"}</h2>
-                        <button class="btn secondary btn-compact" onclick={{
-                            let settings_open = settings_open.clone();
-                            Callback::from(move |_| settings_open.set(false))
-                        }}>{"Close"}</button>
-                    </div>
-                    <SettingsPanel save_ctx={save_ctx.clone()} />
-                </div>
-            }
-        </>
+            <SettingsPanel save_ctx={save_ctx} />
+        </div>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct ChatPanelOverlayProps {
+    overlay: Overlay,
+    chat_id: Option<i64>,
+    character_id: Option<i64>,
+    messages: Vec<Message>,
+    on_close: Callback<()>,
+    on_character_change: Callback<(i64, i64)>,
+    on_start_chat: Callback<(i64, String)>,
+    on_chat_created: Callback<i64>,
+    on_chats_changed: Callback<()>,
+    on_characters_changed: Callback<()>,
+}
+
+#[function_component(ChatPanelOverlay)]
+fn chat_panel_overlay(props: &ChatPanelOverlayProps) -> Html {
+    let title = match props.overlay {
+        Overlay::Character => "Character",
+        Overlay::Variables => "Variables",
+        _ => "",
+    };
+
+    html! {
+        <div class="settings-popover panel-overlay">
+            <div class="settings-header">
+                <h2>{ title }</h2>
+                <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
+            </div>
+            <div class="panel-overlay-body">
+                if props.overlay == Overlay::Character {
+                    <CharacterPanel
+                        selected_character_id={props.character_id}
+                        on_character_change={props.on_character_change.clone()}
+                        on_start_chat={props.on_start_chat.clone()}
+                        on_chat_created={props.on_chat_created.clone()}
+                        on_chats_changed={props.on_chats_changed.clone()}
+                        on_characters_changed={props.on_characters_changed.clone()}
+                        chat_id={props.chat_id}
+                    />
+                } else if props.overlay == Overlay::Variables {
+                    <VariablesPanel chat_id={props.chat_id} messages={props.messages.clone()} />
+                }
+            </div>
+        </div>
     }
 }
 
@@ -1499,7 +1776,7 @@ fn character_picker_modal(props: &CharacterPickerModalProps) -> Html {
                 <h2>{"Start a chat"}</h2>
                 <p class="muted" style="margin:0 0 0.75rem;">{"Pick a character for this conversation."}</p>
                 if props.characters.is_empty() {
-                    <p class="muted">{"No characters yet. Create or import one in the Character panel first."}</p>
+                    <p class="muted">{"No characters yet. Create or import one from the Character menu first."}</p>
                 } else {
                     <div class="modal-list">
                         { for props.characters.iter().map(|c| {
@@ -1519,52 +1796,6 @@ fn character_picker_modal(props: &CharacterPickerModalProps) -> Html {
                 <button class="btn secondary" onclick={props.on_close.reform(|_| ())}>{"Cancel"}</button>
             </div>
         </>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct RightPanelProps {
-    chat_id: Option<i64>,
-    character_id: Option<i64>,
-    messages: Vec<Message>,
-    on_character_change: Callback<(i64, i64)>,
-    on_start_chat: Callback<(i64, String)>,
-    on_chat_created: Callback<i64>,
-    on_chats_changed: Callback<()>,
-    on_characters_changed: Callback<()>,
-}
-
-#[function_component(RightPanel)]
-fn right_panel(props: &RightPanelProps) -> Html {
-    let tab = use_state(|| 0u8);
-    html! {
-        <aside class="panel">
-            <div class="tabs">
-                <button class={classes!("tab", (*tab == 0).then_some("active"))} onclick={{
-                    let tab = tab.clone();
-                    Callback::from(move |_| tab.set(0))
-                }}>{"Character"}</button>
-                <button class={classes!("tab", (*tab == 1).then_some("active"))} onclick={{
-                    let tab = tab.clone();
-                    Callback::from(move |_| tab.set(1))
-                }}>{"Variables"}</button>
-            </div>
-            <div class="panel-body">
-                if *tab == 0 {
-                    <CharacterPanel
-                        selected_character_id={props.character_id}
-                        on_character_change={props.on_character_change.clone()}
-                        on_start_chat={props.on_start_chat.clone()}
-                        on_chat_created={props.on_chat_created.clone()}
-                        on_chats_changed={props.on_chats_changed.clone()}
-                        on_characters_changed={props.on_characters_changed.clone()}
-                        chat_id={props.chat_id}
-                    />
-                } else {
-                    <VariablesPanel chat_id={props.chat_id} messages={props.messages.clone()} />
-                }
-            </div>
-        </aside>
     }
 }
 
