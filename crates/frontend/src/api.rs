@@ -489,6 +489,27 @@ pub async fn generate_chapter(story_id: i64, guidance_notes: &str) -> Result<Sto
     .await
 }
 
+pub async fn generate_outline(story_id: i64, guidance_notes: &str) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/generate-outline"),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
+pub async fn queue_remaining_chapters(
+    story_id: i64,
+    guidance_notes: &str,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/queue-remaining-chapters"),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
 pub async fn generate_beat(
     story_id: i64,
     chapter_id: i64,

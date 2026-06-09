@@ -144,6 +144,73 @@ pub fn build_beat_prose_messages(
     ]
 }
 
+pub fn build_full_outline_messages(
+    story: &Story,
+    chapters: &[StoryChapter],
+    chapter_indices: &[usize],
+    guidance: &str,
+) -> Vec<Value> {
+    let filled: Vec<String> = chapters
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| !chapter_indices.contains(i) && !c.title.is_empty())
+        .map(|(i, c)| format!("Chapter {} — {}: {}", i + 1, c.title, c.synopsis))
+        .collect();
+    let to_generate: Vec<String> = chapter_indices
+        .iter()
+        .map(|i| format!("Chapter {}", i + 1))
+        .collect();
+    let mut user = format!(
+        "Plan a {}-chapter story outline. Generate outlines for: {}.\n\nRespond with ONLY valid JSON: {{\"chapters\":[{{\"title\":\"...\",\"synopsis\":\"...\"}}, ...]}}\nEach synopsis should be 2-4 sentences. Return exactly {} chapter object(s) in order.",
+        story.length_preset.ref_chapters(),
+        to_generate.join(", "),
+        chapter_indices.len(),
+    );
+    if !filled.is_empty() {
+        user.push_str("\n\nAlready planned chapters (keep consistent with these):\n");
+        user.push_str(&filled.join("\n"));
+    }
+    if !guidance.trim().is_empty() {
+        user.push_str("\n\nGuidance from the author:\n");
+        user.push_str(guidance.trim());
+    }
+    vec![
+        serde_json::json!({
+            "role": "system",
+            "content": format!(
+                "You are a story structure assistant. Output strict JSON only — no markdown fences.\n\n{}",
+                story_basics(story)
+            ),
+        }),
+        serde_json::json!({ "role": "user", "content": user }),
+    ]
+}
+
+pub fn parse_full_outline_json(text: &str) -> Option<Vec<(String, String)>> {
+    let trimmed = text.trim();
+    let json_str = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|s| s.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    let value: Value = serde_json::from_str(json_str).ok()?;
+    let chapters = value.get("chapters")?.as_array()?;
+    let mut out = Vec::with_capacity(chapters.len());
+    for ch in chapters {
+        let title = ch.get("title")?.as_str()?.trim().to_string();
+        let synopsis = ch.get("synopsis")?.as_str()?.trim().to_string();
+        if title.is_empty() {
+            return None;
+        }
+        out.push((title, synopsis));
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
 pub fn parse_outline_json(text: &str) -> Option<(String, String)> {
     let trimmed = text.trim();
     let json_str = trimmed
