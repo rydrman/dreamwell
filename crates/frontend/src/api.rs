@@ -480,44 +480,23 @@ pub async fn create_beat(
     .await
 }
 
-pub async fn generate_chapter(story_id: i64, guidance_notes: &str) -> Result<StoryDetail, String> {
+pub async fn propose_chapters(story_id: i64, guidance_notes: &str) -> Result<StoryDetail, String> {
     json_body(
         "POST",
-        &format!("/api/stories/{story_id}/generate-chapter"),
+        &format!("/api/stories/{story_id}/propose-chapters"),
         &serde_json::json!({ "guidance_notes": guidance_notes }),
     )
     .await
 }
 
-pub async fn generate_outline(story_id: i64, guidance_notes: &str) -> Result<StoryDetail, String> {
-    json_body(
-        "POST",
-        &format!("/api/stories/{story_id}/generate-outline"),
-        &serde_json::json!({ "guidance_notes": guidance_notes }),
-    )
-    .await
-}
-
-pub async fn queue_remaining_chapters(
-    story_id: i64,
-    guidance_notes: &str,
-) -> Result<StoryDetail, String> {
-    json_body(
-        "POST",
-        &format!("/api/stories/{story_id}/queue-remaining-chapters"),
-        &serde_json::json!({ "guidance_notes": guidance_notes }),
-    )
-    .await
-}
-
-pub async fn generate_beat(
+pub async fn propose_beats(
     story_id: i64,
     chapter_id: i64,
     guidance_notes: &str,
 ) -> Result<StoryDetail, String> {
     json_body(
         "POST",
-        &format!("/api/stories/{story_id}/chapters/{chapter_id}/generate-beat"),
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/propose-beats"),
         &serde_json::json!({ "guidance_notes": guidance_notes }),
     )
     .await
