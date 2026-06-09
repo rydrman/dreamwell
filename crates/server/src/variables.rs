@@ -1,3 +1,4 @@
+use dreamwell_types::MessageVariableUpdate;
 use regex::Regex;
 use sqlx::SqlitePool;
 
@@ -31,6 +32,23 @@ pub async fn apply_variable_updates(
         db::upsert_variable(pool, chat_id, key.clone(), value.clone()).await?;
     }
     Ok(())
+}
+
+pub async fn build_message_variable_updates(
+    pool: &SqlitePool,
+    chat_id: i64,
+    updates: &[(String, String)],
+) -> AppResult<Vec<MessageVariableUpdate>> {
+    let mut result = Vec::with_capacity(updates.len());
+    for (key, value) in updates {
+        let previous_value = db::get_variable_value(pool, chat_id, key).await?;
+        result.push(MessageVariableUpdate {
+            key: key.clone(),
+            value: value.clone(),
+            previous_value,
+        });
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
