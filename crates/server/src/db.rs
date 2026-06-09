@@ -312,7 +312,7 @@ pub async fn delete_chat(pool: &SqlitePool, id: i64) -> AppResult<()> {
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.is_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.is_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -388,6 +388,7 @@ pub async fn insert_message(
         thought_content: String::new(),
         thought_duration_ms: None,
         thought_in_progress: false,
+        variable_updates: Vec::new(),
         is_summary,
         created_at: parse_dt(&now)?,
         job_status: None,
@@ -436,6 +437,46 @@ pub async fn clear_message_thoughts(pool: &SqlitePool, message_id: i64) -> AppRe
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn finalize_message_generation(
+    pool: &SqlitePool,
+    message_id: i64,
+    content: &str,
+    thought_content: &str,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: bool,
+    variable_updates: &[dreamwell_types::MessageVariableUpdate],
+) -> AppResult<()> {
+    let variable_updates_json = serde_json::to_string(variable_updates)
+        .map_err(|e| AppError::internal(format!("serialize variable updates: {e}")))?;
+    sqlx::query(
+        "UPDATE messages SET content = ?1, thought_content = ?2, thought_duration_ms = ?3, thought_in_progress = ?4, variable_updates = ?5 WHERE id = ?6",
+    )
+    .bind(content)
+    .bind(thought_content)
+    .bind(thought_duration_ms)
+    .bind(thought_in_progress as i64)
+    .bind(variable_updates_json)
+    .bind(message_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_variable_value(
+    pool: &SqlitePool,
+    chat_id: i64,
+    key: &str,
+) -> AppResult<Option<String>> {
+    let row = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM chat_variables WHERE chat_id = ?1 AND key = ?2",
+    )
+    .bind(chat_id)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 pub async fn touch_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<()> {
@@ -724,6 +765,7 @@ pub(crate) fn parse_dt(s: &str) -> AppResult<DateTime<Utc>> {
 }
 
 fn message_from_row(row: MessageRow) -> Message {
+    let variable_updates = serde_json::from_str(&row.variable_updates).unwrap_or_default();
     Message {
         id: row.id,
         chat_id: row.chat_id,
@@ -732,6 +774,7 @@ fn message_from_row(row: MessageRow) -> Message {
         thought_content: row.thought_content,
         thought_duration_ms: row.thought_duration_ms,
         thought_in_progress: row.thought_in_progress != 0,
+        variable_updates,
         is_summary: row.is_summary != 0,
         created_at: DateTime::parse_from_rfc3339(&row.created_at)
             .map(|dt| dt.with_timezone(&Utc))
@@ -797,6 +840,7 @@ struct MessageRow {
     thought_content: String,
     thought_duration_ms: Option<i64>,
     thought_in_progress: i64,
+    variable_updates: String,
     is_summary: i64,
     created_at: String,
     job_status: Option<String>,

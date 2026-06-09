@@ -145,6 +145,14 @@ pub const DEFAULT_SYSTEM_PROMPT_PREFIX: &str =
 pub const DEFAULT_USER_NAME: &str = "User";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageVariableUpdate {
+    pub key: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: i64,
     pub chat_id: i64,
@@ -156,6 +164,8 @@ pub struct Message {
     pub thought_duration_ms: Option<i64>,
     #[serde(default)]
     pub thought_in_progress: bool,
+    #[serde(default)]
+    pub variable_updates: Vec<MessageVariableUpdate>,
     pub is_summary: bool,
     pub created_at: DateTime<Utc>,
     pub job_status: Option<JobStatus>,
