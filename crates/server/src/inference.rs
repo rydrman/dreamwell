@@ -11,9 +11,9 @@ use tokio_stream::StreamExt as TokioStreamExt;
 
 use crate::error::{AppError, AppResult};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(900);
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn http_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
