@@ -171,6 +171,7 @@ pub fn should_notify(job: &TrackedJob, view: ViewContext) -> bool {
 pub fn job_type_label(job_type: JobType) -> &'static str {
     match job_type {
         JobType::ChatMessage => "Chat reply",
+        JobType::ChatSummarize => "Chat summarize",
         JobType::StoryChapterOutline => "Chapter outline",
         JobType::StoryProposeChapters => "Propose chapters",
         JobType::StoryBeatOutline => "Beat outline",

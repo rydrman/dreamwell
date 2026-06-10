@@ -13,6 +13,7 @@ pub enum AppMode {
 fn job_type_label(job_type: JobType) -> &'static str {
     match job_type {
         JobType::ChatMessage => "chat message",
+        JobType::ChatSummarize => "chat summarize",
         JobType::StoryChapterOutline => "chapter outline",
         JobType::StoryProposeChapters => "propose chapters",
         JobType::StoryBeatOutline => "beat outline",
