@@ -16,7 +16,7 @@ use gloo_timers::callback::{Interval, Timeout};
 use queue_ui::{AppMode, QueueBar, QueuePage};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use stories_ui::StoriesShell;
-use web_sys::{HtmlElement, HtmlInputElement};
+use web_sys::{HtmlElement, HtmlInputElement, KeyboardEvent};
 use yew::prelude::*;
 
 fn chat_id_from_route(route: &AppRoute) -> Option<i64> {
@@ -232,11 +232,20 @@ fn app() -> Html {
                 resume_online();
             }) as Box<dyn FnMut(_)>);
 
+            let resume_focus = resume.clone();
+            let focus_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                resume_focus();
+            }) as Box<dyn FnMut(_)>);
+
             let window = web_sys::window();
             if let Some(window) = window.as_ref() {
                 let _ = window.add_event_listener_with_callback(
                     "online",
                     online_callback.as_ref().unchecked_ref(),
+                );
+                let _ = window.add_event_listener_with_callback(
+                    "focus",
+                    focus_callback.as_ref().unchecked_ref(),
                 );
             }
 
@@ -251,6 +260,10 @@ fn app() -> Html {
                     let _ = window.remove_event_listener_with_callback(
                         "online",
                         online_callback.as_ref().unchecked_ref(),
+                    );
+                    let _ = window.remove_event_listener_with_callback(
+                        "focus",
+                        focus_callback.as_ref().unchecked_ref(),
                     );
                 }
             }
@@ -327,7 +340,12 @@ fn app() -> Html {
             let stories = stories.clone();
             let router = router.clone();
             let job_tracker = job_tracker.clone();
-            let handle = Interval::new(3000, move || {
+            let poll_ms = if notifications::is_enabled() {
+                1500
+            } else {
+                3000
+            };
+            let handle = Interval::new(poll_ms, move || {
                 let queue = queue.clone();
                 let chats = chats.clone();
                 let archived_chats = archived_chats.clone();
@@ -357,8 +375,11 @@ fn app() -> Html {
                         let completed = job_tracker.borrow_mut().update(status);
                         if notifications_on {
                             let fallback_chats = (*chats).clone();
+                            let fallback_archived = (*archived_chats).clone();
                             let fallback_stories = (*stories).clone();
                             let chats_for_copy = chat_list.as_deref().unwrap_or(&fallback_chats);
+                            let archived_for_copy =
+                                archived_list.as_deref().unwrap_or(&fallback_archived);
                             let stories_for_copy =
                                 story_list.as_deref().unwrap_or(&fallback_stories);
                             for job in completed {
@@ -366,6 +387,7 @@ fn app() -> Html {
                                     let (title, body) = notifications::notification_copy(
                                         &job,
                                         chats_for_copy,
+                                        archived_for_copy,
                                         stories_for_copy,
                                     );
                                     notifications::notify_completion(&job, &title, &body);
@@ -510,11 +532,17 @@ fn app() -> Html {
     let overlay = route.overlay();
     let picker_open = overlay == Some(Overlay::NewChat);
 
+    let bump_stream = {
+        let refresh_generation = refresh_generation.clone();
+        Callback::from(move |_| refresh_generation.set(*refresh_generation + 1))
+    };
+
     let start_chat = {
         let chats = chats.clone();
         let navigate = navigate.clone();
         let load_messages_for_chat = load_messages_for_chat.clone();
-        Callback::from(move |(character_id, title): (i64, String)| {
+        Callback::from(move |(character_id, character_name): (i64, String)| {
+            let title = default_chat_title(&character_name, character_id, &chats);
             let chats = chats.clone();
             let navigate = navigate.clone();
             let load_messages_for_chat = load_messages_for_chat.clone();
@@ -582,7 +610,11 @@ fn app() -> Html {
                         move |(chat_id, character_id)| {
                             let chats = chats.clone();
                             wasm_bindgen_futures::spawn_local(async move {
-                                let _ = api::update_chat(chat_id, character_id).await;
+                                let payload = ChatUpdate {
+                                    character_id: Some(character_id),
+                                    title: None,
+                                };
+                                let _ = api::update_chat(chat_id, &payload).await;
                                 if let Ok(list) = api::list_chats().await {
                                     chats.set(sort_chats(list));
                                 }
@@ -778,6 +810,23 @@ fn app() -> Html {
                         });
                     }
                 })}
+                on_rename={Callback::from({
+                    let chats = chats.clone();
+                    move |(id, title)| {
+                        let chats = chats.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let payload = ChatUpdate {
+                                title: Some(title),
+                                character_id: None,
+                            };
+                            if api::update_chat(id, &payload).await.is_ok() {
+                                if let Ok(list) = api::list_chats().await {
+                                    chats.set(sort_chats(list));
+                                }
+                            }
+                        });
+                    }
+                })}
             />
             <main class="main">
                 <QueueBar queue={(*queue).clone()} on_open={open_queue.clone()} />
@@ -807,13 +856,38 @@ fn app() -> Html {
                             }
                         })}>{"Chats"}</button>
                     </div>
-                    <h1 class="header-title">{selected.as_ref().map(|c| c.title.clone()).unwrap_or_else(|| "Select a chat".to_string())}</h1>
                     if let Some(chat) = selected.as_ref() {
+                        <ChatTitleEditor
+                            title={chat.title.clone()}
+                            class="header-title"
+                            placeholder="Chat name"
+                            on_save={Callback::from({
+                                let chats = chats.clone();
+                                let chat_id = chat.id;
+                                move |title| {
+                                    let chats = chats.clone();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        let payload = ChatUpdate {
+                                            title: Some(title),
+                                            character_id: None,
+                                        };
+                                        if api::update_chat(chat_id, &payload).await.is_ok() {
+                                            if let Ok(list) = api::list_chats().await {
+                                                chats.set(sort_chats(list));
+                                            }
+                                        }
+                                    });
+                                }
+                            })}
+                        />
                         <p class="header-subtitle muted">{ format!("With {}", chat.character_name) }</p>
-                    } else if chats.is_empty() {
-                        <p class="header-subtitle muted">{"Create a character from the menu, then start a chat."}</p>
                     } else {
-                        <p class="header-subtitle muted">{"Responses stream on the server — switch chats freely while they generate."}</p>
+                        <h1 class="header-title">{"Select a chat"}</h1>
+                        if chats.is_empty() {
+                            <p class="header-subtitle muted">{"Create a character from the menu, then start a chat."}</p>
+                        } else {
+                            <p class="header-subtitle muted">{"Responses stream on the server — switch chats freely while they generate."}</p>
+                        }
                     }
                 </header>
                 if chats.is_empty() {
@@ -851,10 +925,12 @@ fn app() -> Html {
                         on_messages_change={Callback::from({
                             let messages = messages.clone();
                             let queue = queue.clone();
+                            let bump_stream = bump_stream.clone();
                             move |_| {
                                 let Some(chat_id) = selected_chat_id else { return };
                                 let messages = messages.clone();
                                 let queue = queue.clone();
+                                bump_stream.emit(());
                                 wasm_bindgen_futures::spawn_local(async move {
                                     if let Ok(msgs) = api::get_messages(chat_id).await {
                                         messages.set(msgs);
@@ -873,11 +949,13 @@ fn app() -> Html {
                         let messages = messages.clone();
                         let chats = chats.clone();
                         let queue = queue.clone();
+                        let bump_stream = bump_stream.clone();
                         move |content: String| {
                             let Some(chat_id) = selected_chat_id else { return };
                             let messages = messages.clone();
                             let chats = chats.clone();
                             let queue = queue.clone();
+                            bump_stream.emit(());
                             wasm_bindgen_futures::spawn_local(async move {
                                 let _ = api::send_message(chat_id, &content).await;
                                 if let Ok(msgs) = api::get_messages(chat_id).await {
@@ -1100,6 +1178,7 @@ struct ChatSidebarProps {
     on_archive: Callback<i64>,
     on_restore: Callback<i64>,
     on_permanent_delete: Callback<i64>,
+    on_rename: Callback<(i64, String)>,
 }
 
 #[function_component(ChatSidebar)]
@@ -1123,9 +1202,15 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
                     let selected = props.selected_id == Some(chat.id);
                     html! {
                         <div class={classes!("chat-item", selected.then_some("selected"))}>
-                            <div style="display:flex;gap:0.5rem;">
+                            <div style="display:flex;gap:0.5rem;align-items:flex-start;">
                                 <div style="flex:1;min-width:0;" onclick={props.on_select.reform(move |_| id)}>
-                                    <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &chat.title }</div>
+                                    <ChatTitleEditor
+                                        title={chat.title.clone()}
+                                        class="chat-item-title"
+                                        placeholder="Chat name"
+                                        compact={true}
+                                        on_save={props.on_rename.reform(move |title| (id, title))}
+                                    />
                                     <div class="chat-character">{ &chat.character_name }</div>
                                     if let Some(label) = status {
                                         <span class="badge">{ label }</span>
@@ -1172,6 +1257,126 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
                 </div>
             }
         </aside>
+    }
+}
+
+fn default_chat_title(character_name: &str, character_id: i64, chats: &[Chat]) -> String {
+    let same = chats
+        .iter()
+        .filter(|chat| chat.character_id == character_id)
+        .count();
+    if same == 0 {
+        character_name.to_string()
+    } else {
+        format!("{character_name} ({})", same + 1)
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct ChatTitleEditorProps {
+    title: String,
+    class: &'static str,
+    placeholder: &'static str,
+    on_save: Callback<String>,
+    #[prop_or(false)]
+    compact: bool,
+}
+
+#[function_component(ChatTitleEditor)]
+fn chat_title_editor(props: &ChatTitleEditorProps) -> Html {
+    let editing = use_state(|| false);
+    let draft = use_state(|| props.title.clone());
+    let input_ref = use_node_ref();
+
+    {
+        let draft = draft.clone();
+        let title = props.title.clone();
+        use_effect_with(title.clone(), move |_| {
+            draft.set(title);
+            || ()
+        });
+    }
+
+    {
+        let input_ref = input_ref.clone();
+        let editing = *editing;
+        use_effect_with(editing, move |editing| {
+            if *editing {
+                if let Some(input) = input_ref.cast::<HtmlInputElement>() {
+                    let _ = input.focus();
+                    input.select();
+                }
+            }
+            || ()
+        });
+    }
+
+    if *editing {
+        html! {
+            <input
+                ref={input_ref}
+                class={classes!(props.class, props.compact.then_some("chat-title-input-compact"))}
+                type="text"
+                value={(*draft).clone()}
+                placeholder={props.placeholder}
+                onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
+                oninput={{
+                    let draft = draft.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        draft.set(input.value());
+                    })
+                }}
+                onkeydown={{
+                    let editing = editing.clone();
+                    let draft = draft.clone();
+                    let on_save = props.on_save.clone();
+                    let title = props.title.clone();
+                    Callback::from(move |e: KeyboardEvent| {
+                        if e.key() == "Enter" {
+                            e.prevent_default();
+                            let trimmed = draft.trim().to_string();
+                            if !trimmed.is_empty() && trimmed != title {
+                                on_save.emit(trimmed);
+                            }
+                            editing.set(false);
+                        } else if e.key() == "Escape" {
+                            editing.set(false);
+                            draft.set(title.clone());
+                        }
+                    })
+                }}
+                onblur={{
+                    let editing = editing.clone();
+                    let draft = draft.clone();
+                    let on_save = props.on_save.clone();
+                    let title = props.title.clone();
+                    Callback::from(move |_| {
+                        let trimmed = draft.trim().to_string();
+                        if !trimmed.is_empty() && trimmed != title {
+                            on_save.emit(trimmed);
+                        }
+                        editing.set(false);
+                    })
+                }}
+            />
+        }
+    } else {
+        html! {
+            <div
+                class={classes!(props.class, "chat-title-editable", props.compact.then_some("chat-title-editable-compact"))}
+                title="Click to rename"
+                onclick={Callback::from({
+                    let editing = editing.clone();
+                    move |e: MouseEvent| {
+                        e.stop_propagation();
+                        editing.set(true);
+                    }
+                })}
+            >
+                { &props.title }
+            </div>
+        }
     }
 }
 
@@ -1877,7 +2082,7 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                     let draft = draft.clone();
                     let editing_id = editing_id.clone();
                     let on_character_change = props.on_character_change.clone();
-                    let on_chat_created = props.on_chat_created.clone();
+                    let on_start_chat = props.on_start_chat.clone();
                     let on_characters_changed = props.on_characters_changed.clone();
                     let chat_id = props.chat_id;
                     Callback::from(move |e: Event| {
@@ -1887,7 +2092,7 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                             let draft = draft.clone();
                             let editing_id = editing_id.clone();
                             let on_character_change = on_character_change.clone();
-                            let on_chat_created = on_chat_created.clone();
+                            let on_start_chat = on_start_chat.clone();
                             let on_characters_changed = on_characters_changed.clone();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(character) = api::import_character(&file).await {
@@ -1899,8 +2104,8 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                                     draft.set(CharacterDraft::from(&character));
                                     if let Some(chat_id) = chat_id {
                                         on_character_change.emit((chat_id, character.id));
-                                    } else if let Ok(chat) = api::create_chat(&character.name, character.id).await {
-                                        on_chat_created.emit(chat.id);
+                                    } else {
+                                        on_start_chat.emit((character.id, character.name.clone()));
                                     }
                                 }
                             });
@@ -1983,7 +2188,7 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                 let editing_id = editing_id.clone();
                 let characters = characters.clone();
                 let on_character_change = props.on_character_change.clone();
-                let on_chat_created = props.on_chat_created.clone();
+                let on_start_chat = props.on_start_chat.clone();
                 let on_characters_changed = props.on_characters_changed.clone();
                 let chat_id = props.chat_id;
                 Callback::from(move |_| {
@@ -1993,7 +2198,7 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                     let draft = draft.clone();
                     let editing_id = editing_id.clone();
                     let on_character_change = on_character_change.clone();
-                    let on_chat_created = on_chat_created.clone();
+                    let on_start_chat = on_start_chat.clone();
                     let on_characters_changed = on_characters_changed.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         let character = if let Some(id) = editing_id_val {
@@ -2010,8 +2215,8 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                             draft.set(CharacterDraft::from(&character));
                             if let Some(chat_id) = chat_id {
                                 on_character_change.emit((chat_id, character.id));
-                            } else if let Ok(chat) = api::create_chat(&character.name, character.id).await {
-                                on_chat_created.emit(chat.id);
+                            } else {
+                                on_start_chat.emit((character.id, character.name.clone()));
                             }
                         }
                     });
@@ -2585,6 +2790,7 @@ fn notification_settings() -> Html {
                     if granted {
                         notifications::set_enabled(true);
                         enabled.set(true);
+                        notifications::show_test_notification();
                     }
                     permission.set(notifications::permission_label());
                     busy.set(false);
@@ -2621,6 +2827,15 @@ fn notification_settings() -> Html {
                 <p class="muted" style="margin:0;">
                     { format!("Permission: {}", *permission) }
                 </p>
+                if *enabled && notifications::permission_granted() {
+                    <button
+                        class="btn secondary"
+                        style="margin-top:0.5rem;"
+                        onclick={Callback::from(|_| notifications::show_test_notification())}
+                    >
+                        {"Send test notification"}
+                    </button>
+                }
             }
         </div>
     }
