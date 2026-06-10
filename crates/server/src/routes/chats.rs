@@ -179,6 +179,9 @@ async fn update_message(
         rewind_after_message(&state, id, message_id).await?;
     }
     db::update_message_content(&state.pool, message_id, payload.content.trim()).await?;
+    if message.role == MessageRole::Assistant {
+        db::clear_message_thoughts(&state.pool, message_id).await?;
+    }
     db::touch_chat(&state.pool, id).await?;
     Ok(Json(db::get_message(&state.pool, id, message_id).await?))
 }
