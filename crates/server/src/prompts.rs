@@ -94,6 +94,26 @@ fn variables_instruction() -> &'static str {
     "You may update chat variables using XML tags like <var key=\"location\">tavern</var>. Reusing a key replaces its value. Only emit var tags for mutable session state that should persist (location, inventory, quest stage, etc.), not for static lore."
 }
 
+/// Rough token budget for permanent prompt content (character card, system prompts).
+pub fn estimate_static_prompt_tokens(settings: &Settings, character: Option<&Character>) -> i64 {
+    use dreamwell_types::estimate_token_count;
+
+    let mut chars = settings.system_prompt_prefix.len()
+        + settings.system_prompt_suffix.len()
+        + settings.persona_description.len()
+        + settings.user_name.len();
+    if let Some(c) = character {
+        chars += c.name.len()
+            + c.description.len()
+            + c.personality.len()
+            + c.scenario.len()
+            + c.system_prompt.len()
+            + c.example_dialogue.len()
+            + c.first_message.len();
+    }
+    estimate_token_count(&" ".repeat(chars))
+}
+
 pub async fn build_messages_for_inference(
     pool: &SqlitePool,
     chat_id: i64,
