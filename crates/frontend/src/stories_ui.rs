@@ -221,11 +221,20 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 resume_online();
             }) as Box<dyn FnMut(_)>);
 
+            let resume_focus = resume.clone();
+            let focus_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                resume_focus();
+            }) as Box<dyn FnMut(_)>);
+
             let window = web_sys::window();
             if let Some(window) = window.as_ref() {
                 let _ = window.add_event_listener_with_callback(
                     "online",
                     online_callback.as_ref().unchecked_ref(),
+                );
+                let _ = window.add_event_listener_with_callback(
+                    "focus",
+                    focus_callback.as_ref().unchecked_ref(),
                 );
             }
 
@@ -240,6 +249,10 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     let _ = window.remove_event_listener_with_callback(
                         "online",
                         online_callback.as_ref().unchecked_ref(),
+                    );
+                    let _ = window.remove_event_listener_with_callback(
+                        "focus",
+                        focus_callback.as_ref().unchecked_ref(),
                     );
                 }
             }
