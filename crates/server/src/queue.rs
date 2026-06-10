@@ -8,6 +8,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::inference::{chat_completion, stream_chat_completion};
@@ -26,6 +27,37 @@ use crate::variables::{
 /// Slightly above inference request timeout so hung jobs do not block the queue forever.
 const STUCK_JOB_MAX_AGE_SECS: i64 = 920;
 const QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+fn generation_max_retries() -> u32 {
+    config::GENERATION_MAX_RETRIES
+        .load(std::sync::atomic::Ordering::SeqCst)
+        .max(1)
+}
+
+async fn wait_for_generation_retry(attempt: u32, token: &CancellationToken) -> bool {
+    if token.is_cancelled() {
+        return true;
+    }
+    let secs = 1u64 << (attempt - 2).min(3);
+    tokio::select! {
+        () = token.cancelled() => true,
+        () = tokio::time::sleep(Duration::from_secs(secs)) => token.is_cancelled(),
+    }
+}
+
+enum ChatGenerationOutcome {
+    Success,
+    Retryable(String),
+    Failed,
+    Cancelled,
+}
+
+enum BeatProseOutcome {
+    Success,
+    Retryable(String),
+    Failed,
+    Cancelled,
+}
 
 fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> String {
     if settings.thought_blocks_enabled {
@@ -354,22 +386,90 @@ async fn run_chat_job(
         build_messages_for_inference(pool, chat_id, &chat.summary, chat.character_id, settings)
             .await?;
 
-    let mut stream = stream_chat_completion(
+    let max_attempts = generation_max_retries();
+    let mut last_error = "model returned no text".to_string();
+
+    for attempt in 1..=max_attempts {
+        if token.is_cancelled() {
+            return cancel_job_record(pool, job).await;
+        }
+
+        if attempt > 1 {
+            tracing::warn!(
+                job_id,
+                attempt,
+                max_attempts,
+                error = %last_error,
+                "retrying chat generation"
+            );
+            db::update_message_content(pool, message_id, "").await?;
+            db::clear_message_thoughts(pool, message_id).await?;
+            if wait_for_generation_retry(attempt, &token).await {
+                return cancel_job_record(pool, job).await;
+            }
+        }
+
+        match run_chat_generation_attempt(
+            pool, job_id, chat_id, message_id, settings, &messages, &token,
+        )
+        .await?
+        {
+            ChatGenerationOutcome::Success => {
+                db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+                maybe_summarize_chat(pool, chat_id, settings).await?;
+                return Ok(());
+            }
+            ChatGenerationOutcome::Retryable(message) => {
+                last_error = message;
+                if attempt == max_attempts {
+                    db::update_message_content(
+                        pool,
+                        message_id,
+                        &format!("[Generation failed: {last_error}]"),
+                    )
+                    .await?;
+                    db::set_thought_in_progress(pool, message_id, false).await?;
+                    db::complete_job(pool, job_id, JobStatus::Failed, Some(last_error)).await?;
+                    return Ok(());
+                }
+            }
+            ChatGenerationOutcome::Failed => return Ok(()),
+            ChatGenerationOutcome::Cancelled => return cancel_job_record(pool, job).await,
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_chat_generation_attempt(
+    pool: &SqlitePool,
+    job_id: i64,
+    chat_id: i64,
+    message_id: i64,
+    settings: &dreamwell_types::Settings,
+    messages: &[serde_json::Value],
+    token: &CancellationToken,
+) -> AppResult<ChatGenerationOutcome> {
+    let mut stream = match stream_chat_completion(
         &settings.inference_url,
         &settings.model,
-        &messages,
+        messages,
         settings.temperature,
         settings.top_p,
         settings.max_tokens,
     )
-    .await?;
+    .await
+    {
+        Ok(stream) => stream,
+        Err(err) => return Ok(ChatGenerationOutcome::Retryable(err.to_string())),
+    };
 
     let mut accumulated = String::new();
     let mut thought_started_at: Option<Instant> = None;
     let mut thought_duration_ms: Option<i64> = None;
     while let Some(token_result) = stream.next().await {
         if token.is_cancelled() {
-            return cancel_job_record(pool, job).await;
+            return Ok(ChatGenerationOutcome::Cancelled);
         }
         match token_result {
             Ok(piece) => {
@@ -395,16 +495,11 @@ async fn run_chat_job(
                 db::touch_chat(pool, chat_id).await?;
             }
             Err(err) => {
-                db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
                 if accumulated.is_empty() {
-                    db::update_message_content(
-                        pool,
-                        message_id,
-                        &format!("[Generation failed: {err}]"),
-                    )
-                    .await?;
-                    db::set_thought_in_progress(pool, message_id, false).await?;
-                } else if settings.thought_blocks_enabled {
+                    return Ok(ChatGenerationOutcome::Retryable(err.to_string()));
+                }
+                db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
+                if settings.thought_blocks_enabled {
                     let parsed = parse_thought_blocks(&accumulated);
                     let reply = strip_variable_tags(settings, &parsed.reply);
                     db::update_message_generation(
@@ -419,31 +514,19 @@ async fn run_chat_job(
                 } else {
                     db::set_thought_in_progress(pool, message_id, false).await?;
                 }
-                return Ok(());
+                return Ok(ChatGenerationOutcome::Failed);
             }
         }
     }
 
     if token.is_cancelled() {
-        return cancel_job_record(pool, job).await;
+        return Ok(ChatGenerationOutcome::Cancelled);
     }
 
     if accumulated.trim().is_empty() {
-        db::update_message_content(
-            pool,
-            message_id,
-            "[Generation failed: model returned no text]",
-        )
-        .await?;
-        db::set_thought_in_progress(pool, message_id, false).await?;
-        db::complete_job(
-            pool,
-            job_id,
-            JobStatus::Failed,
-            Some("model returned no text".to_string()),
-        )
-        .await?;
-        return Ok(());
+        return Ok(ChatGenerationOutcome::Retryable(
+            "model returned no text".to_string(),
+        ));
     }
 
     let (processed, thought_content, thought_duration_ms, _thought_in_progress) =
@@ -480,6 +563,13 @@ async fn run_chat_job(
     } else {
         (processed.clone(), Vec::new())
     };
+
+    if content_to_save.trim().is_empty() {
+        return Ok(ChatGenerationOutcome::Retryable(
+            "model returned no visible text".to_string(),
+        ));
+    }
+
     let variable_updates = if settings.variables_enabled && !updates.is_empty() {
         let updates_for_message = build_message_variable_updates(pool, chat_id, &updates).await?;
         apply_variable_updates(pool, chat_id, &updates).await?;
@@ -501,9 +591,7 @@ async fn run_chat_job(
         .await?;
     }
 
-    db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-    maybe_summarize_chat(pool, chat_id, settings).await?;
-    Ok(())
+    Ok(ChatGenerationOutcome::Success)
 }
 
 async fn run_story_propose_chapters(
@@ -521,32 +609,58 @@ async fn run_story_propose_chapters(
     let messages =
         build_propose_chapters_messages(&detail.story, &detail.chapters, &job.guidance_notes);
 
-    let response = tokio::select! {
-        () = token.cancelled() => {
+    let max_attempts = generation_max_retries();
+    let mut last_error = "generation failed".to_string();
+
+    for attempt in 1..=max_attempts {
+        if token.is_cancelled() {
             return cancel_job_record(pool, job).await;
         }
-        result = chat_completion(
-            &settings.inference_url,
-            &settings.model,
-            &messages,
-            0.7,
-            settings.top_p,
-            2048,
-        ) => result,
-    };
-
-    match response {
-        Ok(text) => {
-            let text = display_generated_text(settings, &text);
-            if let Some(chapters) = parse_chapters_proposal_json(&text) {
-                db::apply_chapter_proposal(pool, story_id, &chapters).await?;
-                db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-            } else {
-                fail_job(pool, job_id, job, "Failed to parse chapter proposal JSON").await?;
+        if attempt > 1 {
+            tracing::warn!(
+                job_id,
+                attempt,
+                max_attempts,
+                error = %last_error,
+                "retrying chapter proposal generation"
+            );
+            if wait_for_generation_retry(attempt, &token).await {
+                return cancel_job_record(pool, job).await;
             }
         }
-        Err(err) => {
-            fail_job(pool, job_id, job, &err.to_string()).await?;
+
+        let response = tokio::select! {
+            () = token.cancelled() => {
+                return cancel_job_record(pool, job).await;
+            }
+            result = chat_completion(
+                &settings.inference_url,
+                &settings.model,
+                &messages,
+                0.7,
+                settings.top_p,
+                2048,
+            ) => result,
+        };
+
+        match response {
+            Ok(text) => {
+                let text = display_generated_text(settings, &text);
+                if text.trim().is_empty() {
+                    last_error = "model returned no text".to_string();
+                } else if let Some(chapters) = parse_chapters_proposal_json(&text) {
+                    db::apply_chapter_proposal(pool, story_id, &chapters).await?;
+                    db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+                    return Ok(());
+                } else {
+                    last_error = "Failed to parse chapter proposal JSON".to_string();
+                }
+            }
+            Err(err) => last_error = err.to_string(),
+        }
+
+        if attempt == max_attempts {
+            fail_job(pool, job_id, job, &last_error).await?;
         }
     }
     Ok(())
@@ -580,32 +694,58 @@ async fn run_story_propose_beats(
         &job.guidance_notes,
     );
 
-    let response = tokio::select! {
-        () = token.cancelled() => {
+    let max_attempts = generation_max_retries();
+    let mut last_error = "generation failed".to_string();
+
+    for attempt in 1..=max_attempts {
+        if token.is_cancelled() {
             return cancel_job_record(pool, job).await;
         }
-        result = chat_completion(
-            &settings.inference_url,
-            &settings.model,
-            &messages,
-            0.7,
-            settings.top_p,
-            2048,
-        ) => result,
-    };
-
-    match response {
-        Ok(text) => {
-            let text = display_generated_text(settings, &text);
-            if let Some(beats) = parse_beats_proposal_json(&text) {
-                db::apply_beat_proposal(pool, story_id, chapter_id, &beats).await?;
-                db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-            } else {
-                fail_job(pool, job_id, job, "Failed to parse beat proposal JSON").await?;
+        if attempt > 1 {
+            tracing::warn!(
+                job_id,
+                attempt,
+                max_attempts,
+                error = %last_error,
+                "retrying beat proposal generation"
+            );
+            if wait_for_generation_retry(attempt, &token).await {
+                return cancel_job_record(pool, job).await;
             }
         }
-        Err(err) => {
-            fail_job(pool, job_id, job, &err.to_string()).await?;
+
+        let response = tokio::select! {
+            () = token.cancelled() => {
+                return cancel_job_record(pool, job).await;
+            }
+            result = chat_completion(
+                &settings.inference_url,
+                &settings.model,
+                &messages,
+                0.7,
+                settings.top_p,
+                2048,
+            ) => result,
+        };
+
+        match response {
+            Ok(text) => {
+                let text = display_generated_text(settings, &text);
+                if text.trim().is_empty() {
+                    last_error = "model returned no text".to_string();
+                } else if let Some(beats) = parse_beats_proposal_json(&text) {
+                    db::apply_beat_proposal(pool, story_id, chapter_id, &beats).await?;
+                    db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+                    return Ok(());
+                } else {
+                    last_error = "Failed to parse beat proposal JSON".to_string();
+                }
+            }
+            Err(err) => last_error = err.to_string(),
+        }
+
+        if attempt == max_attempts {
+            fail_job(pool, job_id, job, &last_error).await?;
         }
     }
     Ok(())
@@ -639,33 +779,59 @@ async fn run_story_chapter_outline(
         &job.guidance_notes,
     );
 
-    let response = tokio::select! {
-        () = token.cancelled() => {
+    let max_attempts = generation_max_retries();
+    let mut last_error = "generation failed".to_string();
+
+    for attempt in 1..=max_attempts {
+        if token.is_cancelled() {
             return cancel_job_record(pool, job).await;
         }
-        result = chat_completion(
-            &settings.inference_url,
-            &settings.model,
-            &messages,
-            0.7,
-            settings.top_p,
-            512,
-        ) => result,
-    };
-
-    match response {
-        Ok(text) => {
-            let text = display_generated_text(settings, &text);
-            if let Some((title, synopsis)) = parse_outline_json(&text) {
-                db::update_chapter_outline(pool, chapter_id, &title, &synopsis).await?;
-                db::touch_story(pool, story_id).await?;
-                db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-            } else {
-                fail_job(pool, job_id, job, "Failed to parse chapter outline JSON").await?;
+        if attempt > 1 {
+            tracing::warn!(
+                job_id,
+                attempt,
+                max_attempts,
+                error = %last_error,
+                "retrying chapter outline generation"
+            );
+            if wait_for_generation_retry(attempt, &token).await {
+                return cancel_job_record(pool, job).await;
             }
         }
-        Err(err) => {
-            fail_job(pool, job_id, job, &err.to_string()).await?;
+
+        let response = tokio::select! {
+            () = token.cancelled() => {
+                return cancel_job_record(pool, job).await;
+            }
+            result = chat_completion(
+                &settings.inference_url,
+                &settings.model,
+                &messages,
+                0.7,
+                settings.top_p,
+                512,
+            ) => result,
+        };
+
+        match response {
+            Ok(text) => {
+                let text = display_generated_text(settings, &text);
+                if text.trim().is_empty() {
+                    last_error = "model returned no text".to_string();
+                } else if let Some((title, synopsis)) = parse_outline_json(&text) {
+                    db::update_chapter_outline(pool, chapter_id, &title, &synopsis).await?;
+                    db::touch_story(pool, story_id).await?;
+                    db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+                    return Ok(());
+                } else {
+                    last_error = "Failed to parse chapter outline JSON".to_string();
+                }
+            }
+            Err(err) => last_error = err.to_string(),
+        }
+
+        if attempt == max_attempts {
+            fail_job(pool, job_id, job, &last_error).await?;
         }
     }
     Ok(())
@@ -708,33 +874,59 @@ async fn run_story_beat_outline(
         &job.guidance_notes,
     );
 
-    let response = tokio::select! {
-        () = token.cancelled() => {
+    let max_attempts = generation_max_retries();
+    let mut last_error = "generation failed".to_string();
+
+    for attempt in 1..=max_attempts {
+        if token.is_cancelled() {
             return cancel_job_record(pool, job).await;
         }
-        result = chat_completion(
-            &settings.inference_url,
-            &settings.model,
-            &messages,
-            0.7,
-            settings.top_p,
-            512,
-        ) => result,
-    };
-
-    match response {
-        Ok(text) => {
-            let text = display_generated_text(settings, &text);
-            if let Some((title, synopsis)) = parse_outline_json(&text) {
-                db::update_beat_outline(pool, beat_id, &title, &synopsis).await?;
-                db::touch_story(pool, story_id).await?;
-                db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-            } else {
-                fail_job(pool, job_id, job, "Failed to parse beat outline JSON").await?;
+        if attempt > 1 {
+            tracing::warn!(
+                job_id,
+                attempt,
+                max_attempts,
+                error = %last_error,
+                "retrying beat outline generation"
+            );
+            if wait_for_generation_retry(attempt, &token).await {
+                return cancel_job_record(pool, job).await;
             }
         }
-        Err(err) => {
-            fail_job(pool, job_id, job, &err.to_string()).await?;
+
+        let response = tokio::select! {
+            () = token.cancelled() => {
+                return cancel_job_record(pool, job).await;
+            }
+            result = chat_completion(
+                &settings.inference_url,
+                &settings.model,
+                &messages,
+                0.7,
+                settings.top_p,
+                512,
+            ) => result,
+        };
+
+        match response {
+            Ok(text) => {
+                let text = display_generated_text(settings, &text);
+                if text.trim().is_empty() {
+                    last_error = "model returned no text".to_string();
+                } else if let Some((title, synopsis)) = parse_outline_json(&text) {
+                    db::update_beat_outline(pool, beat_id, &title, &synopsis).await?;
+                    db::touch_story(pool, story_id).await?;
+                    db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+                    return Ok(());
+                } else {
+                    last_error = "Failed to parse beat outline JSON".to_string();
+                }
+            }
+            Err(err) => last_error = err.to_string(),
+        }
+
+        if attempt == max_attempts {
+            fail_job(pool, job_id, job, &last_error).await?;
         }
     }
     Ok(())
@@ -777,20 +969,79 @@ async fn run_story_beat_prose(
         &job.guidance_notes,
     );
 
-    let mut stream = stream_chat_completion(
+    let max_attempts = generation_max_retries();
+    let mut last_error = "model returned no text".to_string();
+
+    for attempt in 1..=max_attempts {
+        if token.is_cancelled() {
+            return cancel_job_record(pool, job).await;
+        }
+
+        if attempt > 1 {
+            tracing::warn!(
+                job_id,
+                attempt,
+                max_attempts,
+                error = %last_error,
+                "retrying beat prose generation"
+            );
+            db::update_beat_content(pool, beat_id, "").await?;
+            if wait_for_generation_retry(attempt, &token).await {
+                return cancel_job_record(pool, job).await;
+            }
+        }
+
+        match run_beat_prose_generation_attempt(
+            pool, job_id, story_id, beat_id, settings, &messages, &token,
+        )
+        .await?
+        {
+            BeatProseOutcome::Success => {
+                db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+                return Ok(());
+            }
+            BeatProseOutcome::Retryable(message) => {
+                last_error = message;
+                if attempt == max_attempts {
+                    fail_job(pool, job_id, job, &last_error).await?;
+                    return Ok(());
+                }
+            }
+            BeatProseOutcome::Failed => return Ok(()),
+            BeatProseOutcome::Cancelled => return cancel_job_record(pool, job).await,
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_beat_prose_generation_attempt(
+    pool: &SqlitePool,
+    job_id: i64,
+    story_id: i64,
+    beat_id: i64,
+    settings: &dreamwell_types::Settings,
+    messages: &[serde_json::Value],
+    token: &CancellationToken,
+) -> AppResult<BeatProseOutcome> {
+    let mut stream = match stream_chat_completion(
         &settings.inference_url,
         &settings.model,
-        &messages,
+        messages,
         settings.temperature,
         settings.top_p,
         settings.max_tokens,
     )
-    .await?;
+    .await
+    {
+        Ok(stream) => stream,
+        Err(err) => return Ok(BeatProseOutcome::Retryable(err.to_string())),
+    };
 
     let mut accumulated = String::new();
     while let Some(token_result) = stream.next().await {
         if token.is_cancelled() {
-            return cancel_job_record(pool, job).await;
+            return Ok(BeatProseOutcome::Cancelled);
         }
         match token_result {
             Ok(piece) => {
@@ -800,22 +1051,27 @@ async fn run_story_beat_prose(
                 db::touch_story(pool, story_id).await?;
             }
             Err(err) => {
-                db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
                 if accumulated.is_empty() {
-                    db::update_beat_content(pool, beat_id, &format!("[Generation failed: {err}]"))
-                        .await?;
+                    return Ok(BeatProseOutcome::Retryable(err.to_string()));
                 }
-                return Ok(());
+                db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
+                return Ok(BeatProseOutcome::Failed);
             }
         }
     }
 
     if token.is_cancelled() {
-        return cancel_job_record(pool, job).await;
+        return Ok(BeatProseOutcome::Cancelled);
     }
 
-    db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-    Ok(())
+    let display = display_generated_text(settings, &accumulated);
+    if display.trim().is_empty() {
+        return Ok(BeatProseOutcome::Retryable(
+            "model returned no text".to_string(),
+        ));
+    }
+
+    Ok(BeatProseOutcome::Success)
 }
 
 pub async fn enqueue_generation(

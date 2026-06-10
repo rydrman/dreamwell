@@ -1,8 +1,9 @@
 use std::env;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 
 pub static MAX_CONCURRENT_JOBS: AtomicI64 = AtomicI64::new(1);
+pub static GENERATION_MAX_RETRIES: AtomicU32 = AtomicU32::new(3);
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -32,6 +33,11 @@ impl Config {
         if let Ok(v) = env::var("DREAMWELL_MAX_CONCURRENT_JOBS") {
             if let Ok(n) = v.parse::<i64>() {
                 MAX_CONCURRENT_JOBS.store(n.max(1), Ordering::SeqCst);
+            }
+        }
+        if let Ok(v) = env::var("DREAMWELL_GENERATION_MAX_RETRIES") {
+            if let Ok(n) = v.parse::<u32>() {
+                GENERATION_MAX_RETRIES.store(n.max(1), Ordering::SeqCst);
             }
         }
         Self {
