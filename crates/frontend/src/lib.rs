@@ -2094,6 +2094,62 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     }
 }
 
+const SUMMARIZE_PLACEHOLDER: &str = "Summarizing earlier messages…";
+
+#[derive(Properties, PartialEq)]
+struct SummaryMarkerProps {
+    message: Message,
+    rendered_content: Html,
+}
+
+#[function_component(SummaryMarker)]
+fn summary_marker(props: &SummaryMarkerProps) -> Html {
+    let expanded = use_state(|| true);
+    let active = matches!(
+        props.message.job_status,
+        Some(JobStatus::Queued) | Some(JobStatus::Running)
+    );
+    let pending = active || props.message.content == SUMMARIZE_PLACEHOLDER;
+
+    let toggle = {
+        let expanded = expanded.clone();
+        Callback::from(move |_| expanded.set(!*expanded))
+    };
+
+    html! {
+        <div class={classes!(
+            "message-summary-marker",
+            active.then_some("message-summary-marker--active")
+        )}>
+            <div class="message-summary-break" aria-hidden="true">
+                <span class="message-summary-break-line"></span>
+                <span class="message-summary-break-label">{
+                    if pending { "Summarizing earlier messages" } else { "Earlier messages summarized" }
+                }</span>
+                <span class="message-summary-break-line"></span>
+            </div>
+            <div class="message-summary-body">
+                if pending {
+                    <p class="message-summary-pending muted">
+                        <span class="settings-save-spinner" aria-hidden="true"></span>
+                        {" Compressing chat history to fit your context window…"}
+                    </p>
+                } else {
+                    <>
+                        <button type="button" class="message-summary-toggle" onclick={toggle}>
+                            <span class="message-summary-chevron">{ if *expanded { "▾" } else { "▸" } }</span>
+                            <span>{"View summary"}</span>
+                        </button>
+                        if *expanded {
+                            <div class="message-summary-content">{ props.rendered_content.clone() }</div>
+                        }
+                    </>
+                }
+            </div>
+        </div>
+    }
+}
+
 #[derive(Properties, PartialEq)]
 struct MessageListProps {
     chat_id: Option<i64>,
@@ -2171,18 +2227,28 @@ fn message_list(props: &MessageListProps) -> Html {
                     } else {
                         markdown::render_message_content(&m.content)
                     };
-                    html! {
-                        <MessageBubble
-                            key={m.id}
-                            message={m.clone()}
-                            chat_id={chat_id}
-                            is_last={is_last}
-                            after_count={after_count}
-                            rendered_content={rendered_content}
-                            show_thoughts={show_thoughts}
-                            show_variables={show_variables}
-                            on_changed={props.on_messages_change.clone()}
-                        />
+                    if m.is_summary {
+                        html! {
+                            <SummaryMarker
+                                key={m.id}
+                                message={m.clone()}
+                                rendered_content={rendered_content}
+                            />
+                        }
+                    } else {
+                        html! {
+                            <MessageBubble
+                                key={m.id}
+                                message={m.clone()}
+                                chat_id={chat_id}
+                                is_last={is_last}
+                                after_count={after_count}
+                                rendered_content={rendered_content}
+                                show_thoughts={show_thoughts}
+                                show_variables={show_variables}
+                                on_changed={props.on_messages_change.clone()}
+                            />
+                        }
                     }
                 }) }
             }
@@ -2871,6 +2937,7 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         user_name: Some(current.user_name.clone()),
         persona_description: Some(current.persona_description.clone()),
         summarize_enabled: Some(current.summarize_enabled),
+        summarize_adaptive: Some(current.summarize_adaptive),
         summarize_after_messages: Some(current.summarize_after_messages),
         summarize_keep_recent: Some(current.summarize_keep_recent),
         variables_enabled: Some(current.variables_enabled),
@@ -3113,6 +3180,9 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             <label class="field"><span class="muted">{"Post-history instructions (suffix)"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(save_ctx.clone(), "system_prompt_suffix")} /></label>
             <div class="settings-group">
                 <strong>{"Auto summarize"}</strong>
+                <p class="muted" style="margin:0.35rem 0 0.5rem;">
+                    {"Compresses older messages into a summary so the chat fits your context window. Summarization runs as a queued job and appears as a break in the chat."}
+                </p>
                 <label style="display:flex;gap:0.5rem;margin:0.5rem 0;">
                     <input type="checkbox" checked={s.summarize_enabled} onclick={{
                         let save_ctx = save_ctx.clone();
@@ -3122,8 +3192,17 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     }} />
                     {"Enable summarization"}
                 </label>
-                <label class="field"><span class="muted">{"Summarize after N messages"}</span><input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(save_ctx.clone(), "summarize_after_messages")} /></label>
-                <label class="field"><span class="muted">{"Keep recent messages"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(save_ctx.clone(), "summarize_keep_recent")} /></label>
+                <label style="display:flex;gap:0.5rem;margin:0.5rem 0;">
+                    <input type="checkbox" checked={s.summarize_adaptive} disabled={!s.summarize_enabled} onclick={{
+                        let save_ctx = save_ctx.clone();
+                        Callback::from(move |_| {
+                            save_ctx.update_field(|current| current.summarize_adaptive = !current.summarize_adaptive);
+                        })
+                    }} />
+                    {"Adapt to context window (uses context − response budget)"}
+                </label>
+                <label class="field"><span class="muted">{"Minimum messages before summarize"}</span><input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(save_ctx.clone(), "summarize_after_messages")} /></label>
+                <label class="field"><span class="muted">{"Minimum recent messages to keep"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(save_ctx.clone(), "summarize_keep_recent")} /></label>
             </div>
             <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
                 <input type="checkbox" checked={s.variables_enabled} onclick={{

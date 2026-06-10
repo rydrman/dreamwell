@@ -19,6 +19,7 @@ pub enum JobStatus {
 #[serde(rename_all = "snake_case")]
 pub enum JobType {
     ChatMessage,
+    ChatSummarize,
     StoryChapterOutline,
     StoryProposeChapters,
     StoryBeatOutline,
@@ -382,7 +383,11 @@ pub struct Settings {
     pub user_name: String,
     pub persona_description: String,
     pub summarize_enabled: bool,
+    /// When true, trigger summarization from estimated token budget (context − response).
+    pub summarize_adaptive: bool,
+    /// Minimum total messages before summarization can run.
     pub summarize_after_messages: i64,
+    /// Minimum recent messages to always keep verbatim.
     pub summarize_keep_recent: i64,
     pub variables_enabled: bool,
     pub thought_blocks_enabled: bool,
@@ -406,6 +411,7 @@ pub struct SettingsUpdate {
     pub user_name: Option<String>,
     pub persona_description: Option<String>,
     pub summarize_enabled: Option<bool>,
+    pub summarize_adaptive: Option<bool>,
     pub summarize_after_messages: Option<i64>,
     pub summarize_keep_recent: Option<i64>,
     pub variables_enabled: Option<bool>,
@@ -447,6 +453,11 @@ pub fn prompt_token_budget(context_tokens: i64, response_tokens: i64) -> i64 {
         return 0;
     }
     (context_tokens - response_tokens).max(0)
+}
+
+/// Rough token estimate (~4 characters per token).
+pub fn estimate_token_count(text: &str) -> i64 {
+    ((text.len() as i64) + 3) / 4
 }
 
 #[cfg(test)]
