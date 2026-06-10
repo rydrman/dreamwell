@@ -145,8 +145,14 @@ pub fn tab_hidden() -> bool {
         .is_some_and(|document| document.hidden())
 }
 
+pub fn window_unfocused() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .is_some_and(|document| !document.has_focus().unwrap_or(false))
+}
+
 pub fn should_notify(job: &TrackedJob, view: ViewContext) -> bool {
-    if tab_hidden() {
+    if tab_hidden() || window_unfocused() {
         return true;
     }
     if let Some(chat_id) = job.chat_id {
@@ -173,11 +179,17 @@ pub fn job_type_label(job_type: JobType) -> &'static str {
     }
 }
 
-pub fn notification_copy(job: &TrackedJob, chats: &[Chat], stories: &[Story]) -> (String, String) {
+pub fn notification_copy(
+    job: &TrackedJob,
+    chats: &[Chat],
+    archived_chats: &[Chat],
+    stories: &[Story],
+) -> (String, String) {
     let label = job_type_label(job.job_type);
     if let Some(chat_id) = job.chat_id {
         let title = chats
             .iter()
+            .chain(archived_chats.iter())
             .find(|chat| chat.id == chat_id)
             .map(|chat| chat.title.clone())
             .unwrap_or_else(|| format!("Chat {chat_id}"));
@@ -213,33 +225,47 @@ pub fn clear_actions() {
 }
 
 pub fn notify_completion(job: &TrackedJob, title: &str, body: &str) {
+    show_notification(title, body, Some(job));
+}
+
+pub fn show_test_notification() {
+    show_notification("Dreamwell", "Notifications are working.", None);
+}
+
+fn show_notification(title: &str, body: &str, job: Option<&TrackedJob>) {
     if !is_enabled() || !permission_granted() {
         return;
     }
 
     let options = NotificationOptions::new();
     options.set_body(body);
-    options.set_tag(&format!("dreamwell-job-{}", job.id));
+    if let Some(job) = job {
+        options.set_tag(&format!("dreamwell-job-{}", job.id));
+    } else {
+        options.set_tag("dreamwell-test");
+    }
 
     let Ok(notification) = Notification::new_with_options(title, &options) else {
         return;
     };
 
     let notification_for_click = notification.clone();
-    let job_for_click = job.clone();
+    let job_for_click = job.cloned();
     let onclick = Closure::wrap(Box::new(move |_event: web_sys::Event| {
         if let Some(window) = web_sys::window() {
             let _ = window.focus();
         }
-        ACTIONS.with(|slot| {
-            if let Some(actions) = slot.borrow().as_ref() {
-                if let Some(chat_id) = job_for_click.chat_id {
-                    actions.open_chat.emit(chat_id);
-                } else if let Some(story_id) = job_for_click.story_id {
-                    actions.open_story.emit(story_id);
+        if let Some(job) = job_for_click.as_ref() {
+            ACTIONS.with(|slot| {
+                if let Some(actions) = slot.borrow().as_ref() {
+                    if let Some(chat_id) = job.chat_id {
+                        actions.open_chat.emit(chat_id);
+                    } else if let Some(story_id) = job.story_id {
+                        actions.open_story.emit(story_id);
+                    }
                 }
-            }
-        });
+            });
+        }
         notification_for_click.close();
     }) as Box<dyn FnMut(web_sys::Event)>);
     notification.set_onclick(Some(onclick.as_ref().unchecked_ref()));

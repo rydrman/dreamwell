@@ -9,6 +9,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{Event, EventSource, MessageEvent};
 
+const IDLE_RECONNECT_MS: u32 = 2_000;
+
 struct ReconnectingEventSource {
     url: String,
     on_message: Rc<dyn Fn(String)>,
@@ -60,8 +62,9 @@ impl ReconnectingEventSource {
         {
             let inner = self.clone();
             let callback = Closure::wrap(Box::new(move |_event: Event| {
-                inner.stopped.replace(true);
+                inner.attempt.replace(0);
                 inner.close_source();
+                inner.schedule_idle_reconnect();
             }) as Box<dyn FnMut(_)>);
             let _ =
                 source.add_event_listener_with_callback("idle", callback.as_ref().unchecked_ref());
@@ -100,6 +103,21 @@ impl ReconnectingEventSource {
         let delay_ms = 1_000u32
             .saturating_mul(2u32.saturating_pow(attempt.min(5)))
             .min(30_000);
+        self.schedule_reconnect_after(delay_ms);
+    }
+
+    fn schedule_idle_reconnect(self: &Rc<Self>) {
+        if *self.stopped.borrow() {
+            return;
+        }
+        self.schedule_reconnect_after(IDLE_RECONNECT_MS);
+    }
+
+    fn schedule_reconnect_after(self: &Rc<Self>, delay_ms: u32) {
+        if *self.stopped.borrow() {
+            return;
+        }
+        self.timeout.borrow_mut().take();
         let inner = self.clone();
         let timeout = Timeout::new(delay_ms, move || {
             inner.connect();
@@ -177,13 +195,8 @@ pub async fn create_chat(title: &str, character_id: i64) -> Result<Chat, String>
     .await
 }
 
-pub async fn update_chat(id: i64, character_id: i64) -> Result<Chat, String> {
-    json_body(
-        "PATCH",
-        &format!("/api/chats/{id}"),
-        &serde_json::json!({ "character_id": character_id }),
-    )
-    .await
+pub async fn update_chat(id: i64, payload: &ChatUpdate) -> Result<Chat, String> {
+    json_body("PATCH", &format!("/api/chats/{id}"), payload).await
 }
 
 pub async fn archive_chat(id: i64) -> Result<(), String> {

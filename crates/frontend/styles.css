@@ -330,6 +330,60 @@ button {
   font-size: 1.1rem;
 }
 
+.chat-title-editable {
+  cursor: text;
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.25rem;
+  margin: -0.1rem -0.25rem;
+}
+
+.chat-title-editable:hover {
+  background: var(--surface);
+}
+
+.chat-title-editable-compact {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-item.selected .chat-title-editable:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.chat-item-title {
+  font-weight: 600;
+}
+
+.chat-title-input-compact,
+.header-title.chat-title-input-compact {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.15rem 0.35rem;
+  background: var(--bg);
+  color: inherit;
+}
+
+.chat-item.selected .chat-title-input-compact {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+input.header-title {
+  width: 100%;
+  max-width: 28rem;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.15rem 0.35rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  background: var(--bg);
+  color: var(--fg);
+}
+
 .header-subtitle {
   margin: 0.25rem 0 0;
 }
