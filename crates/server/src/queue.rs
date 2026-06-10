@@ -55,10 +55,10 @@ fn thought_timing(
         return (*thought_duration_ms, true);
     }
 
-    if thought_duration_ms.is_none() {
+    if thought_duration_ms.is_none() && !parsed.thought.is_empty() {
         if let Some(start) = thought_started_at {
             *thought_duration_ms = Some(start.elapsed().as_millis() as i64);
-        } else if !parsed.thought.is_empty() {
+        } else {
             *thought_duration_ms = Some(0);
         }
     }
@@ -266,6 +266,7 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
                         db::update_message_content(pool, message_id, "[Generation cancelled]")
                             .await?;
                     }
+                    db::set_thought_in_progress(pool, message_id, false).await?;
                 }
             }
         }
@@ -391,6 +392,21 @@ async fn run_chat_job(
                         &format!("[Generation failed: {err}]"),
                     )
                     .await?;
+                    db::set_thought_in_progress(pool, message_id, false).await?;
+                } else if settings.thought_blocks_enabled {
+                    let parsed = parse_thought_blocks(&accumulated);
+                    let reply = strip_variable_tags(settings, &parsed.reply);
+                    db::update_message_generation(
+                        pool,
+                        message_id,
+                        &reply,
+                        &parsed.thought,
+                        thought_duration_ms.filter(|_| !parsed.thought.is_empty()),
+                        false,
+                    )
+                    .await?;
+                } else {
+                    db::set_thought_in_progress(pool, message_id, false).await?;
                 }
                 return Ok(());
             }
@@ -406,7 +422,9 @@ async fn run_chat_job(
             let parsed = parse_thought_blocks(&accumulated);
             let (duration_ms, in_progress) =
                 thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
-            let final_duration = if in_progress {
+            let final_duration = if parsed.thought.is_empty() {
+                None
+            } else if in_progress {
                 duration_ms
                     .or_else(|| thought_started_at.map(|start| start.elapsed().as_millis() as i64))
             } else {

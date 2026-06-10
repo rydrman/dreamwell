@@ -233,6 +233,19 @@ still reasoning";
     }
 
     #[test]
+    fn empty_complete_thought_block_has_no_thought_text() {
+        for input in [
+            "<thinking></thinking>Hello",
+            "<|channel>thought\n<channel|>Hello",
+            "<think>  </think>Hi",
+        ] {
+            let parsed = parse_thought_blocks(input);
+            assert_eq!(parsed.thought, "", "input: {input}");
+            assert!(parsed.thought_complete);
+        }
+    }
+
+    #[test]
     fn leaves_text_without_blocks_unchanged() {
         let input = "Just a normal roleplay reply.";
         assert_eq!(strip_thought_blocks(input), input);

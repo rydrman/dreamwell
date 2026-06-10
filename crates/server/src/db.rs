@@ -559,6 +559,19 @@ pub async fn clear_message_thoughts(pool: &SqlitePool, message_id: i64) -> AppRe
     Ok(())
 }
 
+pub async fn set_thought_in_progress(
+    pool: &SqlitePool,
+    message_id: i64,
+    in_progress: bool,
+) -> AppResult<()> {
+    sqlx::query("UPDATE messages SET thought_in_progress = ?1 WHERE id = ?2")
+        .bind(in_progress as i64)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn finalize_message_generation(
     pool: &SqlitePool,
     message_id: i64,
