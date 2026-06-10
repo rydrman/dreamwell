@@ -28,9 +28,10 @@ pub fn parse_thought_blocks(text: &str) -> ParsedThoughts {
 ",
     );
     let reply_source = if has_unclosed { reply } else { remainder };
-    let reply = collapse_spaces(reply_source.trim());
+    let (reply, reply_channel_pending) = strip_reply_channel_prefix(&reply_source);
+    let reply = collapse_spaces(reply.trim());
 
-    let thought_complete = !has_unclosed;
+    let thought_complete = !has_unclosed && !reply_channel_pending;
     ParsedThoughts {
         thought,
         reply,
@@ -110,6 +111,49 @@ fn extract_unclosed(text: &str) -> (String, String, bool) {
         text[..pos].trim().to_string(),
         true,
     )
+}
+
+/// Gemma 4 may emit a final-answer channel opener after the thought block closes.
+/// Strip it from the visible reply and hold back partial prefixes while streaming.
+fn strip_reply_channel_prefix(text: &str) -> (String, bool) {
+    let mut working = text;
+    loop {
+        let trimmed = working.trim_start();
+        if trimmed.len() != working.len() {
+            working = trimmed;
+        }
+        if let Some(rest) = working.strip_prefix("<|channel|>") {
+            working = rest;
+            continue;
+        }
+        if let Some(rest) = working.strip_prefix("final\n") {
+            working = rest;
+            continue;
+        }
+        break;
+    }
+
+    let holdback = trailing_partial_control_prefix(working);
+    let visible_len = working.len().saturating_sub(holdback);
+    let visible = working[..visible_len].trim();
+    let had_control_tokens = working.len() != text.trim().len() || holdback > 0;
+    let pending =
+        holdback > 0 || (visible.is_empty() && had_control_tokens && !text.trim().is_empty());
+
+    (visible.to_string(), pending)
+}
+
+fn trailing_partial_control_prefix(text: &str) -> usize {
+    const TAGS: &[&str] = &["<|channel|>", "<|channel>", "<channel|>", "<turn|>"];
+    let mut max_len = 0;
+    for tag in TAGS {
+        for i in 1..tag.len() {
+            if text.ends_with(&tag[..i]) {
+                max_len = max_len.max(i);
+            }
+        }
+    }
+    max_len
 }
 
 fn collapse_spaces(text: &str) -> String {
@@ -255,5 +299,35 @@ still reasoning";
     fn is_case_insensitive_for_tags() {
         let input = "<THINKING>notes</THINKING> Hi";
         assert_eq!(strip_thought_blocks(input), "Hi");
+    }
+
+    #[test]
+    fn strips_gemma_final_channel_opener() {
+        let input = "<|channel>thought
+planning here<channel|><|channel|>Hello there";
+        let parsed = parse_thought_blocks(input);
+        assert_eq!(parsed.thought, "planning here");
+        assert_eq!(parsed.reply, "Hello there");
+        assert!(parsed.thought_complete);
+    }
+
+    #[test]
+    fn holds_back_partial_final_channel_opener_during_streaming() {
+        let input = "<|channel>thought
+planning here<channel|><|channel|";
+        let parsed = parse_thought_blocks(input);
+        assert_eq!(parsed.thought, "planning here");
+        assert_eq!(parsed.reply, "");
+        assert!(!parsed.thought_complete);
+    }
+
+    #[test]
+    fn holds_back_lone_final_channel_opener_during_streaming() {
+        let input = "<|channel>thought
+planning here<channel|><|channel|>";
+        let parsed = parse_thought_blocks(input);
+        assert_eq!(parsed.thought, "planning here");
+        assert_eq!(parsed.reply, "");
+        assert!(!parsed.thought_complete);
     }
 }
