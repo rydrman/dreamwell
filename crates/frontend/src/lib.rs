@@ -1375,7 +1375,6 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let menu_open = use_state(|| false);
     let mode = use_state(|| MessageBubbleMode::View);
     let edit_text = use_state(String::new);
-    let rewind = use_state(|| false);
     let acting = use_state(|| false);
 
     let role = match props.message.role {
@@ -1391,9 +1390,8 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let show_regenerate = props.message.role == MessageRole::Assistant;
     let show_thought_block = props.show_thoughts
         && props.message.role == MessageRole::Assistant
-        && (props.message.thought_in_progress
-            || !props.message.thought_content.is_empty()
-            || props.message.thought_duration_ms.is_some());
+        && (!props.message.thought_content.is_empty()
+            || (props.message.thought_in_progress && active));
     let show_variable_updates = props.show_variables
         && props.message.role == MessageRole::Assistant
         && !props.message.variable_updates.is_empty();
@@ -1423,20 +1421,13 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let save_edit = {
         let mode = mode.clone();
         let edit_text = edit_text.clone();
-        let rewind = rewind.clone();
         let acting = acting.clone();
         let on_changed = props.on_changed.clone();
         let chat_id = props.chat_id;
         let message_id = props.message.id;
-        let after_count = props.after_count;
         Callback::from(move |_| {
             let content = (*edit_text).trim().to_string();
             if content.is_empty() || *acting {
-                return;
-            }
-            let rewind_enabled = *rewind;
-            let delete_count = if rewind_enabled { after_count } else { 0 };
-            if !confirm_delete_after(delete_count) {
                 return;
             }
             acting.set(true);
@@ -1444,7 +1435,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             let acting = acting.clone();
             let on_changed = on_changed.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                match api::update_message(chat_id, message_id, &content, rewind_enabled).await {
+                match api::update_message(chat_id, message_id, &content, false).await {
                     Ok(_) => {
                         mode.set(MessageBubbleMode::View);
                         on_changed.emit(());
@@ -1460,9 +1451,40 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         })
     };
 
+    let rewind_here = {
+        let menu_open = menu_open.clone();
+        let acting = acting.clone();
+        let on_changed = props.on_changed.clone();
+        let chat_id = props.chat_id;
+        let message_id = props.message.id;
+        let after_count = props.after_count;
+        Callback::from(move |_| {
+            if *acting || after_count == 0 {
+                return;
+            }
+            if !confirm_delete_after(after_count) {
+                return;
+            }
+            menu_open.set(false);
+            acting.set(true);
+            let acting = acting.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::rewind_message(chat_id, message_id).await {
+                    Ok(_) => on_changed.emit(()),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&format!("Could not rewind: {err}"));
+                        }
+                    }
+                }
+                acting.set(false);
+            });
+        })
+    };
+
     let regenerate = {
         let menu_open = menu_open.clone();
-        let rewind = rewind.clone();
         let acting = acting.clone();
         let on_changed = props.on_changed.clone();
         let chat_id = props.chat_id;
@@ -1473,12 +1495,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             if *acting {
                 return;
             }
-            let rewind_enabled = *rewind;
-            let delete_count = if !is_last || rewind_enabled {
-                after_count
-            } else {
-                0
-            };
+            let delete_count = if is_last { 0 } else { after_count };
             if !confirm_delete_after(delete_count) {
                 return;
             }
@@ -1487,7 +1504,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             let acting = acting.clone();
             let on_changed = on_changed.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                match api::regenerate_message(chat_id, message_id, rewind_enabled).await {
+                match api::regenerate_message(chat_id, message_id, false).await {
                     Ok(_) => on_changed.emit(()),
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
@@ -1541,22 +1558,18 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                                 if show_regenerate {
                                     <button type="button" class="message-menu-item" onclick={regenerate}>{"Regenerate"}</button>
                                 }
-                                <label class="message-menu-rewind">
-                                    <input
-                                        type="checkbox"
-                                        checked={*rewind}
-                                        disabled={props.after_count == 0}
-                                        onclick={Callback::from({
-                                            let rewind = rewind.clone();
-                                            move |_| rewind.set(!*rewind)
-                                        })}
-                                    />
+                                <button
+                                    type="button"
+                                    class="message-menu-item message-menu-item--rewind"
+                                    onclick={rewind_here}
+                                    disabled={props.after_count == 0 || *acting}
+                                >
                                     if props.after_count == 0 {
-                                        <span>{"Rewind (nothing after)"}</span>
+                                        {"Rewind here (nothing after)"}
                                     } else {
-                                        <span>{ format!("Rewind (delete {after} after)", after = props.after_count) }</span>
+                                        { format!("Rewind here (delete {after} after)", after = props.after_count) }
                                     }
-                                </label>
+                                </button>
                             </div>
                         }
                     </div>
@@ -1587,25 +1600,19 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                         { if *acting { "Saving…" } else { "Save" } }
                     </button>
                     <button type="button" class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
-                    <label class="message-menu-rewind">
-                        <input
-                            type="checkbox"
-                            checked={*rewind}
-                            disabled={props.after_count == 0}
-                            onclick={Callback::from({
-                                let rewind = rewind.clone();
-                                move |_| rewind.set(!*rewind)
-                            })}
-                        />
-                        if props.after_count == 0 {
-                            <span>{"Rewind (nothing after)"}</span>
-                        } else {
-                            <span>{ format!("Rewind (delete {after} after)", after = props.after_count) }</span>
-                        }
-                    </label>
                 </div>
             } else if props.message.content.is_empty() && active {
                 { "…" }
+            } else if props.message.content.is_empty()
+                && props.message.role == MessageRole::Assistant
+                && !props.message.thought_content.is_empty()
+            {
+                <span class="muted">{"(No reply text — see thought block above)"}</span>
+            } else if props.message.content.is_empty()
+                && props.message.role == MessageRole::Assistant
+                && !active
+            {
+                <span class="muted">{"(Empty response)"}</span>
             } else {
                 { props.rendered_content.clone() }
             }
@@ -1695,6 +1702,7 @@ fn message_list(props: &MessageListProps) -> Html {
                     };
                     html! {
                         <MessageBubble
+                            key={m.id}
                             message={m.clone()}
                             chat_id={chat_id}
                             is_last={is_last}
