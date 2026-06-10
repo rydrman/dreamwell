@@ -255,6 +255,17 @@ pub async fn regenerate_message(
     .await
 }
 
+pub async fn rewind_message(chat_id: i64, message_id: i64) -> Result<(), String> {
+    api_request(
+        "DELETE",
+        &format!("/api/chats/{chat_id}/messages/{message_id}"),
+    )
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub async fn get_queue() -> Result<QueueStatus, String> {
     json(api_request("GET", "/api/chats/queue")).await
 }
