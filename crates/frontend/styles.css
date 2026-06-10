@@ -580,28 +580,41 @@ input.header-title {
   line-height: 1;
 }
 
-.message-variable-updates-summary {
-  padding: 0 0.75rem 0.65rem;
-  font-size: 0.8125rem;
-  line-height: 1.45;
-  word-break: break-word;
-}
-
 .message-variable-updates-body {
-  padding: 0 0.75rem 0.65rem;
+  padding: 0.5rem 0.75rem 0.65rem;
   border-top: 1px solid var(--border);
 }
 
-.message-variable-update-item {
+.message-variable-updates-grid {
+  display: grid;
+  grid-template-columns: minmax(5rem, max-content) 1fr;
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+}
+
+.message-variable-updates-grid-header {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.message-variable-updates-key {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--fg);
+  word-break: break-word;
+}
+
+.message-variable-updates-value {
   font-size: 0.8125rem;
   line-height: 1.45;
   color: var(--muted);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.message-variable-update-item + .message-variable-update-item {
-  margin-top: 0.35rem;
 }
 
 .message {
