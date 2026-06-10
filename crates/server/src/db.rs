@@ -528,6 +528,76 @@ pub async fn update_message_content(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct MessageGenerationSnapshot {
+    pub content: String,
+    pub thought_content: String,
+    pub thought_duration_ms: Option<i64>,
+    pub thought_in_progress: bool,
+}
+
+pub async fn get_message_generation_snapshot(
+    pool: &SqlitePool,
+    message_id: i64,
+) -> AppResult<MessageGenerationSnapshot> {
+    let row = sqlx::query_as::<_, (String, String, Option<i64>, i64)>(
+        "SELECT content, thought_content, thought_duration_ms, thought_in_progress FROM messages WHERE id = ?1",
+    )
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("Message not found"))?;
+    Ok(MessageGenerationSnapshot {
+        content: row.0,
+        thought_content: row.1,
+        thought_duration_ms: row.2,
+        thought_in_progress: row.3 != 0,
+    })
+}
+
+/// Avoid wiping previously saved generation text when a retried or empty stream
+/// would write blank fields over a completed message.
+fn merge_generation_fields(
+    current: &MessageGenerationSnapshot,
+    content: &str,
+    thought_content: &str,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: bool,
+) -> (String, String, Option<i64>, bool) {
+    let kept_content = content.is_empty() && !current.content.is_empty();
+    let kept_thought = thought_content.is_empty() && !current.thought_content.is_empty();
+
+    let final_content = if kept_content {
+        current.content.clone()
+    } else {
+        content.to_string()
+    };
+    let final_thought = if kept_thought {
+        current.thought_content.clone()
+    } else {
+        thought_content.to_string()
+    };
+    let final_duration = if kept_thought {
+        current.thought_duration_ms.or(thought_duration_ms)
+    } else if final_thought.is_empty() {
+        None
+    } else {
+        thought_duration_ms
+    };
+    let final_in_progress = if kept_content || kept_thought {
+        false
+    } else {
+        thought_in_progress
+    };
+
+    (
+        final_content,
+        final_thought,
+        final_duration,
+        final_in_progress,
+    )
+}
+
 pub async fn update_message_generation(
     pool: &SqlitePool,
     message_id: i64,
@@ -536,11 +606,20 @@ pub async fn update_message_generation(
     thought_duration_ms: Option<i64>,
     thought_in_progress: bool,
 ) -> AppResult<()> {
+    let current = get_message_generation_snapshot(pool, message_id).await?;
+    let (content, thought_content, thought_duration_ms, thought_in_progress) =
+        merge_generation_fields(
+            &current,
+            content,
+            thought_content,
+            thought_duration_ms,
+            thought_in_progress,
+        );
     sqlx::query(
         "UPDATE messages SET content = ?1, thought_content = ?2, thought_duration_ms = ?3, thought_in_progress = ?4 WHERE id = ?5",
     )
-    .bind(content)
-    .bind(thought_content)
+    .bind(&content)
+    .bind(&thought_content)
     .bind(thought_duration_ms)
     .bind(thought_in_progress as i64)
     .bind(message_id)
@@ -581,13 +660,22 @@ pub async fn finalize_message_generation(
     thought_in_progress: bool,
     variable_updates: &[dreamwell_types::MessageVariableUpdate],
 ) -> AppResult<()> {
+    let current = get_message_generation_snapshot(pool, message_id).await?;
+    let (content, thought_content, thought_duration_ms, thought_in_progress) =
+        merge_generation_fields(
+            &current,
+            content,
+            thought_content,
+            thought_duration_ms,
+            thought_in_progress,
+        );
     let variable_updates_json = serde_json::to_string(variable_updates)
         .map_err(|e| AppError::internal(format!("serialize variable updates: {e}")))?;
     sqlx::query(
         "UPDATE messages SET content = ?1, thought_content = ?2, thought_duration_ms = ?3, thought_in_progress = ?4, variable_updates = ?5 WHERE id = ?6",
     )
-    .bind(content)
-    .bind(thought_content)
+    .bind(&content)
+    .bind(&thought_content)
     .bind(thought_duration_ms)
     .bind(thought_in_progress as i64)
     .bind(variable_updates_json)
@@ -1149,5 +1237,56 @@ impl SettingsRow {
             max_context_messages: self.max_context_messages,
             max_concurrent_jobs: MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst),
         }
+    }
+}
+
+#[cfg(test)]
+mod generation_merge_tests {
+    use super::*;
+
+    #[test]
+    fn merge_keeps_nonempty_fields_when_incoming_empty() {
+        let current = MessageGenerationSnapshot {
+            content: "Full reply".into(),
+            thought_content: "reasoning".into(),
+            thought_duration_ms: Some(1000),
+            thought_in_progress: false,
+        };
+        let (content, thought, duration, in_progress) =
+            merge_generation_fields(&current, "", "", None, true);
+        assert_eq!(content, "Full reply");
+        assert_eq!(thought, "reasoning");
+        assert_eq!(duration, Some(1000));
+        assert!(!in_progress);
+    }
+
+    #[test]
+    fn merge_allows_writing_into_empty_message() {
+        let current = MessageGenerationSnapshot {
+            content: String::new(),
+            thought_content: String::new(),
+            thought_duration_ms: None,
+            thought_in_progress: true,
+        };
+        let (content, thought, duration, in_progress) =
+            merge_generation_fields(&current, "Hello", "plan", Some(500), false);
+        assert_eq!(content, "Hello");
+        assert_eq!(thought, "plan");
+        assert_eq!(duration, Some(500));
+        assert!(!in_progress);
+    }
+
+    #[test]
+    fn merge_allows_overwriting_with_new_content() {
+        let current = MessageGenerationSnapshot {
+            content: "Old".into(),
+            thought_content: String::new(),
+            thought_duration_ms: None,
+            thought_in_progress: false,
+        };
+        let (content, thought, _, _) =
+            merge_generation_fields(&current, "New reply", "", None, false);
+        assert_eq!(content, "New reply");
+        assert!(thought.is_empty());
     }
 }
