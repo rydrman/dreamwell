@@ -338,6 +338,17 @@ async fn run_chat_job(
         .message_id
         .ok_or_else(|| AppError::internal("chat job missing message_id"))?;
 
+    let existing = db::get_message_generation_snapshot(pool, message_id).await?;
+    if !existing.content.is_empty() && !existing.thought_in_progress {
+        tracing::warn!(
+            job_id,
+            message_id,
+            "message already has generated content; completing job without re-running"
+        );
+        db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+        return Ok(());
+    }
+
     let chat = db::get_chat(pool, chat_id).await?;
     let messages =
         build_messages_for_inference(pool, chat_id, &chat.summary, chat.character_id, settings)
@@ -417,6 +428,24 @@ async fn run_chat_job(
         return cancel_job_record(pool, job).await;
     }
 
+    if accumulated.trim().is_empty() {
+        db::update_message_content(
+            pool,
+            message_id,
+            "[Generation failed: model returned no text]",
+        )
+        .await?;
+        db::set_thought_in_progress(pool, message_id, false).await?;
+        db::complete_job(
+            pool,
+            job_id,
+            JobStatus::Failed,
+            Some("model returned no text".to_string()),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let (processed, thought_content, thought_duration_ms, _thought_in_progress) =
         if settings.thought_blocks_enabled {
             let parsed = parse_thought_blocks(&accumulated);
@@ -439,6 +468,12 @@ async fn run_chat_job(
                 false,
             )
         };
+
+    let processed = if processed.is_empty() && thought_content.is_empty() {
+        display_generated_text(settings, &accumulated)
+    } else {
+        processed
+    };
 
     let (content_to_save, updates) = if settings.variables_enabled {
         extract_variables_from_text(&processed)

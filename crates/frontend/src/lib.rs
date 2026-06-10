@@ -1702,6 +1702,7 @@ fn message_list(props: &MessageListProps) -> Html {
                     };
                     html! {
                         <MessageBubble
+                            key={m.id}
                             message={m.clone()}
                             chat_id={chat_id}
                             is_last={is_last}
