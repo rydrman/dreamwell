@@ -584,7 +584,9 @@ fn merge_generation_fields(
     } else {
         thought_duration_ms
     };
-    let final_in_progress = if kept_content || kept_thought {
+    // Preserve in-progress state when a transient empty thought update would
+    // otherwise keep prior reasoning text during active streaming.
+    let final_in_progress = if kept_content {
         false
     } else {
         thought_in_progress
@@ -1288,5 +1290,18 @@ mod generation_merge_tests {
             merge_generation_fields(&current, "New reply", "", None, false);
         assert_eq!(content, "New reply");
         assert!(thought.is_empty());
+    }
+
+    #[test]
+    fn merge_preserves_in_progress_when_keeping_thought_during_stream() {
+        let current = MessageGenerationSnapshot {
+            content: String::new(),
+            thought_content: "reasoning".into(),
+            thought_duration_ms: None,
+            thought_in_progress: true,
+        };
+        let (_, thought, _, in_progress) = merge_generation_fields(&current, "", "", None, true);
+        assert_eq!(thought, "reasoning");
+        assert!(in_progress);
     }
 }
