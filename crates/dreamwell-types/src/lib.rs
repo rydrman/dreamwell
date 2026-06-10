@@ -387,6 +387,10 @@ pub struct Settings {
     pub variables_enabled: bool,
     pub thought_blocks_enabled: bool,
     pub max_context_messages: i64,
+    /// Total model context window (prompt + response). Used for budgeting hints.
+    pub context_tokens: i64,
+    /// When true, selecting a model probes the backend and updates context_tokens.
+    pub auto_context_on_model_change: bool,
     pub max_concurrent_jobs: i64,
 }
 
@@ -407,6 +411,8 @@ pub struct SettingsUpdate {
     pub variables_enabled: Option<bool>,
     pub thought_blocks_enabled: Option<bool>,
     pub max_context_messages: Option<i64>,
+    pub context_tokens: Option<i64>,
+    pub auto_context_on_model_change: Option<bool>,
     pub max_concurrent_jobs: Option<i64>,
 }
 
@@ -414,6 +420,49 @@ pub struct SettingsUpdate {
 pub struct ModelInfo {
     pub id: String,
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelCapabilities {
+    pub model: String,
+    pub context_length: Option<i64>,
+    pub context_source: Option<String>,
+}
+
+/// Suggested response length when auto-tuning after context detection.
+pub fn suggested_response_tokens(context_tokens: i64) -> i64 {
+    if context_tokens <= 0 {
+        return 512;
+    }
+    (context_tokens / 8).clamp(256, 4096)
+}
+
+/// Tokens available for the prompt after reserving response length.
+pub fn prompt_token_budget(context_tokens: i64, response_tokens: i64) -> i64 {
+    if context_tokens <= 0 {
+        return 0;
+    }
+    (context_tokens - response_tokens).max(0)
+}
+
+#[cfg(test)]
+mod context_budget_tests {
+    use super::{prompt_token_budget, suggested_response_tokens};
+
+    #[test]
+    fn suggested_response_scales_with_context() {
+        assert_eq!(suggested_response_tokens(8192), 1024);
+        assert_eq!(suggested_response_tokens(2048), 256);
+    }
+
+    #[test]
+    fn prompt_budget_subtracts_response() {
+        assert_eq!(prompt_token_budget(8192, 1024), 7168);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

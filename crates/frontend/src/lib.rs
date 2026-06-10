@@ -2876,8 +2876,25 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         variables_enabled: Some(current.variables_enabled),
         thought_blocks_enabled: Some(current.thought_blocks_enabled),
         max_context_messages: Some(current.max_context_messages),
+        context_tokens: Some(current.context_tokens),
+        auto_context_on_model_change: Some(current.auto_context_on_model_change),
         max_concurrent_jobs: Some(current.max_concurrent_jobs),
     }
+}
+
+fn apply_detected_context(save_ctx: &SettingsSaveContext, caps: &ModelCapabilities) {
+    let Some(ctx) = caps.context_length else {
+        return;
+    };
+    save_ctx.update_field(|current| {
+        if !current.auto_context_on_model_change {
+            return;
+        }
+        current.context_tokens = ctx;
+        if current.max_tokens >= ctx {
+            current.max_tokens = suggested_response_tokens(ctx);
+        }
+    });
 }
 
 fn settings_save_status_html(phase: &SettingsSavePhase) -> Html {
@@ -2920,10 +2937,14 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
     let phase = save_ctx.phase.clone();
     let models = use_state(Vec::<ModelInfo>::new);
     let model_error = use_state(|| None::<String>);
+    let detected_caps = use_state(|| None::<ModelCapabilities>);
+    let caps_busy = use_state(|| false);
 
     let Some(s) = (*draft).clone() else {
         return html! { <p class="muted">{"Loading settings…"}</p> };
     };
+
+    let prompt_budget = prompt_token_budget(s.context_tokens, s.max_tokens);
 
     html! {
         <div>
@@ -2945,9 +2966,30 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     <span class="muted">{"Model"}</span>
                     <select title={s.model.clone()} onchange={{
                         let save_ctx = save_ctx.clone();
+                        let detected_caps = detected_caps.clone();
+                        let caps_busy = caps_busy.clone();
                         Callback::from(move |e: Event| {
                             let input: HtmlInputElement = e.target_unchecked_into();
-                            save_ctx.update_field(|current| current.model = input.value());
+                            let model = input.value();
+                            save_ctx.update_field(|current| current.model = model.clone());
+                            if model.is_empty() {
+                                detected_caps.set(None);
+                                return;
+                            }
+                            let save_ctx = save_ctx.clone();
+                            let detected_caps = detected_caps.clone();
+                            let caps_busy = caps_busy.clone();
+                            caps_busy.set(true);
+                            wasm_bindgen_futures::spawn_local(async move {
+                                match api::get_model_capabilities(&model).await {
+                                    Ok(caps) => {
+                                        apply_detected_context(&save_ctx, &caps);
+                                        detected_caps.set(Some(caps));
+                                    }
+                                    Err(_) => detected_caps.set(None),
+                                }
+                                caps_busy.set(false);
+                            });
                         })
                     }}>
                         <option value="">{"Select a model"}</option>
@@ -2983,10 +3025,86 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             if let Some(err) = &*model_error {
                 <p class="text-danger">{ err }</p>
             }
+            if *caps_busy {
+                <p class="muted">{"Detecting model context…"}</p>
+            } else if let Some(caps) = &*detected_caps {
+                if let Some(ctx) = caps.context_length {
+                    <p class="muted">{
+                        format!(
+                            "Detected context: {} tokens ({})",
+                            ctx,
+                            caps.context_source.clone().unwrap_or_else(|| "unknown".into())
+                        )
+                    }</p>
+                } else {
+                    <p class="muted">{"Could not detect context for this backend — set it manually."}</p>
+                }
+            }
+            <div class="settings-group">
+                <strong>{"Context budget"}</strong>
+                <p class="muted" style="margin:0.35rem 0 0.5rem;">
+                    {"Total context is split between the prompt (history + character) and the response. Lower response length leaves more room for chat history."}
+                </p>
+                <label style="display:flex;gap:0.5rem;align-items:center;margin:0.5rem 0;">
+                    <input type="checkbox" checked={s.auto_context_on_model_change} onclick={{
+                        let save_ctx = save_ctx.clone();
+                        Callback::from(move |_| {
+                            save_ctx.update_field(|current| {
+                                current.auto_context_on_model_change = !current.auto_context_on_model_change;
+                            });
+                        })
+                    }} />
+                    {"Auto-set context when model changes"}
+                </label>
+                <div class="settings-params-grid">
+                    <label class="field">
+                        <span class="muted">{"Context (tokens)"}</span>
+                        <input type="number" value={s.context_tokens.to_string()} oninput={num_input(save_ctx.clone(), "context_tokens")} />
+                    </label>
+                    <label class="field">
+                        <span class="muted">{"Response length (tokens)"}</span>
+                        <input type="number" value={s.max_tokens.to_string()} oninput={num_input(save_ctx.clone(), "max_tokens")} />
+                    </label>
+                    <label class="field">
+                        <span class="muted">{"Max history messages"}</span>
+                        <input type="number" value={s.max_context_messages.to_string()} oninput={num_input(save_ctx.clone(), "max_context_messages")} />
+                    </label>
+                </div>
+                if s.context_tokens > 0 {
+                    <p class="muted" style="margin:0;">
+                        { format!("Prompt budget: ~{prompt_budget} tokens (context − response)") }
+                    </p>
+                }
+                <button class="btn secondary" style="margin-top:0.5rem;" disabled={s.model.is_empty() || *caps_busy} onclick={{
+                    let save_ctx = save_ctx.clone();
+                    let detected_caps = detected_caps.clone();
+                    let caps_busy = caps_busy.clone();
+                    let model = s.model.clone();
+                    Callback::from(move |_| {
+                        if model.is_empty() {
+                            return;
+                        }
+                        let save_ctx = save_ctx.clone();
+                        let detected_caps = detected_caps.clone();
+                        let caps_busy = caps_busy.clone();
+                        let model = model.clone();
+                        caps_busy.set(true);
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match api::get_model_capabilities(&model).await {
+                                Ok(caps) => {
+                                    apply_detected_context(&save_ctx, &caps);
+                                    detected_caps.set(Some(caps));
+                                }
+                                Err(_) => detected_caps.set(None),
+                            }
+                            caps_busy.set(false);
+                        });
+                    })
+                }}>{"Detect context from backend"}</button>
+            </div>
             <div class="settings-params-grid">
                 <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(save_ctx.clone(), "temperature")} /></label>
                 <label class="field"><span class="muted">{"Top P"}</span><input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(save_ctx.clone(), "top_p")} /></label>
-                <label class="field"><span class="muted">{"Max tokens"}</span><input type="number" value={s.max_tokens.to_string()} oninput={num_input(save_ctx.clone(), "max_tokens")} /></label>
                 <label class="field"><span class="muted">{"Max concurrent jobs"}</span><input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(save_ctx.clone(), "max_concurrent_jobs")} /></label>
             </div>
             <label class="field"><span class="muted">{"User name ({{user}})"}</span><input value={s.user_name.clone()} oninput={text_input(save_ctx.clone(), "user_name")} /></label>
@@ -3114,7 +3232,9 @@ fn num_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<Inp
             save_ctx.update_field(move |current| match field {
                 "temperature" => current.temperature = v,
                 "top_p" => current.top_p = v,
-                "max_tokens" => current.max_tokens = v as i64,
+                "max_tokens" => current.max_tokens = (v as i64).max(1),
+                "context_tokens" => current.context_tokens = (v as i64).max(0),
+                "max_context_messages" => current.max_context_messages = (v as i64).max(0),
                 "max_concurrent_jobs" => current.max_concurrent_jobs = (v as i64).max(1),
                 "summarize_after_messages" => current.summarize_after_messages = v as i64,
                 "summarize_keep_recent" => current.summarize_keep_recent = v as i64,

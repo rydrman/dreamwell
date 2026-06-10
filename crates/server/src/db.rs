@@ -762,7 +762,7 @@ pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, key: &str) -> AppR
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages FROM app_settings WHERE id = 1",
+        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages, context_tokens, auto_context_on_model_change FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
@@ -816,13 +816,19 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     if let Some(v) = payload.max_context_messages {
         current.max_context_messages = v;
     }
+    if let Some(v) = payload.context_tokens {
+        current.context_tokens = v.max(0);
+    }
+    if let Some(v) = payload.auto_context_on_model_change {
+        current.auto_context_on_model_change = v;
+    }
     if let Some(v) = payload.max_concurrent_jobs {
         MAX_CONCURRENT_JOBS.store(v.max(1), std::sync::atomic::Ordering::SeqCst);
         current.max_concurrent_jobs = v.max(1);
     }
 
     sqlx::query(
-        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_after_messages=?11, summarize_keep_recent=?12, variables_enabled=?13, thought_blocks_enabled=?14, max_context_messages=?15 WHERE id=1",
+        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_after_messages=?11, summarize_keep_recent=?12, variables_enabled=?13, thought_blocks_enabled=?14, max_context_messages=?15, context_tokens=?16, auto_context_on_model_change=?17 WHERE id=1",
     )
     .bind(&current.inference_url)
     .bind(&current.model)
@@ -839,6 +845,8 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     .bind(current.variables_enabled as i64)
     .bind(current.thought_blocks_enabled as i64)
     .bind(current.max_context_messages)
+    .bind(current.context_tokens)
+    .bind(current.auto_context_on_model_change as i64)
     .execute(pool)
     .await?;
     get_settings(pool).await
@@ -1217,6 +1225,8 @@ struct SettingsRow {
     variables_enabled: i64,
     thought_blocks_enabled: i64,
     max_context_messages: i64,
+    context_tokens: i64,
+    auto_context_on_model_change: i64,
 }
 
 impl SettingsRow {
@@ -1237,6 +1247,8 @@ impl SettingsRow {
             variables_enabled: self.variables_enabled != 0,
             thought_blocks_enabled: self.thought_blocks_enabled != 0,
             max_context_messages: self.max_context_messages,
+            context_tokens: self.context_tokens,
+            auto_context_on_model_change: self.auto_context_on_model_change != 0,
             max_concurrent_jobs: MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst),
         }
     }

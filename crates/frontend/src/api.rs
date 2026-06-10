@@ -364,6 +364,15 @@ pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
     json(api_request("GET", "/api/settings/models")).await
 }
 
+pub async fn get_model_capabilities(model: &str) -> Result<ModelCapabilities, String> {
+    let encoded = js_sys::encode_uri_component(model);
+    json(api_request(
+        "GET",
+        &format!("/api/settings/model-capabilities?model={encoded}"),
+    ))
+    .await
+}
+
 pub async fn import_character(file: &web_sys::File) -> Result<Character, String> {
     let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
     form.append_with_blob("file", file)
