@@ -16,12 +16,12 @@ cleanup() {
 
 trap 'cleanup; exit 130' INT TERM
 
-make build
+make build-server
 
 (cd crates/frontend && env -u NO_COLOR "$TRUNK" watch --release) &
 trunk_pid=$!
 
-export DREAMWELL_STATIC_DIR=crates/frontend/dist
+export DREAMWELL_STATIC_DIR=.frontend-dist
 export DREAMWELL_DATABASE_URL="${DREAMWELL_DATABASE_URL:-sqlite:/app/data/dreamwell.db}"
 
 cargo watch \

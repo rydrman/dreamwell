@@ -58,7 +58,7 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                         let status = chat_status(chat);
                         let selected = props.selected_chat_id == Some(chat.id);
                         html! {
-                            <div class={classes!("chat-item", selected.then_some("selected"))}>
+                            <div key={id} class={classes!("chat-item", selected.then_some("selected"))}>
                                 <div style="display:flex;gap:0.5rem;align-items:flex-start;">
                                     <div style="flex:1;min-width:0;" onclick={props.on_select_chat.reform(move |_| id)}>
                                         <div class="chat-item-title">{ &chat.title }</div>
@@ -116,7 +116,7 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                                     .archived_at
                                     .map(dreamwell_types::days_until_chat_archive_purge);
                                 html! {
-                                    <div class="chat-item archived">
+                                    <div key={id} class="chat-item archived">
                                         <div class="archive-item-title">{ &chat.title }</div>
                                         <div class="chat-character">{ &chat.character_name }</div>
                                         if let Some(days) = days_left {
