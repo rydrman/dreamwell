@@ -5,6 +5,10 @@ metadata:
   namespace: dreamwell
   labels:
     app: dreamwell
+  annotations:
+    keel.sh/policy: force
+    keel.sh/trigger: poll
+    keel.sh/pollSchedule: "@every 10m"
 spec:
   replicas: 1
   strategy:
@@ -22,6 +26,7 @@ spec:
       containers:
         - name: dreamwell
           image: ghcr.io/rydrman/dreamwell:latest
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080

@@ -10,7 +10,7 @@ TRUNK_URL ?= $(TRUNK_BASE_URL)/$(TRUNK_VERSION)/$(TRUNK_ARCHIVE)
 
 KUBECONFIG ?= $(HOME)/work/homelab/kube_config_talos.yaml
 IMAGE ?= ghcr.io/rydrman/dreamwell
-IMAGE_TAG ?= $(shell git rev-parse --short HEAD)
+IMAGE_TAG ?= latest
 NAMESPACE ?= dreamwell
 
 COMPOSE_DEV ?= docker compose -f docker-compose.dev.yml
