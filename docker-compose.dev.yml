@@ -16,11 +16,11 @@ services:
       - dreamwell-cargo-git:/usr/local/cargo/git
       - dreamwell-target:/app/target
       - dreamwell-data:/app/data
-      - dreamwell-frontend-dist:/app/crates/frontend/dist
+      - dreamwell-frontend-dist:/app/.frontend-dist
       - dreamwell-trunk-cache:/root/.cache/trunk
     environment:
       CARGO_HOME: /usr/local/cargo
-      DREAMWELL_STATIC_DIR: crates/frontend/dist
+      DREAMWELL_STATIC_DIR: .frontend-dist
       DREAMWELL_DATABASE_URL: sqlite:/app/data/dreamwell.db
     entrypoint: ["/app/scripts/dev-run.sh"]
     develop:

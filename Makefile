@@ -62,12 +62,12 @@ run-docker:
 	exit $$status
 
 run-local: build
-	DREAMWELL_STATIC_DIR=crates/frontend/dist \
+	DREAMWELL_STATIC_DIR=.frontend-dist \
 	$(CARGO) run --release -p dreamwell-server
 
 clean:
 	$(CARGO) clean
-	rm -rf crates/frontend/dist
+	rm -rf .frontend-dist crates/frontend/dist
 
 docker:
 	DOCKER_BUILDKIT=1 docker build -t dreamwell:local .

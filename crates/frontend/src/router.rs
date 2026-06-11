@@ -250,6 +250,40 @@ impl AppRoute {
                 overlay: None,
                 sidebar: false,
             } => "/stories".to_string(),
+            Self::Stories {
+                story_id: None,
+                nav: StoryNav::Basics,
+                overlay: Some(overlay),
+                sidebar: true,
+            } => format!("/stories/{}/sidebar", overlay_segment(*overlay)),
+            Self::Stories {
+                story_id: Some(id),
+                nav: StoryNav::Basics,
+                overlay: Some(overlay),
+                sidebar: true,
+            } => format!("/stories/{id}/{}/sidebar", overlay_segment(*overlay)),
+            Self::Stories {
+                story_id: Some(id),
+                nav: StoryNav::Chapter(chapter_id),
+                overlay: Some(overlay),
+                sidebar: true,
+            } => format!(
+                "/stories/{id}/chapters/{chapter_id}/{}/sidebar",
+                overlay_segment(*overlay)
+            ),
+            Self::Stories {
+                story_id: Some(id),
+                nav:
+                    StoryNav::Beat {
+                        chapter_id,
+                        beat_id,
+                    },
+                overlay: Some(overlay),
+                sidebar: true,
+            } => format!(
+                "/stories/{id}/chapters/{chapter_id}/beats/{beat_id}/{}/sidebar",
+                overlay_segment(*overlay)
+            ),
             _ => "/chats".to_string(),
         }
     }

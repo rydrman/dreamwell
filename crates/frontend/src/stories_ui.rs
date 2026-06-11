@@ -156,28 +156,30 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         let stories = stories.clone();
         let on_navigate = props.on_navigate.clone();
         let route = props.route.clone();
-        use_effect_with(
-            (route.clone(), (*stories).clone()),
-            move |(route, stories)| {
-                if let AppRoute::Stories {
-                    story_id: Some(id), ..
-                } = route
-                {
-                    if !stories.iter().any(|s| s.id == *id) {
-                        on_navigate.emit((
-                            AppRoute::Stories {
-                                story_id: stories.first().map(|s| s.id),
-                                nav: StoryNav::Basics,
-                                overlay: None,
-                                sidebar: false,
-                            },
-                            false,
-                        ));
-                    }
+        let story_ids = {
+            let mut ids: Vec<i64> = stories.iter().map(|s| s.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+        use_effect_with((route.clone(), story_ids), move |(route, story_ids)| {
+            if let AppRoute::Stories {
+                story_id: Some(id), ..
+            } = route
+            {
+                if !story_ids.is_empty() && !story_ids.contains(id) {
+                    on_navigate.emit((
+                        AppRoute::Stories {
+                            story_id: story_ids.first().copied(),
+                            nav: StoryNav::Basics,
+                            overlay: None,
+                            sidebar: false,
+                        },
+                        false,
+                    ));
                 }
-                || ()
-            },
-        );
+            }
+            || ()
+        });
     }
 
     {

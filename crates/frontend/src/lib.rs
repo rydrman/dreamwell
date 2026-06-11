@@ -10,6 +10,10 @@ mod title_editor;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+thread_local! {
+    static APP: RefCell<Option<yew::AppHandle<App>>> = const { RefCell::new(None) };
+}
+
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
@@ -44,6 +48,137 @@ fn sidebar_open_from_route(route: &AppRoute) -> bool {
     )
 }
 
+#[derive(Clone, PartialEq)]
+struct ChatHeaderSnapshot {
+    id: i64,
+    title: String,
+    character_name: String,
+    character_id: i64,
+}
+
+fn chat_snapshot_storage_key(chat_id: i64, field: &str) -> String {
+    format!("dreamwell.chat.{chat_id}.{field}")
+}
+
+fn session_storage() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|w| w.session_storage().ok().flatten())
+}
+
+fn cache_chat_snapshot(chat: &Chat) {
+    let Some(storage) = session_storage() else {
+        return;
+    };
+    let _ = storage.set_item(&chat_snapshot_storage_key(chat.id, "title"), &chat.title);
+    let _ = storage.set_item(
+        &chat_snapshot_storage_key(chat.id, "character_name"),
+        &chat.character_name,
+    );
+    let _ = storage.set_item(
+        &chat_snapshot_storage_key(chat.id, "character_id"),
+        &chat.character_id.to_string(),
+    );
+}
+
+fn cached_chat_snapshot(chat_id: i64) -> Option<ChatHeaderSnapshot> {
+    let storage = session_storage()?;
+    let title = storage
+        .get_item(&chat_snapshot_storage_key(chat_id, "title"))
+        .ok()
+        .flatten()
+        .filter(|title| !title.is_empty())
+        .or_else(|| {
+            storage
+                .get_item(&format!("dreamwell.chat.{chat_id}.title"))
+                .ok()
+                .flatten()
+                .filter(|title| !title.is_empty())
+        })?;
+    let character_name = storage
+        .get_item(&chat_snapshot_storage_key(chat_id, "character_name"))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let character_id = storage
+        .get_item(&chat_snapshot_storage_key(chat_id, "character_id"))
+        .ok()
+        .flatten()
+        .and_then(|id| id.parse().ok())
+        .unwrap_or(0);
+    Some(ChatHeaderSnapshot {
+        id: chat_id,
+        title,
+        character_name,
+        character_id,
+    })
+}
+
+fn active_chat_header(
+    selected: &Option<Chat>,
+    selected_chat_id: Option<i64>,
+) -> Option<ChatHeaderSnapshot> {
+    if let Some(chat) = selected {
+        cache_chat_snapshot(chat);
+        return Some(ChatHeaderSnapshot {
+            id: chat.id,
+            title: chat.title.clone(),
+            character_name: chat.character_name.clone(),
+            character_id: chat.character_id,
+        });
+    }
+    if let Some(snapshot) = selected_chat_id.and_then(cached_chat_snapshot) {
+        return Some(snapshot);
+    }
+    selected_chat_id.map(|id| ChatHeaderSnapshot {
+        id,
+        title: "Chat".to_string(),
+        character_name: String::new(),
+        character_id: 0,
+    })
+}
+
+const CHATS_LIST_CACHE_KEY: &str = "dreamwell.chat_list";
+const ARCHIVED_CHATS_LIST_CACHE_KEY: &str = "dreamwell.archived_chat_list";
+
+fn load_cached_chat_list(key: &str) -> Vec<Chat> {
+    session_storage()
+        .and_then(|s| s.get_item(key).ok().flatten())
+        .and_then(|json| serde_json::from_str::<Vec<Chat>>(&json).ok())
+        .unwrap_or_default()
+}
+
+fn load_cached_chats() -> Vec<Chat> {
+    sort_chats(load_cached_chat_list(CHATS_LIST_CACHE_KEY))
+}
+
+fn load_cached_archived_chats() -> Vec<Chat> {
+    sort_archived_chats(load_cached_chat_list(ARCHIVED_CHATS_LIST_CACHE_KEY))
+}
+
+fn cache_chat_list(key: &str, chats: &[Chat]) {
+    let Some(storage) = session_storage() else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_string(chats) {
+        let _ = storage.set_item(key, &json);
+    }
+}
+
+fn publish_chats(chats: &UseStateHandle<Vec<Chat>>, next: Vec<Chat>) {
+    let next = sort_chats(next);
+    if **chats != next {
+        cache_chat_list(CHATS_LIST_CACHE_KEY, &next);
+        chats.set(next);
+    }
+}
+
+fn publish_archived_chats(archived_chats: &UseStateHandle<Vec<Chat>>, next: Vec<Chat>) {
+    let next = sort_archived_chats(next);
+    if **archived_chats != next {
+        cache_chat_list(ARCHIVED_CHATS_LIST_CACHE_KEY, &next);
+        archived_chats.set(next);
+    }
+}
+
 #[function_component(App)]
 fn app() -> Html {
     let router = use_router();
@@ -51,9 +186,9 @@ fn app() -> Html {
     let mode = route.mode();
     let selected_chat_id = chat_id_from_route(&route);
     let _selected_story_id = story_id_from_route(&route);
-    let chats = use_state(Vec::<Chat>::new);
+    let chats = use_state(load_cached_chats);
     let stories = use_state(Vec::<Story>::new);
-    let archived_chats = use_state(Vec::<Chat>::new);
+    let archived_chats = use_state(load_cached_archived_chats);
     let characters = use_state(Vec::<Character>::new);
     let messages = use_state(Vec::<Message>::new);
     let messages_loading = use_state(|| false);
@@ -87,13 +222,16 @@ fn app() -> Html {
         let settings = settings.clone();
         let stories = stories.clone();
         let loading = loading.clone();
+        let router = router.clone();
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
+                let mut chat_list = Vec::<Chat>::new();
                 if let Ok(list) = api::list_chats().await {
-                    chats.set(sort_chats(list));
+                    chat_list = sort_chats(list);
+                    publish_chats(&chats, chat_list.clone());
                 }
                 if let Ok(list) = api::list_archived_chats().await {
-                    archived_chats.set(sort_archived_chats(list));
+                    publish_archived_chats(&archived_chats, list);
                 }
                 if let Ok(list) = api::list_characters().await {
                     characters.set(list);
@@ -105,30 +243,15 @@ fn app() -> Html {
                     stories.set(list);
                 }
                 loading.set(false);
-            });
-            || ()
-        });
-    }
 
-    {
-        let chats = chats.clone();
-        let router = router.clone();
-        let route = route.clone();
-        let chat_ids = chats.iter().map(|c| c.id).collect::<Vec<_>>();
-        let chats_route = match route {
-            AppRoute::Chats {
-                chat_id,
-                overlay,
-                sidebar,
-            } => Some((chat_id, overlay, sidebar)),
-            _ => None,
-        };
-        use_effect_with((chats_route, chat_ids), move |(chats_route, chat_ids)| {
-            if let Some((chat_id, overlay, sidebar)) = chats_route {
-                if !chat_ids.is_empty() {
-                    match *chat_id {
-                        None if overlay.is_none() && !*sidebar => {
-                            if let Some(&id) = chat_ids.first() {
+                if !chat_list.is_empty() {
+                    match router.route() {
+                        AppRoute::Chats {
+                            chat_id: None,
+                            overlay: None,
+                            sidebar: false,
+                        } => {
+                            if let Some(id) = chat_list.first().map(|c| c.id) {
                                 router.navigate(
                                     AppRoute::Chats {
                                         chat_id: Some(id),
@@ -139,12 +262,16 @@ fn app() -> Html {
                                 );
                             }
                         }
-                        Some(id) if !chat_ids.contains(&id) => {
+                        AppRoute::Chats {
+                            chat_id: Some(id),
+                            overlay,
+                            sidebar,
+                        } if !chat_list.iter().any(|c| c.id == id) => {
                             router.navigate(
                                 AppRoute::Chats {
-                                    chat_id: chat_ids.first().copied(),
-                                    overlay: *overlay,
-                                    sidebar: *sidebar,
+                                    chat_id: chat_list.first().map(|c| c.id),
+                                    overlay,
+                                    sidebar,
                                 },
                                 false,
                             );
@@ -152,7 +279,7 @@ fn app() -> Html {
                         _ => {}
                     }
                 }
-            }
+            });
             || ()
         });
     }
@@ -212,7 +339,8 @@ fn app() -> Html {
                         messages.set(payload.messages.clone());
                         messages_loading.set(false);
                         let current = (*chats).clone();
-                        chats.set(sort_chats(
+                        publish_chats(
+                            &chats,
                             current
                                 .into_iter()
                                 .map(|c| {
@@ -223,7 +351,7 @@ fn app() -> Html {
                                     }
                                 })
                                 .collect(),
-                        ));
+                        );
                     });
                     *chat_stream_nudge.borrow_mut() = Some(stream.nudge());
                     stream_holder = Some(stream);
@@ -261,10 +389,10 @@ fn app() -> Html {
                         queue.set(Some(status));
                     }
                     if let Ok(list) = api::list_chats().await {
-                        chats.set(sort_chats(list));
+                        publish_chats(&chats, list);
                     }
                     if let Ok(list) = api::list_archived_chats().await {
-                        archived_chats.set(sort_archived_chats(list));
+                        publish_archived_chats(&archived_chats, list);
                     }
                 });
             });
@@ -444,10 +572,10 @@ fn app() -> Html {
                         queue.set(Some(status));
                     }
                     if let Some(list) = chat_list {
-                        chats.set(list);
+                        publish_chats(&chats, list);
                     }
                     if let Some(list) = archived_list {
-                        archived_chats.set(list);
+                        publish_archived_chats(&archived_chats, list);
                     }
                     if let Some(list) = story_list {
                         stories.set(list);
@@ -576,6 +704,7 @@ fn app() -> Html {
     }
 
     let selected = selected_chat_id.and_then(|id| chats.iter().find(|c| c.id == id).cloned());
+    let active_header = active_chat_header(&selected, selected_chat_id);
 
     let sidebar_open = sidebar_open_from_route(&route);
     let overlay = route.overlay();
@@ -599,7 +728,7 @@ fn app() -> Html {
                 match api::create_chat(&title, character_id).await {
                     Ok(chat) => {
                         if let Ok(list) = api::list_chats().await {
-                            chats.set(sort_chats(list));
+                            publish_chats(&chats, list);
                         }
                         navigate.emit((
                             AppRoute::Chats {
@@ -664,7 +793,9 @@ fn app() -> Html {
                 <ChatPanelOverlay
                     overlay={overlay.unwrap()}
                     chat_id={selected_chat_id}
-                    character_id={selected.as_ref().map(|c| c.character_id)}
+                    character_id={active_header.as_ref().and_then(|h| {
+                        (h.character_id != 0).then_some(h.character_id)
+                    })}
                     messages={(*messages).clone()}
                     on_close={close_overlay.clone()}
                     on_character_change={Callback::from({
@@ -679,7 +810,7 @@ fn app() -> Html {
                                 };
                                 let _ = api::update_chat(chat_id, &payload).await;
                                 if let Ok(list) = api::list_chats().await {
-                                    chats.set(sort_chats(list));
+                                    publish_chats(&chats, list);
                                 }
                             });
                         }
@@ -695,7 +826,7 @@ fn app() -> Html {
                             let load_messages_for_chat = load_messages_for_chat.clone();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(list) = api::list_chats().await {
-                                    chats.set(sort_chats(list));
+                                    publish_chats(&chats, list);
                                 }
                                 navigate.emit((
                                     AppRoute::Chats {
@@ -738,10 +869,10 @@ fn app() -> Html {
                                             ));
                                         }
                                     }
-                                    chats.set(list);
+                                    publish_chats(&chats, list);
                                 }
                                 if let Ok(list) = api::list_archived_chats().await {
-                                    archived_chats.set(sort_archived_chats(list));
+                                    publish_archived_chats(&archived_chats, list);
                                 }
                             });
                         }
@@ -825,10 +956,10 @@ fn app() -> Html {
                                         false,
                                     ));
                                 }
-                                chats.set(list);
+                                publish_chats(&chats, list);
                             }
                             if let Ok(list) = api::list_archived_chats().await {
-                                archived_chats.set(sort_archived_chats(list));
+                                publish_archived_chats(&archived_chats, list);
                             }
                         });
                     }
@@ -844,10 +975,10 @@ fn app() -> Html {
                         wasm_bindgen_futures::spawn_local(async move {
                             if api::restore_chat(id).await.is_ok() {
                                 if let Ok(list) = api::list_chats().await {
-                                    chats.set(sort_chats(list));
+                                    publish_chats(&chats, list);
                                 }
                                 if let Ok(list) = api::list_archived_chats().await {
-                                    archived_chats.set(sort_archived_chats(list));
+                                    publish_archived_chats(&archived_chats, list);
                                 }
                                 navigate.emit((
                                     AppRoute::Chats {
@@ -871,7 +1002,7 @@ fn app() -> Html {
                             }
                             let _ = api::permanently_delete_chat(id).await;
                             if let Ok(list) = api::list_archived_chats().await {
-                                archived_chats.set(sort_archived_chats(list));
+                                publish_archived_chats(&archived_chats, list);
                             }
                         });
                     }
@@ -953,15 +1084,15 @@ fn app() -> Html {
                 } else {
                 <div class="chat-pane">
                 <header class="header content-header">
-                    if let Some(chat) = selected.as_ref() {
+                    if let Some(header) = active_header.as_ref() {
                         <div class="content-header-row">
                             <TitleEditor
-                                title={chat.title.clone()}
+                                title={header.title.clone()}
                                 class="header-title"
                                 placeholder="Chat name"
                                 on_save={Callback::from({
                                     let chats = chats.clone();
-                                    let chat_id = chat.id;
+                                    let chat_id = header.id;
                                     move |title| {
                                         let chats = chats.clone();
                                         wasm_bindgen_futures::spawn_local(async move {
@@ -972,7 +1103,7 @@ fn app() -> Html {
                                             };
                                             if api::update_chat(chat_id, &payload).await.is_ok() {
                                                 if let Ok(list) = api::list_chats().await {
-                                                    chats.set(sort_chats(list));
+                                                    publish_chats(&chats, list);
                                                 }
                                             }
                                         });
@@ -998,11 +1129,12 @@ fn app() -> Html {
                                     class="btn secondary btn-compact"
                                     title="Compress older messages into a summary"
                                     disabled={
-                                        summarize_in_progress(chat, &messages)
-                                            || !can_summarize_chat(&messages, &settings)
+                                        selected.as_ref().is_some_and(|chat| {
+                                            summarize_in_progress(chat, &messages)
+                                        }) || !can_summarize_chat(&messages, &settings)
                                     }
                                     onclick={{
-                                        let chat_id = chat.id;
+                                        let chat_id = header.id;
                                         let messages = messages.clone();
                                         let chats = chats.clone();
                                         let queue = queue.clone();
@@ -1020,7 +1152,7 @@ fn app() -> Html {
                                                             messages.set(msgs);
                                                         }
                                                         if let Ok(list) = api::list_chats().await {
-                                                            chats.set(sort_chats(list));
+                                                            publish_chats(&chats, list);
                                                         }
                                                         if let Ok(status) = api::get_queue().await {
                                                             queue.set(Some(status));
@@ -1040,7 +1172,9 @@ fn app() -> Html {
                                 >{"Summarize"}</button>
                             </div>
                         </div>
-                        <p class="header-subtitle muted">{ format!("With {}", chat.character_name) }</p>
+                        if !header.character_name.is_empty() {
+                            <p class="header-subtitle muted">{ format!("With {}", header.character_name) }</p>
+                        }
                     } else {
                         <h1 class="header-title">{"Select a chat"}</h1>
                         if chats.is_empty() {
@@ -1051,7 +1185,46 @@ fn app() -> Html {
                     }
                 </header>
                 <div class="content-scroll">
-                if chats.is_empty() {
+                if selected_chat_id.is_some() {
+                    <MessageList
+                        chat_id={selected_chat_id}
+                        chat_summary={selected.as_ref().map(|c| c.summary.clone()).unwrap_or_default()}
+                        summarize_busy={selected.as_ref().is_some_and(|chat| {
+                            summarize_in_progress(chat, &messages)
+                        })}
+                        messages={(*messages).clone()}
+                        loading={*messages_loading}
+                        settings={(*settings).clone()}
+                        character={active_header.as_ref().and_then(|header| {
+                            characters.iter().find(|c| c.id == header.character_id).cloned()
+                        })}
+                        char_name={active_header.as_ref().map(|h| h.character_name.clone())}
+                        on_messages_change={Callback::from({
+                            let messages = messages.clone();
+                            let chats = chats.clone();
+                            let queue = queue.clone();
+                            let bump_stream = bump_stream.clone();
+                            move |_| {
+                                let Some(chat_id) = selected_chat_id else { return };
+                                let messages = messages.clone();
+                                let chats = chats.clone();
+                                let queue = queue.clone();
+                                bump_stream.emit(());
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(msgs) = api::get_messages(chat_id).await {
+                                        messages.set(msgs);
+                                    }
+                                    if let Ok(list) = api::list_chats().await {
+                                        publish_chats(&chats, list);
+                                    }
+                                    if let Ok(status) = api::get_queue().await {
+                                        queue.set(Some(status));
+                                    }
+                                });
+                            }
+                        })}
+                    />
+                } else if chats.is_empty() {
                     <div class="empty-state muted">
                         if characters.is_empty() {
                             <p>{"No characters yet. Open Character from the menu to create or import one."}</p>
@@ -1074,44 +1247,9 @@ fn app() -> Html {
                         }
                     </div>
                 } else {
-                    <MessageList
-                        chat_id={selected_chat_id}
-                        chat_summary={selected.as_ref().map(|c| c.summary.clone()).unwrap_or_default()}
-                        summarize_busy={selected.as_ref().is_some_and(|chat| {
-                            summarize_in_progress(chat, &messages)
-                        })}
-                        messages={(*messages).clone()}
-                        loading={*messages_loading}
-                        settings={(*settings).clone()}
-                        character={selected.as_ref().and_then(|chat| {
-                            characters.iter().find(|c| c.id == chat.character_id).cloned()
-                        })}
-                        char_name={selected.as_ref().map(|c| c.character_name.clone())}
-                        on_messages_change={Callback::from({
-                            let messages = messages.clone();
-                            let chats = chats.clone();
-                            let queue = queue.clone();
-                            let bump_stream = bump_stream.clone();
-                            move |_| {
-                                let Some(chat_id) = selected_chat_id else { return };
-                                let messages = messages.clone();
-                                let chats = chats.clone();
-                                let queue = queue.clone();
-                                bump_stream.emit(());
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(msgs) = api::get_messages(chat_id).await {
-                                        messages.set(msgs);
-                                    }
-                                    if let Ok(list) = api::list_chats().await {
-                                        chats.set(sort_chats(list));
-                                    }
-                                    if let Ok(status) = api::get_queue().await {
-                                        queue.set(Some(status));
-                                    }
-                                });
-                            }
-                        })}
-                    />
+                    <div class="empty-state muted">
+                        <p>{"Select a chat from the sidebar."}</p>
+                    </div>
                 }
                 <Composer
                     disabled={
@@ -1140,7 +1278,7 @@ fn app() -> Html {
                                     messages.set(msgs);
                                 }
                                 if let Ok(list) = api::list_chats().await {
-                                    chats.set(sort_chats(list));
+                                    publish_chats(&chats, list);
                                 }
                                 if let Ok(status) = api::get_queue().await {
                                     queue.set(Some(status));
@@ -3592,5 +3730,10 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
 
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn main() {
-    yew::Renderer::<App>::new().render();
+    APP.with(|app| {
+        if let Some(handle) = app.borrow_mut().take() {
+            handle.destroy();
+        }
+        *app.borrow_mut() = Some(yew::Renderer::<App>::new().render());
+    });
 }

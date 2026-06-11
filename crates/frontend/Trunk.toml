@@ -1,6 +1,7 @@
 [build]
 target = "index.html"
-dist = "dist"
+dist = "../../.frontend-dist"
 
 [watch]
-ignore = ["dist"]
+watch = ["index.html", "styles.css", "src", "Cargo.toml"]
+ignore = ["dist", "../../target", "../../.frontend-dist"]
