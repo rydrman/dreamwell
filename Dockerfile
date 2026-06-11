@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cd crates/frontend && trunk build --release \
-    && cp -r dist /app/frontend-dist
+    && cp -r ../../.frontend-dist /app/frontend-dist
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
