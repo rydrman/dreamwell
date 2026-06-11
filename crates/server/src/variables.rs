@@ -1,4 +1,4 @@
-use dreamwell_types::MessageVariableUpdate;
+use dreamwell_types::{Message, MessageVariableUpdate};
 use regex::Regex;
 use sqlx::SqlitePool;
 
@@ -97,6 +97,35 @@ pub async fn build_message_variable_updates(
     Ok(result)
 }
 
+pub async fn revert_message_variable_updates(
+    pool: &SqlitePool,
+    chat_id: i64,
+    updates: &[MessageVariableUpdate],
+) -> AppResult<()> {
+    for update in updates.iter().rev() {
+        match &update.previous_value {
+            Some(previous) => {
+                db::upsert_variable(pool, chat_id, update.key.clone(), previous.clone()).await?;
+            }
+            None => {
+                let _ = db::delete_variable(pool, chat_id, &update.key).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn revert_variable_updates_from_messages(
+    pool: &SqlitePool,
+    chat_id: i64,
+    messages: &[Message],
+) -> AppResult<()> {
+    for message in messages.iter().rev() {
+        revert_message_variable_updates(pool, chat_id, &message.variable_updates).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +168,173 @@ mod tests {
                 key: "quest_stage".to_string(),
             }]
         );
+    }
+
+    async fn test_chat(pool: &SqlitePool) -> dreamwell_types::Chat {
+        let character = db::create_character(
+            pool,
+            dreamwell_types::CharacterCreate {
+                name: "Tester".into(),
+                description: String::new(),
+                personality: String::new(),
+                scenario: String::new(),
+                first_message: String::new(),
+                example_dialogue: String::new(),
+                system_prompt: String::new(),
+                avatar_url: None,
+            },
+        )
+        .await
+        .expect("character");
+        db::create_chat(pool, "vars".into(), character.id)
+            .await
+            .expect("chat")
+    }
+
+    #[tokio::test]
+    async fn revert_message_variable_updates_restores_previous_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.db");
+        let pool = db::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .expect("connect");
+        let chat = test_chat(&pool).await;
+
+        db::upsert_variable(&pool, chat.id, "location".into(), "forest".into())
+            .await
+            .expect("seed variable");
+
+        let updates = vec![
+            MessageVariableUpdate {
+                key: "location".into(),
+                value: "tavern".into(),
+                previous_value: Some("forest".into()),
+                deleted: false,
+            },
+            MessageVariableUpdate {
+                key: "quest".into(),
+                value: String::new(),
+                previous_value: None,
+                deleted: true,
+            },
+        ];
+        apply_variable_updates(
+            &pool,
+            chat.id,
+            &[
+                VariableUpdate::Set {
+                    key: "location".into(),
+                    value: "tavern".into(),
+                },
+                VariableUpdate::Delete {
+                    key: "quest".into(),
+                },
+            ],
+        )
+        .await
+        .expect("apply");
+
+        revert_message_variable_updates(&pool, chat.id, &updates)
+            .await
+            .expect("revert");
+
+        let vars = db::list_variables(&pool, chat.id).await.expect("list");
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].key, "location");
+        assert_eq!(vars[0].value, "forest");
+    }
+
+    #[tokio::test]
+    async fn revert_variable_updates_from_messages_uses_message_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.db");
+        let pool = db::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .expect("connect");
+        let chat = test_chat(&pool).await;
+
+        let first = db::insert_message(
+            &pool,
+            chat.id,
+            dreamwell_types::MessageRole::Assistant,
+            "first".into(),
+            false,
+        )
+        .await
+        .expect("message");
+        let second = db::insert_message(
+            &pool,
+            chat.id,
+            dreamwell_types::MessageRole::Assistant,
+            "second".into(),
+            false,
+        )
+        .await
+        .expect("message");
+
+        let first_updates = vec![MessageVariableUpdate {
+            key: "hp".into(),
+            value: "80".into(),
+            previous_value: None,
+            deleted: false,
+        }];
+        let second_updates = vec![MessageVariableUpdate {
+            key: "hp".into(),
+            value: "50".into(),
+            previous_value: Some("80".into()),
+            deleted: false,
+        }];
+        db::finalize_message_generation(&pool, first.id, "first", "", None, false, &first_updates)
+            .await
+            .expect("finalize first");
+        db::finalize_message_generation(
+            &pool,
+            second.id,
+            "second",
+            "",
+            None,
+            false,
+            &second_updates,
+        )
+        .await
+        .expect("finalize second");
+        apply_variable_updates(
+            &pool,
+            chat.id,
+            &[VariableUpdate::Set {
+                key: "hp".into(),
+                value: "80".into(),
+            }],
+        )
+        .await
+        .expect("apply first");
+        apply_variable_updates(
+            &pool,
+            chat.id,
+            &[VariableUpdate::Set {
+                key: "hp".into(),
+                value: "50".into(),
+            }],
+        )
+        .await
+        .expect("apply second");
+
+        let messages = vec![
+            db::get_message(&pool, chat.id, first.id)
+                .await
+                .expect("first"),
+            db::get_message(&pool, chat.id, second.id)
+                .await
+                .expect("second"),
+        ];
+        revert_variable_updates_from_messages(&pool, chat.id, &messages)
+            .await
+            .expect("revert");
+
+        assert!(db::list_variables(&pool, chat.id)
+            .await
+            .expect("list")
+            .is_empty());
     }
 
     #[test]
