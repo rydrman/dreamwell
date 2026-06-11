@@ -386,6 +386,13 @@ input.header-title {
   color: var(--fg);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .header-subtitle {
   margin: 0.25rem 0 0;
 }

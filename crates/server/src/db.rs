@@ -872,6 +872,7 @@ pub async fn enqueue_summarize_job(
     pool: &SqlitePool,
     chat_id: i64,
     message_id: i64,
+    guidance_notes: &str,
 ) -> AppResult<Job> {
     let now = Utc::now().to_rfc3339();
     let position: i64 =
@@ -879,10 +880,11 @@ pub async fn enqueue_summarize_job(
             .fetch_one(pool)
             .await?;
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO generation_jobs (job_type, chat_id, message_id, status, position, created_at) VALUES ('chat_summarize',?1,?2,'queued',?3,?4) RETURNING id",
+        "INSERT INTO generation_jobs (job_type, chat_id, message_id, guidance_notes, status, position, created_at) VALUES ('chat_summarize',?1,?2,?3,'queued',?4,?5) RETURNING id",
     )
     .bind(chat_id)
     .bind(message_id)
+    .bind(guidance_notes)
     .bind(position + 1)
     .bind(&now)
     .fetch_one(pool)

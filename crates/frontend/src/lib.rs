@@ -860,7 +860,53 @@ fn app() -> Html {
                                 }
                             })}
                         />
-                        <p class="header-subtitle muted">{ format!("With {}", chat.character_name) }</p>
+                        <div class="header-actions">
+                            <p class="header-subtitle muted">{ format!("With {}", chat.character_name) }</p>
+                            <button
+                                class="btn secondary btn-compact"
+                                title="Compress older messages into a summary"
+                                disabled={
+                                    summarize_in_progress(chat, &messages)
+                                        || !can_summarize_chat(&messages, &settings)
+                                }
+                                onclick={{
+                                    let chat_id = chat.id;
+                                    let messages = messages.clone();
+                                    let chats = chats.clone();
+                                    let queue = queue.clone();
+                                    let bump_stream = bump_stream.clone();
+                                    Callback::from(move |_| {
+                                        let messages = messages.clone();
+                                        let chats = chats.clone();
+                                        let queue = queue.clone();
+                                        let bump_stream = bump_stream.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            match api::summarize_chat(chat_id).await {
+                                                Ok(_) => {
+                                                    bump_stream.emit(());
+                                                    if let Ok(msgs) = api::get_messages(chat_id).await {
+                                                        messages.set(msgs);
+                                                    }
+                                                    if let Ok(list) = api::list_chats().await {
+                                                        chats.set(sort_chats(list));
+                                                    }
+                                                    if let Ok(status) = api::get_queue().await {
+                                                        queue.set(Some(status));
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    if let Some(window) = web_sys::window() {
+                                                        let _ = window.alert_with_message(&format!(
+                                                            "Could not summarize: {err}"
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    })
+                                }}
+                            >{"Summarize"}</button>
+                        </div>
                     } else {
                         <h1 class="header-title">{"Select a chat"}</h1>
                         if chats.is_empty() {
@@ -1275,16 +1321,48 @@ fn confirm_permanent_chat_delete() -> bool {
 fn chat_status(chat: &Chat) -> Option<String> {
     let job = chat.active_job.as_ref()?;
     match job.status {
-        JobStatus::Running => Some("writing…".to_string()),
+        JobStatus::Running => Some(job_status_label(job)),
         JobStatus::Queued => {
+            let label = job_status_label(job);
             if chat.queued_jobs > 1 {
-                Some(format!("queued ({})", chat.queued_jobs))
+                Some(format!("{label} ({})", chat.queued_jobs))
             } else {
-                Some("queued".to_string())
+                Some(label)
             }
         }
         _ => Some(format!("{:?}", job.status).to_lowercase()),
     }
+}
+
+fn job_status_label(job: &Job) -> String {
+    match job.job_type {
+        JobType::ChatSummarize => "summarizing…".to_string(),
+        _ => "writing…".to_string(),
+    }
+}
+
+fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
+    chat.active_job
+        .as_ref()
+        .is_some_and(|job| job.job_type == JobType::ChatSummarize)
+        || messages
+            .iter()
+            .any(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
+}
+
+fn can_summarize_chat(messages: &[Message], settings: &Option<Settings>) -> bool {
+    let Some(settings) = settings else {
+        return false;
+    };
+    if settings.model.is_empty() {
+        return false;
+    }
+    let min_keep = settings.summarize_keep_recent.max(2) as usize;
+    let count = messages
+        .iter()
+        .filter(|message| !message.is_summary && message.role != MessageRole::System)
+        .count();
+    count > min_keep
 }
 
 fn confirm_character_delete(name: &str) -> bool {
