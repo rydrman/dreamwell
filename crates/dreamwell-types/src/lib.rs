@@ -162,6 +162,8 @@ pub struct MessageVariableUpdate {
     pub value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_value: Option<String>,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
