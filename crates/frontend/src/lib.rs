@@ -2002,7 +2002,11 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     };
 
     html! {
-        <div class={classes!("message", role)}>
+        <div class={classes!(
+            "message",
+            role,
+            (*mode == MessageBubbleMode::Edit).then_some("message--editing")
+        )}>
             <div class="message-header">
                 <div class="message-meta muted">
                     { role.to_string() }
