@@ -769,6 +769,7 @@ mod tests {
             in_summary: false,
             created_at: Utc::now(),
             job_status: None,
+            generation_error: None,
         }
     }
 

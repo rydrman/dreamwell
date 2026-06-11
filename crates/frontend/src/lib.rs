@@ -155,11 +155,23 @@ fn load_cached_archived_chats() -> Vec<Chat> {
     sort_archived_chats(load_cached_chat_list(ARCHIVED_CHATS_LIST_CACHE_KEY))
 }
 
+fn chat_list_for_cache(chats: &[Chat]) -> Vec<Chat> {
+    chats
+        .iter()
+        .map(|chat| Chat {
+            active_job: None,
+            queued_jobs: 0,
+            ..chat.clone()
+        })
+        .collect()
+}
+
 fn cache_chat_list(key: &str, chats: &[Chat]) {
     let Some(storage) = session_storage() else {
         return;
     };
-    if let Ok(json) = serde_json::to_string(chats) {
+    let cached = chat_list_for_cache(chats);
+    if let Ok(json) = serde_json::to_string(&cached) {
         let _ = storage.set_item(key, &json);
     }
 }
@@ -1259,9 +1271,7 @@ fn app() -> Html {
                                 summarize_in_progress(chat, &messages)
                             })
                     }
-                    summarizing={selected.as_ref().is_some_and(|chat| {
-                        summarize_in_progress(chat, &messages)
-                    })}
+                    notice={selected.as_ref().and_then(|chat| composer_notice(chat, &messages))}
                     on_send={Callback::from({
                         let messages = messages.clone();
                         let chats = chats.clone();
@@ -1518,6 +1528,85 @@ fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
         || messages
             .iter()
             .any(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposerNotice {
+    Summarizing,
+    Writing,
+    Queued,
+}
+
+impl ComposerNotice {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Summarizing => "Summarizing earlier messages…",
+            Self::Writing => "Still writing — more coming…",
+            Self::Queued => "Reply queued — waiting for server…",
+        }
+    }
+
+    fn status_class(self) -> &'static str {
+        match self {
+            Self::Summarizing => "composer-status--summarize",
+            Self::Writing => "composer-status--writing",
+            Self::Queued => "composer-status--queued",
+        }
+    }
+
+    fn textarea_placeholder(self) -> &'static str {
+        match self {
+            Self::Summarizing => "Summarization in progress…",
+            Self::Writing => "Reply still generating…",
+            Self::Queued => "Reply waiting in queue…",
+        }
+    }
+}
+
+fn message_generation_error(message: &Message) -> Option<String> {
+    if let Some(error) = message.generation_error.as_ref() {
+        if !error.is_empty() {
+            return Some(error.clone());
+        }
+    }
+    let prefix = "[Generation failed: ";
+    if message.content.starts_with(prefix) && message.content.ends_with(']') {
+        return message
+            .content
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(']'))
+            .map(str::to_string);
+    }
+    None
+}
+
+fn legacy_failure_only_message(message: &Message) -> bool {
+    message_generation_error(message).is_some()
+        && message.content.starts_with("[Generation failed: ")
+}
+
+fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<ComposerNotice> {
+    if summarize_in_progress(chat, messages) {
+        return Some(ComposerNotice::Summarizing);
+    }
+    if messages
+        .iter()
+        .any(|message| message.job_status == Some(JobStatus::Running))
+    {
+        return Some(ComposerNotice::Writing);
+    }
+    if messages
+        .iter()
+        .any(|message| message.job_status == Some(JobStatus::Queued))
+    {
+        return Some(ComposerNotice::Queued);
+    }
+    let job = chat.active_job.as_ref()?;
+    match job.status {
+        JobStatus::Running => Some(ComposerNotice::Writing),
+        JobStatus::Queued => Some(ComposerNotice::Queued),
+        _ => None,
+    }
 }
 
 fn can_summarize_chat(messages: &[Message], settings: &Option<Settings>) -> bool {
@@ -2116,17 +2205,27 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         })
     };
 
+    let pending = queued && props.display_content.is_empty();
+    let generation_error = message_generation_error(&props.message);
+    let failure_only = legacy_failure_only_message(&props.message);
+    let show_body = !props.display_content.is_empty() && !failure_only;
     html! {
         <div class={classes!(
             "message",
             role,
-            (*mode == MessageBubbleMode::Edit).then_some("message--editing")
+            (*mode == MessageBubbleMode::Edit).then_some("message--editing"),
+            pending.then_some("message--pending"),
+            streaming.then_some("message--streaming"),
+            generation_error.is_some().then_some("message--failed"),
         )}>
             <div class="message-header">
                 <div class="message-meta muted">
                     { role.to_string() }
-                    if queued { <span>{" · queued on server"}</span> }
-                    if streaming { <span>{" · streaming on server"}</span> }
+                    if queued { <span>{" · waiting in queue"}</span> }
+                    if streaming { <span>{" · still writing"}</span> }
+                    if generation_error.is_some() && !streaming && !queued {
+                        <span class="message-meta-error">{" · generation failed"}</span>
+                    }
                 </div>
                 if can_menu {
                     <div class="message-menu-wrap">
@@ -2206,8 +2305,17 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     </button>
                     <button type="button" class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
                 </div>
-            } else if props.display_content.is_empty() && active {
+            } else if props.display_content.is_empty() && queued {
+                <span class="muted">{"Waiting in queue…"}</span>
+            } else if props.display_content.is_empty() && streaming {
                 { "…" }
+            } else if failure_only {
+                if let Some(error) = generation_error {
+                    <div class="message-error" role="alert">
+                        <strong>{"Generation failed"}</strong>
+                        <span>{ error }</span>
+                    </div>
+                }
             } else if props.display_content.is_empty()
                 && props.message.role == MessageRole::Assistant
                 && !props.message.thought_content.is_empty()
@@ -2219,7 +2327,19 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             {
                 <span class="muted">{"(Empty response)"}</span>
             } else {
-                { props.rendered_content.clone() }
+                if show_body {
+                    { props.rendered_content.clone() }
+                    if streaming {
+                        <span class="streaming-cursor" aria-hidden="true">{"▍"}</span>
+                        <div class="message-streaming-note muted">{"Still writing…"}</div>
+                    }
+                }
+                if let Some(error) = generation_error {
+                    <div class={classes!("message-error", show_body.then_some("message-error--partial"))} role="alert">
+                        <strong>{ if show_body { "Generation stopped early" } else { "Generation failed" } }</strong>
+                        <span>{ error }</span>
+                    </div>
+                }
             }
             if show_variable_updates {
                 <VariableUpdatesBlock updates={props.message.variable_updates.clone()} />
@@ -2523,7 +2643,7 @@ fn message_list(props: &MessageListProps) -> Html {
                 { for props.messages.iter().enumerate().map(|(idx, m)| {
                     let after_count = props.messages.len().saturating_sub(idx + 1);
                     let is_last = last_id == Some(m.id);
-                    let streaming = matches!(m.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
+                    let streaming = matches!(m.job_status, Some(JobStatus::Running));
                     let display_content = if m.role == MessageRole::Assistant {
                         variables::strip_variables_for_display(&m.content, streaming)
                     } else {
@@ -2572,7 +2692,7 @@ fn message_list(props: &MessageListProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct ComposerProps {
     disabled: bool,
-    summarizing: bool,
+    notice: Option<ComposerNotice>,
     on_send: Callback<String>,
 }
 
@@ -2598,12 +2718,21 @@ fn composer(props: &ComposerProps) -> Html {
         })
     };
 
+    let placeholder = props
+        .notice
+        .map(ComposerNotice::textarea_placeholder)
+        .unwrap_or("Write your message…");
+
     html! {
         <>
-            if props.summarizing {
-                <div class="composer-status" role="status" aria-live="polite">
+            if let Some(notice) = props.notice {
+                <div
+                    class={classes!("composer-status", notice.status_class())}
+                    role="status"
+                    aria-live="polite"
+                >
                     <span class="settings-save-spinner" aria-hidden="true"></span>
-                    <span>{"Summarizing earlier messages…"}</span>
+                    <span>{ notice.message() }</span>
                 </div>
             }
             <div class="composer">
@@ -2617,11 +2746,7 @@ fn composer(props: &ComposerProps) -> Html {
                             text.set(input.value());
                         }
                     })}
-                    placeholder={if props.summarizing {
-                        "Summarization in progress…"
-                    } else {
-                        "Write your message…"
-                    }}
+                    placeholder={placeholder}
                     disabled={props.disabled || *sending}
                 />
                 <button class="btn" onclick={on_send} disabled={props.disabled || *sending || text.trim().is_empty()}>
@@ -3735,6 +3860,46 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
             _ => {}
         });
     })
+}
+
+#[cfg(test)]
+mod generation_error_tests {
+    use super::*;
+
+    fn sample_message(content: &str) -> Message {
+        let mut message: Message = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "chat_id": 1,
+            "role": "assistant",
+            "content": content,
+            "is_summary": false,
+            "in_summary": false,
+            "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .expect("sample message");
+        message.generation_error = None;
+        message
+    }
+
+    #[test]
+    fn reads_generation_error_field() {
+        let mut message = sample_message("Partial");
+        message.generation_error = Some("connection reset".to_string());
+        assert_eq!(
+            message_generation_error(&message),
+            Some("connection reset".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_legacy_failure_placeholder() {
+        let message = sample_message("[Generation failed: timeout]");
+        assert_eq!(
+            message_generation_error(&message),
+            Some("timeout".to_string())
+        );
+        assert!(legacy_failure_only_message(&message));
+    }
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(start)]

@@ -1,10 +1,12 @@
 name: CI
 
+# PR pushes fire pull_request (synchronize) only — not push — so one run per commit.
 on:
   pull_request:
-  push:
-    branches-ignore:
-      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
