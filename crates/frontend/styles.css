@@ -565,6 +565,7 @@ input.header-title {
 
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 1rem;
   display: flex;
@@ -1003,6 +1004,11 @@ input.header-title {
   max-width: 100%;
   background: var(--surface);
   border: 1px dashed var(--border);
+}
+
+.message.message--pending {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .composer-status {

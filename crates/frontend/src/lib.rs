@@ -2128,11 +2128,13 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         })
     };
 
+    let pending = queued && props.display_content.is_empty();
     html! {
         <div class={classes!(
             "message",
             role,
-            (*mode == MessageBubbleMode::Edit).then_some("message--editing")
+            (*mode == MessageBubbleMode::Edit).then_some("message--editing"),
+            pending.then_some("message--pending"),
         )}>
             <div class="message-header">
                 <div class="message-meta muted">
@@ -2218,7 +2220,9 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     </button>
                     <button type="button" class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
                 </div>
-            } else if props.display_content.is_empty() && active {
+            } else if props.display_content.is_empty() && queued {
+                <span class="muted">{"Waiting in queue…"}</span>
+            } else if props.display_content.is_empty() && streaming {
                 { "…" }
             } else if props.display_content.is_empty()
                 && props.message.role == MessageRole::Assistant
@@ -2535,7 +2539,7 @@ fn message_list(props: &MessageListProps) -> Html {
                 { for props.messages.iter().enumerate().map(|(idx, m)| {
                     let after_count = props.messages.len().saturating_sub(idx + 1);
                     let is_last = last_id == Some(m.id);
-                    let streaming = matches!(m.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
+                    let streaming = matches!(m.job_status, Some(JobStatus::Running));
                     let display_content = if m.role == MessageRole::Assistant {
                         variables::strip_variables_for_display(&m.content, streaming)
                     } else {
