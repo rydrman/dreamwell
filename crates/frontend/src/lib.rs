@@ -4,6 +4,7 @@ mod notifications;
 mod queue_ui;
 mod router;
 mod stories_ui;
+mod title_editor;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,7 +17,8 @@ use gloo_timers::callback::{Interval, Timeout};
 use queue_ui::{AppMode, QueueBar, QueuePage};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use stories_ui::StoriesShell;
-use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement, KeyboardEvent};
+use title_editor::TitleEditor;
+use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
 
 fn chat_id_from_route(route: &AppRoute) -> Option<i64> {
@@ -852,7 +854,7 @@ fn app() -> Html {
                         })}>{"Chats"}</button>
                     </div>
                     if let Some(chat) = selected.as_ref() {
-                        <ChatTitleEditor
+                        <TitleEditor
                             title={chat.title.clone()}
                             class="header-title"
                             placeholder="Chat name"
@@ -1199,7 +1201,7 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
                         <div class={classes!("chat-item", selected.then_some("selected"))}>
                             <div style="display:flex;gap:0.5rem;align-items:flex-start;">
                                 <div style="flex:1;min-width:0;" onclick={props.on_select.reform(move |_| id)}>
-                                    <ChatTitleEditor
+                                    <TitleEditor
                                         title={chat.title.clone()}
                                         class="chat-item-title"
                                         placeholder="Chat name"
@@ -1264,114 +1266,6 @@ fn default_chat_title(character_name: &str, character_id: i64, chats: &[Chat]) -
         character_name.to_string()
     } else {
         format!("{character_name} ({})", same + 1)
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct ChatTitleEditorProps {
-    title: String,
-    class: &'static str,
-    placeholder: &'static str,
-    on_save: Callback<String>,
-    #[prop_or(false)]
-    compact: bool,
-}
-
-#[function_component(ChatTitleEditor)]
-fn chat_title_editor(props: &ChatTitleEditorProps) -> Html {
-    let editing = use_state(|| false);
-    let draft = use_state(|| props.title.clone());
-    let input_ref = use_node_ref();
-
-    {
-        let draft = draft.clone();
-        let title = props.title.clone();
-        use_effect_with(title.clone(), move |_| {
-            draft.set(title);
-            || ()
-        });
-    }
-
-    {
-        let input_ref = input_ref.clone();
-        let editing = *editing;
-        use_effect_with(editing, move |editing| {
-            if *editing {
-                if let Some(input) = input_ref.cast::<HtmlInputElement>() {
-                    let _ = input.focus();
-                    input.select();
-                }
-            }
-            || ()
-        });
-    }
-
-    if *editing {
-        html! {
-            <input
-                ref={input_ref}
-                class={classes!(props.class, props.compact.then_some("chat-title-input-compact"))}
-                type="text"
-                value={(*draft).clone()}
-                placeholder={props.placeholder}
-                onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
-                oninput={{
-                    let draft = draft.clone();
-                    Callback::from(move |e: InputEvent| {
-                        let input: HtmlInputElement = e.target_unchecked_into();
-                        draft.set(input.value());
-                    })
-                }}
-                onkeydown={{
-                    let editing = editing.clone();
-                    let draft = draft.clone();
-                    let on_save = props.on_save.clone();
-                    let title = props.title.clone();
-                    Callback::from(move |e: KeyboardEvent| {
-                        if e.key() == "Enter" {
-                            e.prevent_default();
-                            let trimmed = draft.trim().to_string();
-                            if !trimmed.is_empty() && trimmed != title {
-                                on_save.emit(trimmed);
-                            }
-                            editing.set(false);
-                        } else if e.key() == "Escape" {
-                            editing.set(false);
-                            draft.set(title.clone());
-                        }
-                    })
-                }}
-                onblur={{
-                    let editing = editing.clone();
-                    let draft = draft.clone();
-                    let on_save = props.on_save.clone();
-                    let title = props.title.clone();
-                    Callback::from(move |_| {
-                        let trimmed = draft.trim().to_string();
-                        if !trimmed.is_empty() && trimmed != title {
-                            on_save.emit(trimmed);
-                        }
-                        editing.set(false);
-                    })
-                }}
-            />
-        }
-    } else {
-        html! {
-            <div
-                class={classes!(props.class, "chat-title-editable", props.compact.then_some("chat-title-editable-compact"))}
-                title="Click to rename"
-                onclick={Callback::from({
-                    let editing = editing.clone();
-                    move |e: MouseEvent| {
-                        e.stop_propagation();
-                        editing.set(true);
-                    }
-                })}
-            >
-                { &props.title }
-            </div>
-        }
     }
 }
 
