@@ -444,7 +444,7 @@ pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppRe
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.is_summary, m.in_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.is_summary, m.in_summary, m.created_at, j.status as job_status, (SELECT gj.error FROM generation_jobs gj WHERE gj.message_id = m.id AND gj.status = 'failed' ORDER BY gj.completed_at DESC LIMIT 1) as generation_error FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -525,7 +525,22 @@ pub async fn insert_message(
         in_summary: false,
         created_at: parse_dt(&now)?,
         job_status: None,
+        generation_error: None,
     })
+}
+
+/// Keep partial reply text when generation fails; only write a placeholder when empty.
+pub async fn fail_chat_message_generation(
+    pool: &SqlitePool,
+    message_id: i64,
+    error: &str,
+) -> AppResult<()> {
+    let current = get_message_generation_snapshot(pool, message_id).await?;
+    if current.content.trim().is_empty() {
+        update_message_content(pool, message_id, &format!("[Generation failed: {error}]")).await?;
+    }
+    set_thought_in_progress(pool, message_id, false).await?;
+    Ok(())
 }
 
 pub async fn mark_messages_in_summary(pool: &SqlitePool, ids: &[i64]) -> AppResult<()> {
@@ -1160,6 +1175,7 @@ fn message_from_row(row: MessageRow) -> Message {
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
         job_status: row.job_status.map(|s| parse_job_status(&s)),
+        generation_error: row.generation_error,
     }
 }
 
@@ -1226,6 +1242,7 @@ struct MessageRow {
     in_summary: i64,
     created_at: String,
     job_status: Option<String>,
+    generation_error: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1345,6 +1362,90 @@ impl SettingsRow {
             auto_context_on_model_change: self.auto_context_on_model_change != 0,
             max_concurrent_jobs: MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst),
         }
+    }
+}
+
+#[cfg(test)]
+mod generation_failure_tests {
+    use super::*;
+    use sqlx::SqlitePool;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        ensure_settings(&pool).await.expect("settings");
+        pool
+    }
+
+    #[tokio::test]
+    async fn fail_chat_message_preserves_partial_content() {
+        let pool = test_pool().await;
+        let character_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO characters (name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at) VALUES ('c','','','','','','',datetime('now'),datetime('now')) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("character");
+        let chat_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO chats (title, character_id, summary, created_at, updated_at) VALUES ('t', ?1, '', datetime('now'), datetime('now')) RETURNING id",
+        )
+        .bind(character_id)
+        .fetch_one(&pool)
+        .await
+        .expect("chat");
+        let message_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO messages (chat_id, role, content, is_summary, created_at) VALUES (?1, 'assistant', 'Partial reply', 0, datetime('now')) RETURNING id",
+        )
+        .bind(chat_id)
+        .fetch_one(&pool)
+        .await
+        .expect("message");
+
+        fail_chat_message_generation(&pool, message_id, "connection reset")
+            .await
+            .expect("fail");
+
+        let message = get_message(&pool, chat_id, message_id)
+            .await
+            .expect("message");
+        assert_eq!(message.content, "Partial reply");
+    }
+
+    #[tokio::test]
+    async fn fail_chat_message_writes_placeholder_when_empty() {
+        let pool = test_pool().await;
+        let character_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO characters (name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at) VALUES ('c','','','','','','',datetime('now'),datetime('now')) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("character");
+        let chat_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO chats (title, character_id, summary, created_at, updated_at) VALUES ('t', ?1, '', datetime('now'), datetime('now')) RETURNING id",
+        )
+        .bind(character_id)
+        .fetch_one(&pool)
+        .await
+        .expect("chat");
+        let message_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO messages (chat_id, role, content, is_summary, created_at) VALUES (?1, 'assistant', '', 0, datetime('now')) RETURNING id",
+        )
+        .bind(chat_id)
+        .fetch_one(&pool)
+        .await
+        .expect("message");
+
+        fail_chat_message_generation(&pool, message_id, "timeout")
+            .await
+            .expect("fail");
+
+        let message = get_message(&pool, chat_id, message_id)
+            .await
+            .expect("message");
+        assert_eq!(message.content, "[Generation failed: timeout]");
     }
 }
 

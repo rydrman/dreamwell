@@ -378,12 +378,7 @@ async fn fail_job(
     match job.job_type {
         JobType::ChatMessage => {
             if let Some(message_id) = job.message_id {
-                db::update_message_content(
-                    pool,
-                    message_id,
-                    &format!("[Generation failed: {message}]"),
-                )
-                .await?;
+                db::fail_chat_message_generation(pool, message_id, message).await?;
             }
         }
         JobType::StoryBeatProse => {
@@ -497,13 +492,7 @@ async fn run_chat_job(
             ChatGenerationOutcome::Retryable(message) => {
                 last_error = message;
                 if attempt == max_attempts {
-                    db::update_message_content(
-                        pool,
-                        message_id,
-                        &format!("[Generation failed: {last_error}]"),
-                    )
-                    .await?;
-                    db::set_thought_in_progress(pool, message_id, false).await?;
+                    db::fail_chat_message_generation(pool, message_id, &last_error).await?;
                     db::complete_job(pool, job_id, JobStatus::Failed, Some(last_error)).await?;
                     return Ok(());
                 }

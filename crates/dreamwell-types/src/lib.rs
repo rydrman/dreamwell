@@ -192,6 +192,9 @@ pub struct Message {
     pub in_summary: bool,
     pub created_at: DateTime<Utc>,
     pub job_status: Option<JobStatus>,
+    /// Set when the most recent generation job for this message failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

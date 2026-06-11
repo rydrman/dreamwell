@@ -1563,6 +1563,28 @@ impl ComposerNotice {
     }
 }
 
+fn message_generation_error(message: &Message) -> Option<String> {
+    if let Some(error) = message.generation_error.as_ref() {
+        if !error.is_empty() {
+            return Some(error.clone());
+        }
+    }
+    let prefix = "[Generation failed: ";
+    if message.content.starts_with(prefix) && message.content.ends_with(']') {
+        return message
+            .content
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(']'))
+            .map(str::to_string);
+    }
+    None
+}
+
+fn legacy_failure_only_message(message: &Message) -> bool {
+    message_generation_error(message).is_some()
+        && message.content.starts_with("[Generation failed: ")
+}
+
 fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<ComposerNotice> {
     if summarize_in_progress(chat, messages) {
         return Some(ComposerNotice::Summarizing);
@@ -2184,6 +2206,9 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     };
 
     let pending = queued && props.display_content.is_empty();
+    let generation_error = message_generation_error(&props.message);
+    let failure_only = legacy_failure_only_message(&props.message);
+    let show_body = !props.display_content.is_empty() && !failure_only;
     html! {
         <div class={classes!(
             "message",
@@ -2191,12 +2216,16 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             (*mode == MessageBubbleMode::Edit).then_some("message--editing"),
             pending.then_some("message--pending"),
             streaming.then_some("message--streaming"),
+            generation_error.is_some().then_some("message--failed"),
         )}>
             <div class="message-header">
                 <div class="message-meta muted">
                     { role.to_string() }
                     if queued { <span>{" · waiting in queue"}</span> }
                     if streaming { <span>{" · still writing"}</span> }
+                    if generation_error.is_some() && !streaming && !queued {
+                        <span class="message-meta-error">{" · generation failed"}</span>
+                    }
                 </div>
                 if can_menu {
                     <div class="message-menu-wrap">
@@ -2280,6 +2309,13 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                 <span class="muted">{"Waiting in queue…"}</span>
             } else if props.display_content.is_empty() && streaming {
                 { "…" }
+            } else if failure_only {
+                if let Some(error) = generation_error {
+                    <div class="message-error" role="alert">
+                        <strong>{"Generation failed"}</strong>
+                        <span>{ error }</span>
+                    </div>
+                }
             } else if props.display_content.is_empty()
                 && props.message.role == MessageRole::Assistant
                 && !props.message.thought_content.is_empty()
@@ -2291,10 +2327,18 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             {
                 <span class="muted">{"(Empty response)"}</span>
             } else {
-                { props.rendered_content.clone() }
-                if streaming {
-                    <span class="streaming-cursor" aria-hidden="true">{"▍"}</span>
-                    <div class="message-streaming-note muted">{"Still writing…"}</div>
+                if show_body {
+                    { props.rendered_content.clone() }
+                    if streaming {
+                        <span class="streaming-cursor" aria-hidden="true">{"▍"}</span>
+                        <div class="message-streaming-note muted">{"Still writing…"}</div>
+                    }
+                }
+                if let Some(error) = generation_error {
+                    <div class={classes!("message-error", show_body.then_some("message-error--partial"))} role="alert">
+                        <strong>{ if show_body { "Generation stopped early" } else { "Generation failed" } }</strong>
+                        <span>{ error }</span>
+                    </div>
                 }
             }
             if show_variable_updates {
@@ -3816,6 +3860,46 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
             _ => {}
         });
     })
+}
+
+#[cfg(test)]
+mod generation_error_tests {
+    use super::*;
+
+    fn sample_message(content: &str) -> Message {
+        let mut message: Message = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "chat_id": 1,
+            "role": "assistant",
+            "content": content,
+            "is_summary": false,
+            "in_summary": false,
+            "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .expect("sample message");
+        message.generation_error = None;
+        message
+    }
+
+    #[test]
+    fn reads_generation_error_field() {
+        let mut message = sample_message("Partial");
+        message.generation_error = Some("connection reset".to_string());
+        assert_eq!(
+            message_generation_error(&message),
+            Some("connection reset".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_legacy_failure_placeholder() {
+        let message = sample_message("[Generation failed: timeout]");
+        assert_eq!(
+            message_generation_error(&message),
+            Some("timeout".to_string())
+        );
+        assert!(legacy_failure_only_message(&message));
+    }
 }
 
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
