@@ -1466,11 +1466,11 @@ struct ThoughtBlockProps {
     thought_in_progress: bool,
 }
 
-fn format_variable_update_summary(update: &MessageVariableUpdate) -> String {
+fn format_variable_update_value(update: &MessageVariableUpdate) -> String {
     if let Some(previous) = &update.previous_value {
-        format!("{}: {} → {}", update.key, previous, update.value)
+        format!("{previous} → {}", update.value)
     } else {
-        format!("{} → {}", update.key, update.value)
+        update.value.clone()
     }
 }
 
@@ -1483,12 +1483,6 @@ struct VariableUpdatesBlockProps {
 fn variable_updates_block(props: &VariableUpdatesBlockProps) -> Html {
     let expanded = use_state(|| false);
     let count = props.updates.len();
-    let summary = props
-        .updates
-        .iter()
-        .map(format_variable_update_summary)
-        .collect::<Vec<_>>()
-        .join(", ");
 
     let toggle = {
         let expanded = expanded.clone();
@@ -1507,16 +1501,19 @@ fn variable_updates_block(props: &VariableUpdatesBlockProps) -> Html {
             </button>
             if *expanded {
                 <div class="message-variable-updates-body">
-                    { for props.updates.iter().map(|update| {
-                        html! {
-                            <div class="message-variable-update-item">
-                                { format_variable_update_summary(update) }
-                            </div>
-                        }
-                    }) }
+                    <div class="message-variable-updates-grid" role="table">
+                        <div class="message-variable-updates-grid-header" role="columnheader">{"Name"}</div>
+                        <div class="message-variable-updates-grid-header" role="columnheader">{"Value"}</div>
+                        { for props.updates.iter().map(|update| {
+                            html! {
+                                <>
+                                    <div class="message-variable-updates-key" role="cell">{ &update.key }</div>
+                                    <div class="message-variable-updates-value" role="cell">{ format_variable_update_value(update) }</div>
+                                </>
+                            }
+                        }) }
+                    </div>
                 </div>
-            } else {
-                <div class="message-variable-updates-summary muted">{ summary }</div>
             }
         </div>
     }
