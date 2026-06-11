@@ -341,18 +341,11 @@ button {
   background: var(--surface);
 }
 
-.title-editable-compact {
+.chat-item-title {
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.chat-item.selected .title-editable:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.chat-item-title {
-  font-weight: 600;
 }
 
 .title-editor-row {
@@ -378,22 +371,6 @@ button {
 .title-edit-btn {
   flex-shrink: 0;
   line-height: 1;
-}
-
-.title-input-compact,
-.header-title.title-input-compact {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: 0.25rem;
-  padding: 0.15rem 0.35rem;
-  background: var(--bg);
-  color: inherit;
-}
-
-.chat-item.selected .title-input-compact {
-  background: var(--bg);
-  color: var(--fg);
 }
 
 input.header-title {

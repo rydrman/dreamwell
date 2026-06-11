@@ -13,8 +13,6 @@ pub struct TitleEditorProps {
     pub class: &'static str,
     pub placeholder: &'static str,
     pub on_save: Callback<String>,
-    #[prop_or(false)]
-    pub compact: bool,
     #[prop_or(TitleEditTrigger::Click)]
     pub trigger: TitleEditTrigger,
 }
@@ -54,7 +52,7 @@ pub fn title_editor(props: &TitleEditorProps) -> Html {
         html! {
             <input
                 ref={input_ref}
-                class={classes!(props.class, props.compact.then_some("title-input-compact"))}
+                class={props.class}
                 type="text"
                 value={(*draft).clone()}
                 placeholder={props.placeholder}
@@ -123,7 +121,7 @@ pub fn title_editor(props: &TitleEditorProps) -> Html {
     } else {
         html! {
             <div
-                class={classes!(props.class, "title-editable", props.compact.then_some("title-editable-compact"))}
+                class={classes!(props.class, "title-editable")}
                 title="Click to rename"
                 onclick={Callback::from({
                     let editing = editing.clone();
