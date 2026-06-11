@@ -7,7 +7,6 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
-use crate::queue_ui::QueueBar;
 use crate::router::{AppRoute, StoryNav};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
 
@@ -60,16 +59,10 @@ fn story_nav_from_route(route: &AppRoute) -> StoryNav {
     }
 }
 
-fn sidebar_open_from_route(route: &AppRoute) -> bool {
-    matches!(route, AppRoute::Stories { sidebar: true, .. })
-}
-
 #[derive(Properties, PartialEq)]
 pub struct StoriesShellProps {
     pub route: AppRoute,
     pub on_navigate: Callback<(AppRoute, bool)>,
-    pub queue: Option<QueueStatus>,
-    pub on_open_queue: Callback<()>,
 }
 
 #[function_component(StoriesShell)]
@@ -82,8 +75,6 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let story_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let selected_story_id = story_id_from_route(&props.route);
     let selection = selection_from_story_nav(story_nav_from_route(&props.route));
-    let sidebar_open = sidebar_open_from_route(&props.route);
-
     {
         let stories = stories.clone();
         let loading = loading.clone();
@@ -297,191 +288,47 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     };
 
     html! {
-        <>
-            if sidebar_open {
-                <div class="drawer-backdrop" onclick={Callback::from({
-                    let on_navigate = props.on_navigate.clone();
-                    let route = props.route.clone();
-                    move |_| on_navigate.emit((route.clone().without_sidebar(), true))
-                })} />
-            }
-            <div class={classes!(
-                "app-shell",
-                sidebar_open.then_some("pane-sidebar"),
-            )}>
-            <StorySidebar
-                stories={(*stories).clone()}
-                selected_id={selected_story_id}
-                on_select_story={Callback::from({
-                    let navigate_story = navigate_story.clone();
-                    move |id| navigate_story.emit((Some(id), StoryNav::Basics))
-                })}
-                on_new={Callback::from({
-                    let stories = stories.clone();
-                    let on_navigate = props.on_navigate.clone();
-                    move |_| {
-                        let stories = stories.clone();
-                        let on_navigate = on_navigate.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let payload = StoryCreate {
-                                title: format!("Story {}", stories.len() + 1),
-                                ..Default::default()
-                            };
-                            if let Ok(d) = api::create_story(&payload).await {
-                                if let Ok(list) = api::list_stories().await {
-                                    stories.set(list);
+        <StoryEditor
+            detail={(*detail).clone()}
+            selection={selection}
+            guidance={(*guidance).clone()}
+            on_guidance={Callback::from({
+                let guidance = guidance.clone();
+                move |v| guidance.set(v)
+            })}
+            on_detail={Callback::from({
+                let detail = detail.clone();
+                let stories = stories.clone();
+                move |d: StoryDetail| {
+                    stories.set(
+                        (*stories)
+                            .clone()
+                            .into_iter()
+                            .map(|s| {
+                                if s.id == d.story.id {
+                                    d.story.clone()
+                                } else {
+                                    s
                                 }
-                                on_navigate.emit((
-                                    AppRoute::Stories {
-                                        story_id: Some(d.story.id),
-                                        nav: StoryNav::Basics,
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            }
-                        });
+                            })
+                            .collect(),
+                    );
+                    detail.set(Some(d));
+                }
+            })}
+            on_selection={Callback::from({
+                let navigate_story = navigate_story.clone();
+                let story_id = active_story_id;
+                move |s| {
+                    if let Some(story_id) = story_id {
+                        navigate_story.emit((
+                            Some(story_id),
+                            story_nav_from_selection(s),
+                        ));
                     }
-                })}
-                on_delete={Callback::from({
-                    let stories = stories.clone();
-                    let on_navigate = props.on_navigate.clone();
-                    let route = props.route.clone();
-                    move |id| {
-                        let stories = stories.clone();
-                        let on_navigate = on_navigate.clone();
-                        let route = route.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::delete_story(id).await;
-                            if let Ok(list) = api::list_stories().await {
-                                if story_id_from_route(&route) == Some(id) {
-                                    on_navigate.emit((
-                                        AppRoute::Stories {
-                                            story_id: list.first().map(|s| s.id),
-                                            nav: StoryNav::Basics,
-                                            overlay: None,
-                                            sidebar: false,
-                                        },
-                                        false,
-                                    ));
-                                }
-                                stories.set(list);
-                            }
-                        });
-                    }
-                })}
-            />
-            <main class="main">
-                <QueueBar queue={props.queue.clone()} on_open={props.on_open_queue.clone()} />
-                <StoryEditor
-                    detail={(*detail).clone()}
-                    selection={selection}
-                    guidance={(*guidance).clone()}
-                    on_guidance={Callback::from({
-                        let guidance = guidance.clone();
-                        move |v| guidance.set(v)
-                    })}
-                    on_detail={Callback::from({
-                        let detail = detail.clone();
-                        let stories = stories.clone();
-                        move |d: StoryDetail| {
-                            stories.set(
-                                (*stories)
-                                    .clone()
-                                    .into_iter()
-                                    .map(|s| {
-                                        if s.id == d.story.id {
-                                            d.story.clone()
-                                        } else {
-                                            s
-                                        }
-                                    })
-                                    .collect(),
-                            );
-                            detail.set(Some(d));
-                        }
-                    })}
-                    on_selection={Callback::from({
-                        let navigate_story = navigate_story.clone();
-                        let story_id = active_story_id;
-                        move |s| {
-                            if let Some(story_id) = story_id {
-                                navigate_story.emit((
-                                    Some(story_id),
-                                    story_nav_from_selection(s),
-                                ));
-                            }
-                        }
-                    })}
-                    on_open_sidebar={Callback::from({
-                        let on_navigate = props.on_navigate.clone();
-                        let route = props.route.clone();
-                        move |_| on_navigate.emit((route.clone().with_sidebar(true), true))
-                    })}
-                />
-            </main>
-        </div>
-        </>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct StorySidebarProps {
-    stories: Vec<Story>,
-    selected_id: Option<i64>,
-    on_select_story: Callback<i64>,
-    on_new: Callback<()>,
-    on_delete: Callback<i64>,
-}
-
-#[function_component(StorySidebar)]
-fn story_sidebar(props: &StorySidebarProps) -> Html {
-    html! {
-        <aside class="sidebar">
-            <div class="header sidebar-header">
-                <div>
-                    <div class="muted" style="text-transform:uppercase;letter-spacing:0.2em;font-size:0.7rem;">{"Dreamwell"}</div>
-                    <strong>{"Stories"}</strong>
-                </div>
-                <button class="btn" onclick={props.on_new.reform(|_| ())}>{"New"}</button>
-            </div>
-            <div class="sidebar-scroll">
-                { for props.stories.iter().map(|story| {
-                    let id = story.id;
-                    let selected = props.selected_id == Some(story.id);
-                    let status = story_status(story);
-                    html! {
-                        <div key={id} class={classes!("chat-item", selected.then_some("selected"))}>
-                            <div style="display:flex;gap:0.5rem;">
-                                <div style="flex:1;min-width:0;" onclick={props.on_select_story.reform(move |_| id)}>
-                                    <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &story.title }</div>
-                                    if let Some(label) = status {
-                                        <span class="badge">{ label }</span>
-                                    }
-                                </div>
-                                <button class="btn secondary btn-compact" onclick={props.on_delete.reform(move |_| id)}>{"✕"}</button>
-                            </div>
-                        </div>
-                    }
-                }) }
-            </div>
-        </aside>
-    }
-}
-
-fn story_status(story: &Story) -> Option<String> {
-    let job = story.active_job.as_ref()?;
-    match job.status {
-        JobStatus::Running => Some("generating…".to_string()),
-        JobStatus::Queued => {
-            if story.queued_jobs > 1 {
-                Some(format!("queued ({})", story.queued_jobs))
-            } else {
-                Some("queued".to_string())
-            }
-        }
-        _ => None,
+                }
+            })}
+        />
     }
 }
 
@@ -493,7 +340,6 @@ struct StoryEditorProps {
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
-    on_open_sidebar: Callback<()>,
 }
 
 #[function_component(StoryEditor)]
@@ -501,10 +347,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
     let Some(detail) = props.detail.clone() else {
         return html! {
             <>
-                <header class="header">
-                    <div class="mobile-toolbar">
-                        <button class="btn secondary" onclick={props.on_open_sidebar.reform(|_| ())}>{"Stories"}</button>
-                    </div>
+                <header class="header content-header">
                     <h1 class="header-title">{"Select or create a story"}</h1>
                 </header>
                 <div class="loading-screen muted" style="text-align:center;">{"Stories are built chapter by chapter, beat by beat."}</div>
@@ -513,45 +356,70 @@ fn story_editor(props: &StoryEditorProps) -> Html {
     };
 
     let queued = detail.story.queued_jobs;
+    let story_id = detail.story.id;
+    let target = detail.story.length_preset.ref_chapters();
+    let proposing_chapters = detail.story.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryProposeChapters
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
+    let show_story_actions = props.selection == StorySelection::Basics;
 
     html! {
         <>
-            <header class="header">
-                <div class="mobile-toolbar">
-                    <button class="btn secondary" onclick={props.on_open_sidebar.reform(|_| ())}>{"Stories"}</button>
+            <header class="header content-header">
+                <div class="content-header-row">
+                    <TitleEditor
+                        title={detail.story.title.clone()}
+                        class="header-title"
+                        placeholder="Story title"
+                        trigger={TitleEditTrigger::Button}
+                        on_save={Callback::from({
+                            let on_detail = props.on_detail.clone();
+                            let story_id = detail.story.id;
+                            move |title| {
+                                let on_detail = on_detail.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(d) = api::update_story(story_id, &StoryUpdate {
+                                        title: Some(title),
+                                        premise: None,
+                                        tone: None,
+                                        genre: None,
+                                        pov: None,
+                                        length_preset: None,
+                                        notes: None,
+                                    }).await {
+                                        on_detail.emit(d);
+                                    }
+                                });
+                            }
+                        })}
+                    />
+                    if show_story_actions {
+                        <div class="header-actions">
+                            <button
+                                class="btn secondary btn-compact header-icon-btn"
+                                title="Propose chapters from story basics"
+                                disabled={proposing_chapters}
+                                onclick={propose_chapters_action(story_id, props.guidance.clone(), props.on_detail.clone())}
+                            >
+                                { if proposing_chapters { "Proposing…" } else { "Chapters" } }
+                            </button>
+                            <button
+                                class="btn secondary btn-compact header-icon-btn"
+                                title="Add chapter manually"
+                                onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}
+                            >
+                                {"+ Chapter"}
+                            </button>
+                        </div>
+                    }
                 </div>
-                <TitleEditor
-                    title={detail.story.title.clone()}
-                    class="header-title"
-                    placeholder="Story title"
-                    trigger={TitleEditTrigger::Button}
-                    on_save={Callback::from({
-                        let on_detail = props.on_detail.clone();
-                        let story_id = detail.story.id;
-                        move |title| {
-                            let on_detail = on_detail.clone();
-                            wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(d) = api::update_story(story_id, &StoryUpdate {
-                                    title: Some(title),
-                                    premise: None,
-                                    tone: None,
-                                    genre: None,
-                                    pov: None,
-                                    length_preset: None,
-                                    notes: None,
-                                }).await {
-                                    on_detail.emit(d);
-                                }
-                            });
-                        }
-                    })}
-                />
                 <p class="header-subtitle muted">
                     { format!(
                         "{} · {} of {} chapters",
                         detail.story.length_preset.label(),
                         detail.chapters.len(),
-                        detail.story.length_preset.ref_chapters(),
+                        target,
                     ) }
                     if queued > 0 {
                         { format!(" · {} queued", queued) }
@@ -585,12 +453,6 @@ struct StoryBlockListProps {
 #[function_component(StoryBlockList)]
 fn story_block_list(props: &StoryBlockListProps) -> Html {
     let story_id = props.detail.story.id;
-    let target = props.detail.story.length_preset.ref_chapters();
-    let chapter_count = props.detail.chapters.len() as i64;
-    let proposing_chapters = props.detail.story.active_job.as_ref().is_some_and(|job| {
-        job.job_type == JobType::StoryProposeChapters
-            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-    });
 
     html! {
         <div class="story-blocks">
@@ -633,20 +495,6 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                             oninput={guidance_input(props.on_guidance.clone())}
                         />
                     </label>
-                    <div class="story-actions">
-                        <button class="btn" disabled={proposing_chapters} onclick={propose_chapters_action(story_id, props.guidance.clone(), props.on_detail.clone())}>
-                            { if proposing_chapters {
-                                "Proposing chapters…".to_string()
-                            } else if chapter_count == 0 {
-                                format!("Propose chapters (~{target})")
-                            } else {
-                                "Propose chapters".to_string()
-                            }}
-                        </button>
-                        <button class="btn secondary" onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}>
-                            {"Add chapter manually"}
-                        </button>
-                    </div>
                     <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
                         {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
                     </p>

@@ -43,6 +43,37 @@ fn status_label(status: JobStatus) -> &'static str {
 }
 
 #[derive(Properties, PartialEq)]
+pub struct TopBarQueueButtonProps {
+    pub queue: Option<QueueStatus>,
+    pub active: bool,
+    pub on_open: Callback<()>,
+}
+
+#[function_component(TopBarQueueButton)]
+pub fn top_bar_queue_button(props: &TopBarQueueButtonProps) -> Html {
+    let total = props
+        .queue
+        .as_ref()
+        .map(|q| q.running.len() + q.queued.len())
+        .unwrap_or(0);
+    let on_open = props.on_open.clone();
+    html! {
+        <button
+            type="button"
+            class={classes!("mode-btn", "mode-btn-icon", props.active.then_some("active"))}
+            title="Generation queue"
+            aria-label="Generation queue"
+            onclick={Callback::from(move |_| on_open.emit(()))}
+        >
+            <span class="mode-btn-icon-glyph">{"⏱"}</span>
+            if total > 0 {
+                <span class="mode-btn-badge">{ total }</span>
+            }
+        </button>
+    }
+}
+
+#[derive(Properties, PartialEq)]
 pub struct QueueBarProps {
     pub queue: Option<QueueStatus>,
     pub on_open: Callback<()>,
