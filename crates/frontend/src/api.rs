@@ -125,6 +125,15 @@ impl ReconnectingEventSource {
         *self.timeout.borrow_mut() = Some(timeout);
     }
 
+    fn reconnect(self: &Rc<Self>) {
+        if *self.stopped.borrow() {
+            return;
+        }
+        *self.attempt.borrow_mut() = 0;
+        self.timeout.borrow_mut().take();
+        self.connect();
+    }
+
     fn stop(&self) {
         *self.stopped.borrow_mut() = true;
         self.timeout.borrow_mut().take();
@@ -393,6 +402,17 @@ pub async fn import_character(file: &web_sys::File) -> Result<Character, String>
     Ok(result.character)
 }
 
+#[derive(Clone)]
+pub struct StreamNudge {
+    inner: Rc<ReconnectingEventSource>,
+}
+
+impl StreamNudge {
+    pub fn reconnect(&self) {
+        ReconnectingEventSource::reconnect(&self.inner);
+    }
+}
+
 pub struct ChatStream {
     inner: Rc<ReconnectingEventSource>,
 }
@@ -406,6 +426,12 @@ impl ChatStream {
             }
         });
         Self { inner }
+    }
+
+    pub fn nudge(&self) -> StreamNudge {
+        StreamNudge {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -562,6 +588,12 @@ impl StoryStream {
             }
         });
         Self { inner }
+    }
+
+    pub fn nudge(&self) -> StreamNudge {
+        StreamNudge {
+            inner: self.inner.clone(),
+        }
     }
 }
 
