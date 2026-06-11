@@ -347,15 +347,25 @@ pub async fn update_chat(pool: &SqlitePool, id: i64, payload: ChatUpdate) -> App
     let existing = get_chat(pool, id).await?;
     let title = payload.title.unwrap_or(existing.title);
     let character_id = payload.character_id.unwrap_or(existing.character_id);
+    let summary_updated = payload.summary.is_some();
+    let previous_summary = existing.summary.clone();
+    let summary = payload.summary.unwrap_or(existing.summary);
     let _ = get_character(pool, character_id).await?;
     let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE chats SET title=?1, character_id=?2, updated_at=?3 WHERE id=?4")
-        .bind(&title)
-        .bind(character_id)
-        .bind(&now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE chats SET title=?1, character_id=?2, summary=?3, updated_at=?4 WHERE id=?5",
+    )
+    .bind(&title)
+    .bind(character_id)
+    .bind(&summary)
+    .bind(&now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    if summary_updated && summary != previous_summary {
+        crate::summarize::refresh_chat_summary_markers(pool, id, &summary).await?;
+    }
 
     if character_id != existing.character_id {
         let messages = list_messages(pool, id).await?;
@@ -434,7 +444,7 @@ pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppRe
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.is_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.is_summary, m.in_summary, m.created_at, j.status as job_status FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -512,9 +522,28 @@ pub async fn insert_message(
         thought_in_progress: false,
         variable_updates: Vec::new(),
         is_summary,
+        in_summary: false,
         created_at: parse_dt(&now)?,
         job_status: None,
     })
+}
+
+pub async fn mark_messages_in_summary(pool: &SqlitePool, ids: &[i64]) -> AppResult<()> {
+    for id in ids {
+        sqlx::query("UPDATE messages SET in_summary = 1 WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+pub async fn clear_messages_in_summary(pool: &SqlitePool, chat_id: i64) -> AppResult<()> {
+    sqlx::query("UPDATE messages SET in_summary = 0 WHERE chat_id = ?1")
+        .bind(chat_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn update_message_content(
@@ -1118,6 +1147,7 @@ fn message_from_row(row: MessageRow) -> Message {
         thought_in_progress: row.thought_in_progress != 0,
         variable_updates,
         is_summary: row.is_summary != 0,
+        in_summary: row.in_summary != 0,
         created_at: DateTime::parse_from_rfc3339(&row.created_at)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
@@ -1185,6 +1215,7 @@ struct MessageRow {
     thought_in_progress: i64,
     variable_updates: String,
     is_summary: i64,
+    in_summary: i64,
     created_at: String,
     job_status: Option<String>,
 }

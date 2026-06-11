@@ -190,7 +190,7 @@ pub async fn build_messages_for_inference(
     }
 
     let mut db_messages = db::list_messages(pool, chat_id).await?;
-    db_messages.retain(|m| !m.is_summary && m.role != MessageRole::System);
+    db_messages.retain(crate::summarize::is_active_for_context);
     if settings.max_context_messages > 0 {
         let keep = settings.max_context_messages as usize;
         if db_messages.len() > keep {

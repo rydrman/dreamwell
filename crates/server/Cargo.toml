@@ -28,3 +28,6 @@ async-stream = "0.3"
 png = "0.17"
 base64 = "0.22"
 bytes = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -13,8 +13,8 @@ use axum::{
 };
 use dreamwell_types::{
     Chat, ChatCreate, ChatStreamPayload, ChatUpdate, ChatVariable, ChatVariableUpdate, Job,
-    Message, MessageRole, OkResponse, QueueStatus, RegenerateMessageRequest, SendMessageRequest,
-    UpdateMessageRequest,
+    Message, MessageRole, OkResponse, QueueStatus, RegenerateMessageRequest,
+    RegenerateSummaryRequest, SendMessageRequest, UpdateMessageRequest,
 };
 
 use crate::db;
@@ -45,6 +45,8 @@ pub fn router() -> Router<AppState> {
         .route("/:id/variables", get(list_variables).put(upsert_variable))
         .route("/:id/variables/:key", delete(delete_variable))
         .route("/:id/summarize", post(summarize_chat))
+        .route("/:id/summary", delete(delete_chat_summary))
+        .route("/:id/summary/regenerate", post(regenerate_chat_summary))
         .route("/:id/stream", get(stream_chat))
 }
 
@@ -110,6 +112,7 @@ async fn list_messages(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Vec<Message>>> {
+    crate::summarize::cleanup_stale_summary_markers(&state.pool, id).await?;
     Ok(Json(db::list_messages(&state.pool, id).await?))
 }
 
@@ -264,6 +267,29 @@ async fn summarize_chat(
     let job = state
         .queue
         .enqueue_summarize(&state.pool, id, &settings)
+        .await?;
+    db::touch_chat(&state.pool, id).await?;
+    Ok(Json(job))
+}
+
+async fn delete_chat_summary(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<OkResponse>> {
+    crate::summarize::delete_chat_summary(&state.pool, id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn regenerate_chat_summary(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<RegenerateSummaryRequest>,
+) -> AppResult<Json<Job>> {
+    let _ = db::get_chat(&state.pool, id).await?;
+    let settings = db::get_settings(&state.pool).await?;
+    let job = state
+        .queue
+        .enqueue_regenerate_summary(&state.pool, id, payload.marker_id, &settings)
         .await?;
     db::touch_chat(&state.pool, id).await?;
     Ok(Json(job))
