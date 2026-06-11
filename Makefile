@@ -51,7 +51,7 @@ build-server:
 
 build: build-front build-server
 
-run: run-docker
+dev: run-docker
 
 run-docker:
 	chmod +x scripts/dev-run.sh

@@ -829,14 +829,23 @@ input.header-title {
   opacity: 0.55;
 }
 
+.message--editing {
+  width: 85%;
+  max-width: 85%;
+}
+
 .message-edit-input {
   width: 100%;
+  box-sizing: border-box;
   min-height: 6rem;
   resize: vertical;
   border: 1px solid var(--border);
   border-radius: 0.25rem;
   padding: 0.5rem 0.65rem;
   background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  line-height: 1.55;
 }
 
 .message-edit-actions {
@@ -1326,6 +1335,11 @@ input.header-title {
   }
 
   .message {
+    max-width: 100%;
+  }
+
+  .message--editing {
+    width: 100%;
     max-width: 100%;
   }
 
