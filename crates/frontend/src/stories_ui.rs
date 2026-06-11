@@ -9,6 +9,7 @@ use yew::prelude::*;
 use crate::api;
 use crate::queue_ui::QueueBar;
 use crate::router::{AppRoute, StoryNav};
+use crate::title_editor::{TitleEditTrigger, TitleEditor};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum StorySelection {
@@ -451,7 +452,7 @@ fn story_sidebar(props: &StorySidebarProps) -> Html {
                     let selected = props.selected_id == Some(story.id);
                     let status = story_status(story);
                     html! {
-                        <div class={classes!("chat-item", selected.then_some("selected"))}>
+                        <div key={id} class={classes!("chat-item", selected.then_some("selected"))}>
                             <div style="display:flex;gap:0.5rem;">
                                 <div style="flex:1;min-width:0;" onclick={props.on_select_story.reform(move |_| id)}>
                                     <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &story.title }</div>
@@ -519,7 +520,32 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                 <div class="mobile-toolbar">
                     <button class="btn secondary" onclick={props.on_open_sidebar.reform(|_| ())}>{"Stories"}</button>
                 </div>
-                <h1 class="header-title">{ detail.story.title.clone() }</h1>
+                <TitleEditor
+                    title={detail.story.title.clone()}
+                    class="header-title"
+                    placeholder="Story title"
+                    trigger={TitleEditTrigger::Button}
+                    on_save={Callback::from({
+                        let on_detail = props.on_detail.clone();
+                        let story_id = detail.story.id;
+                        move |title| {
+                            let on_detail = on_detail.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(d) = api::update_story(story_id, &StoryUpdate {
+                                    title: Some(title),
+                                    premise: None,
+                                    tone: None,
+                                    genre: None,
+                                    pov: None,
+                                    length_preset: None,
+                                    notes: None,
+                                }).await {
+                                    on_detail.emit(d);
+                                }
+                            });
+                        }
+                    })}
+                />
                 <p class="header-subtitle muted">
                     { format!(
                         "{} · {} of {} chapters",
@@ -635,7 +661,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                 let generating = ch.title.is_empty() && ch.synopsis.is_empty()
                     && props.detail.story.active_job.is_some();
                 html! {
-                    <>
+                    <div key={ch_id} class="story-chapter-block">
                         <StoryBlockHeader
                             label={ch_label}
                             subtitle={ch_subtitle}
@@ -666,7 +692,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                             let beat_subtitle = if beat.title.is_empty() { "…".to_string() } else { beat.title.clone() };
                             let streaming = matches!(beat.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
                             html! {
-                                <>
+                                <div key={beat_id} class="story-beat-block">
                                     <StoryBlockHeader
                                         label={beat_label}
                                         subtitle={beat_subtitle}
@@ -687,10 +713,10 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                             />
                                         </div>
                                     }
-                                </>
+                                </div>
                             }
                         }) }
-                    </>
+                    </div>
                 }
             }) }
         </div>
