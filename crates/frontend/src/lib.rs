@@ -951,7 +951,7 @@ fn app() -> Html {
                 if mode == AppMode::Stories {
                     <StoriesShell route={route.clone()} on_navigate={navigate.clone()} />
                 } else {
-                <>
+                <div class="chat-pane">
                 <header class="header content-header">
                     if let Some(chat) = selected.as_ref() {
                         <div class="content-header-row">
@@ -1150,7 +1150,7 @@ fn app() -> Html {
                     })}
                 />
                 </div>
-                </>
+                </div>
                 }
             </main>
         </div>
