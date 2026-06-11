@@ -50,6 +50,7 @@ fn app() -> Html {
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
     let refresh_generation = use_state(|| 0u32);
+    let chat_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
 
     let navigate = {
@@ -135,11 +136,13 @@ fn app() -> Html {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
         let chats = chats.clone();
+        let chat_stream_nudge = chat_stream_nudge.clone();
         let refresh_generation = *refresh_generation;
         use_effect_with(
             (selected_chat_id, refresh_generation),
             move |(chat_id, _)| {
                 let mut stream_holder = None::<api::ChatStream>;
+                *chat_stream_nudge.borrow_mut() = None;
                 if let Some(chat_id) = *chat_id {
                     messages_loading.set(true);
                     let messages_for_fetch = messages.clone();
@@ -151,7 +154,7 @@ fn app() -> Html {
                         }
                         messages_loading_for_fetch.set(false);
                     });
-                    stream_holder = Some(api::ChatStream::new(chat_id, move |payload| {
+                    let stream = api::ChatStream::new(chat_id, move |payload| {
                         messages.set(payload.messages.clone());
                         messages_loading.set(false);
                         let current = (*chats).clone();
@@ -167,12 +170,15 @@ fn app() -> Html {
                                 })
                                 .collect(),
                         ));
-                    }));
+                    });
+                    *chat_stream_nudge.borrow_mut() = Some(stream.nudge());
+                    stream_holder = Some(stream);
                 } else {
                     messages.set(vec![]);
                     messages_loading.set(false);
                 }
                 move || {
+                    *chat_stream_nudge.borrow_mut() = None;
                     drop(stream_holder);
                 }
             },
@@ -180,17 +186,19 @@ fn app() -> Html {
     }
 
     {
-        let refresh_generation = refresh_generation.clone();
         let chats = chats.clone();
         let archived_chats = archived_chats.clone();
         let queue = queue.clone();
+        let chat_stream_nudge = chat_stream_nudge.clone();
         use_effect_with((), move |_| {
-            let refresh_generation = refresh_generation.clone();
             let chats = chats.clone();
             let archived_chats = archived_chats.clone();
             let queue = queue.clone();
+            let chat_stream_nudge = chat_stream_nudge.clone();
             let resume: Rc<dyn Fn()> = Rc::new(move || {
-                refresh_generation.set(*refresh_generation + 1);
+                if let Some(nudge) = chat_stream_nudge.borrow().clone() {
+                    nudge.reconnect();
+                }
                 let chats = chats.clone();
                 let archived_chats = archived_chats.clone();
                 let queue = queue.clone();
@@ -232,20 +240,11 @@ fn app() -> Html {
                 resume_online();
             }) as Box<dyn FnMut(_)>);
 
-            let resume_focus = resume.clone();
-            let focus_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                resume_focus();
-            }) as Box<dyn FnMut(_)>);
-
             let window = web_sys::window();
             if let Some(window) = window.as_ref() {
                 let _ = window.add_event_listener_with_callback(
                     "online",
                     online_callback.as_ref().unchecked_ref(),
-                );
-                let _ = window.add_event_listener_with_callback(
-                    "focus",
-                    focus_callback.as_ref().unchecked_ref(),
                 );
             }
 
@@ -260,10 +259,6 @@ fn app() -> Html {
                     let _ = window.remove_event_listener_with_callback(
                         "online",
                         online_callback.as_ref().unchecked_ref(),
-                    );
-                    let _ = window.remove_event_listener_with_callback(
-                        "focus",
-                        focus_callback.as_ref().unchecked_ref(),
                     );
                 }
             }

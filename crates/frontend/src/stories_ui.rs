@@ -78,6 +78,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
     let refresh_generation = use_state(|| 0u32);
+    let story_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let selected_story_id = story_id_from_route(&props.route);
     let selection = selection_from_story_nav(story_nav_from_route(&props.route));
     let sidebar_open = sidebar_open_from_route(&props.route);
@@ -116,11 +117,13 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     {
         let detail = detail.clone();
         let stories = stories.clone();
+        let story_stream_nudge = story_stream_nudge.clone();
         let refresh_generation = *refresh_generation;
         let route = props.route.clone();
         use_effect_with((route.clone(), refresh_generation), move |(route, _)| {
             let story_id = story_id_from_route(route);
             let mut stream_holder = None::<api::StoryStream>;
+            *story_stream_nudge.borrow_mut() = None;
             if let Some(story_id) = story_id {
                 let detail_for_fetch = detail.clone();
                 let stories = stories.clone();
@@ -129,7 +132,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                         detail_for_fetch.set(Some(d));
                     }
                 });
-                stream_holder = Some(api::StoryStream::new(story_id, move |payload| {
+                let stream = api::StoryStream::new(story_id, move |payload| {
                     detail.set(Some(payload.detail.clone()));
                     let current = (*stories).clone();
                     stories.set(
@@ -144,11 +147,16 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                             })
                             .collect(),
                     );
-                }));
+                });
+                *story_stream_nudge.borrow_mut() = Some(stream.nudge());
+                stream_holder = Some(stream);
             } else {
                 detail.set(None);
             }
-            move || drop(stream_holder)
+            move || {
+                *story_stream_nudge.borrow_mut() = None;
+                drop(stream_holder);
+            }
         });
     }
 
@@ -181,13 +189,15 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     }
 
     {
-        let refresh_generation = refresh_generation.clone();
         let stories = stories.clone();
+        let story_stream_nudge = story_stream_nudge.clone();
         use_effect_with((), move |_| {
-            let refresh_generation = refresh_generation.clone();
             let stories = stories.clone();
+            let story_stream_nudge = story_stream_nudge.clone();
             let resume: Rc<dyn Fn()> = Rc::new(move || {
-                refresh_generation.set(*refresh_generation + 1);
+                if let Some(nudge) = story_stream_nudge.borrow().clone() {
+                    nudge.reconnect();
+                }
                 let stories = stories.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(list) = api::list_stories().await {
@@ -221,20 +231,11 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 resume_online();
             }) as Box<dyn FnMut(_)>);
 
-            let resume_focus = resume.clone();
-            let focus_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                resume_focus();
-            }) as Box<dyn FnMut(_)>);
-
             let window = web_sys::window();
             if let Some(window) = window.as_ref() {
                 let _ = window.add_event_listener_with_callback(
                     "online",
                     online_callback.as_ref().unchecked_ref(),
-                );
-                let _ = window.add_event_listener_with_callback(
-                    "focus",
-                    focus_callback.as_ref().unchecked_ref(),
                 );
             }
 
@@ -249,10 +250,6 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     let _ = window.remove_event_listener_with_callback(
                         "online",
                         online_callback.as_ref().unchecked_ref(),
-                    );
-                    let _ = window.remove_event_listener_with_callback(
-                        "focus",
-                        focus_callback.as_ref().unchecked_ref(),
                     );
                 }
             }
