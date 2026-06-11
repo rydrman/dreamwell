@@ -1271,9 +1271,7 @@ fn app() -> Html {
                                 summarize_in_progress(chat, &messages)
                             })
                     }
-                    summarizing={selected.as_ref().is_some_and(|chat| {
-                        summarize_in_progress(chat, &messages)
-                    })}
+                    notice={selected.as_ref().and_then(|chat| composer_notice(chat, &messages))}
                     on_send={Callback::from({
                         let messages = messages.clone();
                         let chats = chats.clone();
@@ -1530,6 +1528,63 @@ fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
         || messages
             .iter()
             .any(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposerNotice {
+    Summarizing,
+    Writing,
+    Queued,
+}
+
+impl ComposerNotice {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Summarizing => "Summarizing earlier messages…",
+            Self::Writing => "Still writing — more coming…",
+            Self::Queued => "Reply queued — waiting for server…",
+        }
+    }
+
+    fn status_class(self) -> &'static str {
+        match self {
+            Self::Summarizing => "composer-status--summarize",
+            Self::Writing => "composer-status--writing",
+            Self::Queued => "composer-status--queued",
+        }
+    }
+
+    fn textarea_placeholder(self) -> &'static str {
+        match self {
+            Self::Summarizing => "Summarization in progress…",
+            Self::Writing => "Reply still generating…",
+            Self::Queued => "Reply waiting in queue…",
+        }
+    }
+}
+
+fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<ComposerNotice> {
+    if summarize_in_progress(chat, messages) {
+        return Some(ComposerNotice::Summarizing);
+    }
+    if messages
+        .iter()
+        .any(|message| message.job_status == Some(JobStatus::Running))
+    {
+        return Some(ComposerNotice::Writing);
+    }
+    if messages
+        .iter()
+        .any(|message| message.job_status == Some(JobStatus::Queued))
+    {
+        return Some(ComposerNotice::Queued);
+    }
+    let job = chat.active_job.as_ref()?;
+    match job.status {
+        JobStatus::Running => Some(ComposerNotice::Writing),
+        JobStatus::Queued => Some(ComposerNotice::Queued),
+        _ => None,
+    }
 }
 
 fn can_summarize_chat(messages: &[Message], settings: &Option<Settings>) -> bool {
@@ -2135,12 +2190,13 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
             role,
             (*mode == MessageBubbleMode::Edit).then_some("message--editing"),
             pending.then_some("message--pending"),
+            streaming.then_some("message--streaming"),
         )}>
             <div class="message-header">
                 <div class="message-meta muted">
                     { role.to_string() }
-                    if queued { <span>{" · queued on server"}</span> }
-                    if streaming { <span>{" · streaming on server"}</span> }
+                    if queued { <span>{" · waiting in queue"}</span> }
+                    if streaming { <span>{" · still writing"}</span> }
                 </div>
                 if can_menu {
                     <div class="message-menu-wrap">
@@ -2236,6 +2292,10 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                 <span class="muted">{"(Empty response)"}</span>
             } else {
                 { props.rendered_content.clone() }
+                if streaming {
+                    <span class="streaming-cursor" aria-hidden="true">{"▍"}</span>
+                    <div class="message-streaming-note muted">{"Still writing…"}</div>
+                }
             }
             if show_variable_updates {
                 <VariableUpdatesBlock updates={props.message.variable_updates.clone()} />
@@ -2588,7 +2648,7 @@ fn message_list(props: &MessageListProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct ComposerProps {
     disabled: bool,
-    summarizing: bool,
+    notice: Option<ComposerNotice>,
     on_send: Callback<String>,
 }
 
@@ -2614,12 +2674,21 @@ fn composer(props: &ComposerProps) -> Html {
         })
     };
 
+    let placeholder = props
+        .notice
+        .map(ComposerNotice::textarea_placeholder)
+        .unwrap_or("Write your message…");
+
     html! {
         <>
-            if props.summarizing {
-                <div class="composer-status" role="status" aria-live="polite">
+            if let Some(notice) = props.notice {
+                <div
+                    class={classes!("composer-status", notice.status_class())}
+                    role="status"
+                    aria-live="polite"
+                >
                     <span class="settings-save-spinner" aria-hidden="true"></span>
-                    <span>{"Summarizing earlier messages…"}</span>
+                    <span>{ notice.message() }</span>
                 </div>
             }
             <div class="composer">
@@ -2633,11 +2702,7 @@ fn composer(props: &ComposerProps) -> Html {
                             text.set(input.value());
                         }
                     })}
-                    placeholder={if props.summarizing {
-                        "Summarization in progress…"
-                    } else {
-                        "Write your message…"
-                    }}
+                    placeholder={placeholder}
                     disabled={props.disabled || *sending}
                 />
                 <button class="btn" onclick={on_send} disabled={props.disabled || *sending || text.trim().is_empty()}>

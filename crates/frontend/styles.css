@@ -1011,6 +1011,33 @@ input.header-title {
   font-style: italic;
 }
 
+.message.message--streaming {
+  box-shadow: inset 3px 0 0 var(--success);
+}
+
+.message-streaming-note {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  font-style: italic;
+}
+
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 0.1rem;
+  color: var(--success);
+  animation: streaming-blink 1s step-end infinite;
+}
+
+@keyframes streaming-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
 .composer-status {
   flex-shrink: 0;
   display: flex;
@@ -1021,6 +1048,19 @@ input.header-title {
   background: var(--surface);
   color: var(--muted);
   font-size: 0.875rem;
+}
+
+.composer-status--writing {
+  color: var(--fg);
+  border-top-color: var(--success);
+}
+
+.composer-status--queued {
+  font-style: italic;
+}
+
+.composer-status--summarize {
+  font-style: italic;
 }
 
 .composer {
@@ -1099,6 +1139,31 @@ input.header-title {
   border: 1px solid var(--border);
   padding: 0.1rem 0.5rem;
   font-size: 0.75rem;
+}
+
+.badge--streaming {
+  border-color: var(--success);
+  color: var(--success);
+  animation: badge-pulse 1.5s ease-in-out infinite;
+}
+
+.badge--queued {
+  color: var(--muted);
+}
+
+.chat-item.selected .badge--streaming {
+  color: var(--accent-fg);
+  border-color: var(--accent-fg);
+}
+
+@keyframes badge-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
 }
 
 .tabs {
