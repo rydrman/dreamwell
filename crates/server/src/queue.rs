@@ -18,7 +18,7 @@ use crate::story_prompts::{
     build_propose_beats_messages, build_propose_chapters_messages, parse_beats_proposal_json,
     parse_chapters_proposal_json, parse_outline_json,
 };
-use crate::summarize::maybe_summarize_chat;
+use crate::summarize::{maybe_enqueue_summarize, run_summarize_job};
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
 use crate::variables::{
     apply_variable_updates, build_message_variable_updates, extract_variables_from_text,
@@ -221,7 +221,7 @@ impl JobQueue {
                             }
                         };
                         tokio::spawn(async move {
-                            run_job_guarded(&pool, job_id, token).await;
+                            run_job_guarded(&pool, job_id, token, work_tx.clone()).await;
                             if let Ok(mut tokens) = active_tokens.lock() {
                                 tokens.remove(&job_id);
                             }
@@ -235,8 +235,13 @@ impl JobQueue {
     }
 }
 
-async fn run_job_guarded(pool: &SqlitePool, job_id: i64, token: CancellationToken) {
-    if let Err(err) = run_job(pool, job_id, token).await {
+async fn run_job_guarded(
+    pool: &SqlitePool,
+    job_id: i64,
+    token: CancellationToken,
+    work_tx: mpsc::UnboundedSender<()>,
+) {
+    if let Err(err) = run_job(pool, job_id, token, &work_tx).await {
         tracing::error!(job_id, %err, "job failed");
         if let Ok(job) = db::get_job(pool, job_id).await {
             if job.status == JobStatus::Running {
@@ -246,7 +251,12 @@ async fn run_job_guarded(pool: &SqlitePool, job_id: i64, token: CancellationToke
     }
 }
 
-async fn run_job(pool: &SqlitePool, job_id: i64, token: CancellationToken) -> AppResult<()> {
+async fn run_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    token: CancellationToken,
+    work_tx: &mpsc::UnboundedSender<()>,
+) -> AppResult<()> {
     let job = db::get_job(pool, job_id).await?;
     if job.status != JobStatus::Running {
         return Ok(());
@@ -262,7 +272,10 @@ async fn run_job(pool: &SqlitePool, job_id: i64, token: CancellationToken) -> Ap
     }
 
     match job.job_type {
-        JobType::ChatMessage => run_chat_job(pool, job_id, &job, &settings, token).await,
+        JobType::ChatMessage => run_chat_job(pool, job_id, &job, &settings, token, work_tx).await,
+        JobType::ChatSummarize => {
+            run_summarize_job_handler(pool, job_id, &job, &settings, token).await
+        }
         JobType::StoryChapterOutline => {
             run_story_chapter_outline(pool, job_id, &job, &settings, token).await
         }
@@ -316,6 +329,11 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
                 }
             }
         }
+        JobType::ChatSummarize => {
+            if let Some(message_id) = job.message_id {
+                db::update_message_content(pool, message_id, "[Summarization cancelled]").await?;
+            }
+        }
         JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
         | JobType::StoryBeatOutline
@@ -348,6 +366,16 @@ async fn fail_job(
                     .await?;
             }
         }
+        JobType::ChatSummarize => {
+            if let Some(message_id) = job.message_id {
+                db::update_message_content(
+                    pool,
+                    message_id,
+                    &format!("[Summarization failed: {message}]"),
+                )
+                .await?;
+            }
+        }
         JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
         | JobType::StoryBeatOutline
@@ -356,12 +384,39 @@ async fn fail_job(
     Ok(())
 }
 
+async fn run_summarize_job_handler(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &dreamwell_types::Job,
+    settings: &dreamwell_types::Settings,
+    token: CancellationToken,
+) -> AppResult<()> {
+    if token.is_cancelled() {
+        return cancel_job_record(pool, job).await;
+    }
+    let chat_id = job
+        .chat_id
+        .ok_or_else(|| AppError::internal("summarize job missing chat_id"))?;
+    let marker_id = job
+        .message_id
+        .ok_or_else(|| AppError::internal("summarize job missing message_id"))?;
+
+    match run_summarize_job(pool, job_id, chat_id, marker_id, settings).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            fail_job(pool, job_id, job, &err.to_string()).await?;
+            Ok(())
+        }
+    }
+}
+
 async fn run_chat_job(
     pool: &SqlitePool,
     job_id: i64,
     job: &dreamwell_types::Job,
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
+    work_tx: &mpsc::UnboundedSender<()>,
 ) -> AppResult<()> {
     let chat_id = job
         .chat_id
@@ -416,7 +471,7 @@ async fn run_chat_job(
         {
             ChatGenerationOutcome::Success => {
                 db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-                maybe_summarize_chat(pool, chat_id, settings).await?;
+                maybe_enqueue_summarize(pool, work_tx, chat_id, settings).await?;
                 return Ok(());
             }
             ChatGenerationOutcome::Retryable(message) => {
