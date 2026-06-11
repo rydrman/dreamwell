@@ -807,23 +807,6 @@ fn app() -> Html {
                         });
                     }
                 })}
-                on_rename={Callback::from({
-                    let chats = chats.clone();
-                    move |(id, title)| {
-                        let chats = chats.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let payload = ChatUpdate {
-                                title: Some(title),
-                                character_id: None,
-                            };
-                            if api::update_chat(id, &payload).await.is_ok() {
-                                if let Ok(list) = api::list_chats().await {
-                                    chats.set(sort_chats(list));
-                                }
-                            }
-                        });
-                    }
-                })}
             />
             <main class="main">
                 <QueueBar queue={(*queue).clone()} on_open={open_queue.clone()} />
@@ -1175,7 +1158,6 @@ struct ChatSidebarProps {
     on_archive: Callback<i64>,
     on_restore: Callback<i64>,
     on_permanent_delete: Callback<i64>,
-    on_rename: Callback<(i64, String)>,
 }
 
 #[function_component(ChatSidebar)]
@@ -1201,13 +1183,7 @@ fn chat_sidebar(props: &ChatSidebarProps) -> Html {
                         <div class={classes!("chat-item", selected.then_some("selected"))}>
                             <div style="display:flex;gap:0.5rem;align-items:flex-start;">
                                 <div style="flex:1;min-width:0;" onclick={props.on_select.reform(move |_| id)}>
-                                    <TitleEditor
-                                        title={chat.title.clone()}
-                                        class="chat-item-title"
-                                        placeholder="Chat name"
-                                        compact={true}
-                                        on_save={props.on_rename.reform(move |title| (id, title))}
-                                    />
+                                    <div class="chat-item-title">{ &chat.title }</div>
                                     <div class="chat-character">{ &chat.character_name }</div>
                                     if let Some(label) = status {
                                         <span class="badge">{ label }</span>
