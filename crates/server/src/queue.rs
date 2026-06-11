@@ -25,6 +25,7 @@ use crate::summarize::{
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
 use crate::variables::{
     apply_variable_updates, build_message_variable_updates, extract_variables_from_text,
+    strip_variables_for_display,
 };
 
 /// Slightly above inference request timeout so hung jobs do not block the queue forever.
@@ -72,7 +73,7 @@ fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> S
 
 fn strip_variable_tags(settings: &dreamwell_types::Settings, text: &str) -> String {
     if settings.variables_enabled {
-        extract_variables_from_text(text).0
+        strip_variables_for_display(text)
     } else {
         text.to_string()
     }
