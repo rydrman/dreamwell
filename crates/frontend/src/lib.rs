@@ -2524,7 +2524,7 @@ fn message_list(props: &MessageListProps) -> Html {
                     let after_count = props.messages.len().saturating_sub(idx + 1);
                     let is_last = last_id == Some(m.id);
                     let streaming = matches!(m.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
-                    let display_content = if show_variables && m.role == MessageRole::Assistant {
+                    let display_content = if m.role == MessageRole::Assistant {
                         variables::strip_variables_for_display(&m.content, streaming)
                     } else {
                         m.content.clone()

@@ -1,6 +1,9 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
+const TAG: &str = r"(?:var|fact|variable)";
+const IDENT: &str = r#"(?:key|name)\s*=\s*["']?([^"'>\s]+)["']?"#;
+
 /// Strips variable markup from message text for display.
 pub fn strip_variables_for_display(text: &str, streaming: bool) -> String {
     let mut working = text.to_string();
@@ -16,13 +19,13 @@ fn delete_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
         vec![
-            Regex::new(
-                r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#,
-            )
+            Regex::new(&format!(
+                r#"(?is)<{TAG}\b[^>]*?{IDENT}[^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#
+            ))
             .expect("delete self-closing regex"),
-            Regex::new(
-                r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bdelete\b[^>]*>\s*</(?:var|fact)>"#,
-            )
+            Regex::new(&format!(
+                r#"(?is)<{TAG}\b[^>]*?{IDENT}[^>]*\bdelete\b[^>]*>\s*</{TAG}\s*>"#
+            ))
             .expect("delete empty element regex"),
         ]
     })
@@ -31,9 +34,9 @@ fn delete_patterns() -> &'static [Regex] {
 fn set_value_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
-        )
+        Regex::new(&format!(
+            r#"(?is)<{TAG}\b[^>]*?{IDENT}[^>]*\bvalue\s*=\s*["']?([^"'>\s]*)["']?[^>]*/>"#
+        ))
         .expect("set value self-closing regex")
     })
 }
@@ -41,9 +44,9 @@ fn set_value_pattern() -> &'static Regex {
 fn set_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#,
-        )
+        Regex::new(&format!(
+            r#"(?is)<{TAG}\b[^>]*?{IDENT}[^>]*>(.*?)</{TAG}\s*>"#
+        ))
         .expect("set regex")
     })
 }
@@ -66,7 +69,8 @@ fn strip_set_tags(text: &str) -> String {
 
 fn strip_orphan_closing_tags(text: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"(?is)</(?:var|fact)\s*>").expect("orphan close regex"));
+    let re =
+        RE.get_or_init(|| Regex::new(&format!(r"(?is)</{TAG}\s*>")).expect("orphan close regex"));
     re.replace_all(text, "").into_owned()
 }
 
@@ -88,7 +92,7 @@ fn split_unclosed_variable_tag(text: &str) -> (String, bool) {
     let lower = text.to_lowercase();
     let mut last_unclosed: Option<usize> = None;
 
-    for open in ["<var", "<fact"] {
+    for open in ["<variable", "<fact", "<var"] {
         if let Some(pos) = lower.rfind(open) {
             if !variable_tag_is_complete(&lower[pos..])
                 && last_unclosed.is_none_or(|existing| pos > existing)
@@ -111,11 +115,20 @@ fn variable_tag_is_complete(lower: &str) -> bool {
         }
     }
 
-    lower.contains("</var>") || lower.contains("</fact>")
+    lower.contains("</var>") || lower.contains("</fact>") || lower.contains("</variable>")
 }
 
 fn trailing_partial_var_prefix(text: &str) -> usize {
-    const PREFIXES: &[&str] = &["</fact>", "</var>", "<fact", "<var", "</", "<"];
+    const PREFIXES: &[&str] = &[
+        "</variable>",
+        "</fact>",
+        "</var>",
+        "<variable",
+        "<fact",
+        "<var",
+        "</",
+        "<",
+    ];
     let mut max_len = 0;
     for prefix in PREFIXES {
         for i in 1..prefix.len() {
@@ -142,6 +155,38 @@ mod tests {
         assert_eq!(
             strip_variables_for_display(r#"*smiles* <var name="hp">80</var>"#, false),
             "*smiles*"
+        );
+    }
+
+    #[test]
+    fn strips_variable_element_name() {
+        assert_eq!(
+            strip_variables_for_display(r#"<variable name="location">tavern</variable>"#, false),
+            ""
+        );
+    }
+
+    #[test]
+    fn strips_key_attribute_after_other_attributes() {
+        assert_eq!(
+            strip_variables_for_display(r#"<var id="1" name="location">tavern</var>"#, false),
+            ""
+        );
+    }
+
+    #[test]
+    fn strips_unquoted_name_attribute() {
+        assert_eq!(
+            strip_variables_for_display(r#"<var name=location>tavern</var>"#, false),
+            ""
+        );
+    }
+
+    #[test]
+    fn strips_spaced_equals_in_name_attribute() {
+        assert_eq!(
+            strip_variables_for_display(r#"<var name = "location">tavern</var>"#, false),
+            ""
         );
     }
 
