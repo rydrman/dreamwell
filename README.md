@@ -72,7 +72,7 @@ make docker
 docker run --rm -p 8080:8080 -v dreamwell-data:/app/data dreamwell:local
 ```
 
-Images are published privately to `ghcr.io/<owner>/dreamwell` on every push to `main` (tagged with the commit SHA) and on git tag pushes (tagged with the tag name).
+Images are published privately to `ghcr.io/<owner>/dreamwell` on every push to `main` (tagged with the commit SHA and `latest`) and on git tag pushes (tagged with the tag name).
 
 ## Kubernetes
 
@@ -83,10 +83,10 @@ Manifests live in `deploy/`. The cluster needs a `ghcr-credentials` pull secret 
 # 2. Apply the GHCR pull secret via homelab OpenTofu (see homelab/charts/ghcr.tf)
 kubectl --kubeconfig=~/work/homelab/kube_config_talos.yaml apply -f deploy/namespace.yaml
 
-# 3. Deploy (defaults to current short SHA as the image tag)
+# 3. Deploy (tracks :latest; Keel polls GHCR every 10m and rolls out on digest change)
 make deploy
 
-# Deploy a specific tag
+# Pin a specific tag instead of auto-update
 make deploy IMAGE_TAG=abc1234
 ```
 
