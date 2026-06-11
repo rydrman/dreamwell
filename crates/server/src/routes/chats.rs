@@ -21,6 +21,7 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::queue::enqueue_generation;
 use crate::routes::AppState;
+use crate::variables::{revert_message_variable_updates, revert_variable_updates_from_messages};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -121,13 +122,14 @@ async fn rewind_after_message(state: &AppState, chat_id: i64, message_id: i64) -
     let Some(idx) = messages.iter().position(|m| m.id == message_id) else {
         return Err(AppError::not_found("Message not found"));
     };
-    let after = &messages[(idx + 1)..];
-    for message in after {
+    let after: Vec<Message> = messages[(idx + 1)..].to_vec();
+    for message in &after {
         for job in db::list_active_jobs_for_message(&state.pool, message.id).await? {
             let _ = state.queue.cancel_job(&state.pool, job.id).await;
         }
     }
     let deleted = db::delete_messages_after(&state.pool, chat_id, message_id).await?;
+    revert_variable_updates_from_messages(&state.pool, chat_id, &after).await?;
     Ok(deleted.len())
 }
 
@@ -215,10 +217,13 @@ async fn regenerate_message(
         return Err(AppError::bad_request("Cannot regenerate summary messages"));
     }
 
+    let variable_updates = message.variable_updates.clone();
     let is_last = db::is_last_message(&state.pool, id, message_id).await?;
     if !is_last || payload.rewind {
         rewind_after_message(&state, id, message_id).await?;
     }
+
+    revert_message_variable_updates(&state.pool, id, &variable_updates).await?;
 
     for job in db::list_active_jobs_for_message(&state.pool, message_id).await? {
         state.queue.cancel_job(&state.pool, job.id).await?;
@@ -226,6 +231,7 @@ async fn regenerate_message(
 
     db::update_message_content(&state.pool, message_id, "").await?;
     db::clear_message_thoughts(&state.pool, message_id).await?;
+    db::clear_message_variable_updates(&state.pool, message_id).await?;
     let job = enqueue_generation(&state.pool, &state.queue, id, message_id).await?;
     db::touch_chat(&state.pool, id).await?;
     let mut updated = db::get_message(&state.pool, id, message_id).await?;

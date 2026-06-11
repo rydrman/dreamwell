@@ -671,6 +671,14 @@ pub async fn clear_message_thoughts(pool: &SqlitePool, message_id: i64) -> AppRe
     Ok(())
 }
 
+pub async fn clear_message_variable_updates(pool: &SqlitePool, message_id: i64) -> AppResult<()> {
+    sqlx::query("UPDATE messages SET variable_updates = '[]' WHERE id = ?1")
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_thought_in_progress(
     pool: &SqlitePool,
     message_id: i64,
