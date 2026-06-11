@@ -277,6 +277,15 @@ pub async fn regenerate_message(
     .await
 }
 
+pub async fn summarize_chat(chat_id: i64) -> Result<Job, String> {
+    json_body(
+        "POST",
+        &format!("/api/chats/{chat_id}/summarize"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
 pub async fn rewind_message(chat_id: i64, message_id: i64) -> Result<(), String> {
     api_request(
         "DELETE",
