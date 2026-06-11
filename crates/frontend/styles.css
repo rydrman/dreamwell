@@ -10,6 +10,9 @@
   --danger: #8b0000;
   --success: #1a6b3c;
   --overlay: rgba(0, 0, 0, 0.25);
+  --app-topbar-height: calc(
+    max(0.5rem, env(safe-area-inset-top, 0px)) + 2.75rem + 0.5rem
+  );
   font-family: "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--fg);
@@ -24,6 +27,13 @@ body {
 
 #app {
   min-height: 100vh;
+}
+
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 textarea,
@@ -47,17 +57,64 @@ button {
   z-index: 20;
 }
 
-.mode-bar-tabs {
+.mode-bar-start {
   display: flex;
-  gap: 0.25rem;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.mode-bar-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.mode-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.mode-btn-icon {
+  position: relative;
+  min-width: 2.75rem;
+  padding-left: 0.65rem;
+  padding-right: 0.65rem;
+}
+
+.mode-btn-icon-glyph {
+  line-height: 1;
+}
+
+.mode-btn-badge {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: var(--fg);
+  color: var(--accent-fg);
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1.1rem;
+  text-align: center;
 }
 
 .settings-backdrop,
-.modal-backdrop,
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  background: var(--overlay);
+}
+
 .drawer-backdrop {
   position: fixed;
   inset: 0;
+  top: var(--app-topbar-height);
   z-index: 15;
   background: var(--overlay);
 }
@@ -235,53 +292,10 @@ button {
   border-color: var(--fg);
 }
 
-.mode-bar-menu {
-  position: relative;
-}
-
 .mode-btn-menu {
   min-width: 2.75rem;
   padding-left: 0.65rem;
   padding-right: 0.65rem;
-}
-
-.mode-bar-menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 19;
-}
-
-.mode-bar-menu-dropdown {
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  right: 0;
-  z-index: 21;
-  min-width: 10rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.35rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
-  box-shadow: 0 0.5rem 1.25rem rgba(0, 0, 0, 0.12);
-}
-
-.mode-menu-item {
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--fg);
-  border-radius: 0.375rem;
-  padding: 0.5rem 0.75rem;
-  min-height: 2.5rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.mode-menu-item:hover,
-.mode-menu-item.active {
-  background: var(--surface);
-  border-color: var(--border);
 }
 
 .panel-overlay {
@@ -297,8 +311,11 @@ button {
 
 .app-shell {
   display: flex;
-  height: calc(100vh - 2.75rem);
-  height: calc(100dvh - 2.75rem);
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - var(--app-topbar-height));
+  height: calc(100dvh - var(--app-topbar-height));
   overflow: hidden;
 }
 
@@ -310,6 +327,17 @@ button {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  position: fixed;
+  top: var(--app-topbar-height);
+  bottom: 0;
+  left: 0;
+  z-index: 19;
+  transform: translateX(-110%);
+  transition: transform 0.2s ease;
+}
+
+.app-shell.pane-sidebar .sidebar {
+  transform: translateX(0);
 }
 
 .main {
@@ -324,6 +352,30 @@ button {
 .header {
   border-bottom: 1px solid var(--border);
   padding: 0.75rem 1rem;
+}
+
+.content-header {
+  flex-shrink: 0;
+  background: var(--bg);
+}
+
+.content-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.content-header-row .header-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.content-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .header-title {
@@ -390,8 +442,14 @@ input.header-title {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  justify-content: flex-end;
+  gap: 0.35rem;
   flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.header-icon-btn {
+  white-space: nowrap;
 }
 
 .header-subtitle {
@@ -1209,10 +1267,47 @@ input.header-title {
   line-height: 1.6;
 }
 
-.sidebar-header {
+.sidebar-section-tabs {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-section-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 0.375rem;
+  padding: 0.45rem 0.65rem;
+  min-height: 2.5rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sidebar-section-btn:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.sidebar-section-btn.active {
+  background: var(--fg);
+  color: var(--accent-fg);
+  border-color: var(--fg);
+}
+
+.sidebar-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-toolbar .btn {
+  width: 100%;
 }
 
 .sidebar-scroll {
@@ -1308,30 +1403,46 @@ input.header-title {
 }
 
 @media (max-width: 768px) {
-  .mobile-toolbar {
-    display: flex;
+  .app-layout {
+    height: auto;
+    min-height: 100dvh;
   }
 
   .app-shell {
-    position: relative;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
   }
 
   .sidebar {
-    position: fixed;
-    top: 2.75rem;
-    bottom: 0;
-    z-index: 18;
     width: min(18rem, 85vw);
     max-width: 85vw;
-    transform: translateX(-110%);
-  }
-
-  .app-shell.pane-sidebar .sidebar {
-    transform: translateX(0);
   }
 
   .main {
     width: 100%;
+    overflow: visible;
+    min-height: 0;
+  }
+
+  .content-header {
+    position: sticky;
+    top: 0;
+    z-index: 12;
+  }
+
+  .content-scroll {
+    overflow: visible;
+    flex: none;
+  }
+
+  .messages {
+    flex: none;
+    overflow: visible;
+  }
+
+  .story-editor {
+    overflow: visible;
   }
 
   .message {
@@ -1344,6 +1455,10 @@ input.header-title {
   }
 
   .composer {
+    position: sticky;
+    bottom: 0;
+    z-index: 12;
+    background: var(--bg);
     flex-direction: column;
     align-items: stretch;
   }
@@ -1369,12 +1484,6 @@ input.header-title {
 
   .settings-params-grid {
     grid-template-columns: 1fr;
-  }
-}
-
-@media (min-width: 769px) {
-  .drawer-backdrop {
-    display: none;
   }
 }
 

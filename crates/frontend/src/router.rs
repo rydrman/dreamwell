@@ -87,30 +87,6 @@ impl AppRoute {
         }
     }
 
-    pub fn without_sidebar(&self) -> Self {
-        match self {
-            Self::Chats {
-                chat_id, overlay, ..
-            } => Self::Chats {
-                chat_id: *chat_id,
-                overlay: *overlay,
-                sidebar: false,
-            },
-            Self::Stories {
-                story_id,
-                nav,
-                overlay,
-                ..
-            } => Self::Stories {
-                story_id: *story_id,
-                nav: *nav,
-                overlay: *overlay,
-                sidebar: false,
-            },
-            other => other.clone(),
-        }
-    }
-
     pub fn with_overlay(self, overlay: Overlay) -> Self {
         match self {
             Self::Chats {
@@ -164,40 +140,10 @@ impl AppRoute {
     pub fn to_path(&self) -> String {
         match self {
             Self::Chats {
-                chat_id: None,
-                overlay: Some(Overlay::NewChat),
-                sidebar: false,
-            } => "/chats/new".to_string(),
-            Self::Chats {
-                chat_id: None,
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!("/chats/{}", overlay_segment(*overlay)),
-            Self::Chats {
-                chat_id: None,
-                overlay: None,
-                sidebar: true,
-            } => "/chats/sidebar".to_string(),
-            Self::Chats {
-                chat_id: None,
-                overlay: None,
-                sidebar: false,
-            } => "/chats".to_string(),
-            Self::Chats {
-                chat_id: Some(id),
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!("/chats/{id}/{}", overlay_segment(*overlay)),
-            Self::Chats {
-                chat_id: Some(id),
-                overlay: None,
-                sidebar: true,
-            } => format!("/chats/{id}/sidebar"),
-            Self::Chats {
-                chat_id: Some(id),
-                overlay: None,
-                sidebar: false,
-            } => format!("/chats/{id}"),
+                chat_id,
+                overlay,
+                sidebar,
+            } => chats_to_path(*chat_id, *overlay, *sidebar),
             Self::Stories {
                 story_id: None,
                 nav: StoryNav::Basics,
@@ -318,6 +264,21 @@ fn overlay_segment(overlay: Overlay) -> &'static str {
     }
 }
 
+fn chats_to_path(chat_id: Option<i64>, overlay: Option<Overlay>, sidebar: bool) -> String {
+    let base = match (chat_id, overlay) {
+        (None, Some(Overlay::NewChat)) => "/chats/new".to_string(),
+        (None, None) => "/chats".to_string(),
+        (None, Some(overlay)) => format!("/chats/{}", overlay_segment(overlay)),
+        (Some(id), None) => format!("/chats/{id}"),
+        (Some(id), Some(overlay)) => format!("/chats/{id}/{}", overlay_segment(overlay)),
+    };
+    if sidebar {
+        format!("{base}/sidebar")
+    } else {
+        base
+    }
+}
+
 pub fn parse_path(path: &str) -> AppRoute {
     let path = path.trim();
     let path = path.strip_prefix('/').unwrap_or(path);
@@ -365,10 +326,20 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
             overlay: Some(Overlay::NewChat),
             sidebar: false,
         },
+        ["new", "sidebar"] => AppRoute::Chats {
+            chat_id: None,
+            overlay: Some(Overlay::NewChat),
+            sidebar: true,
+        },
         [overlay] if parse_overlay(overlay).is_some() => AppRoute::Chats {
             chat_id: None,
             overlay: parse_overlay(overlay),
             sidebar: false,
+        },
+        [overlay, "sidebar"] if parse_overlay(overlay).is_some() => AppRoute::Chats {
+            chat_id: None,
+            overlay: parse_overlay(overlay),
+            sidebar: true,
         },
         [id] if parse_id(id).is_some() => AppRoute::Chats {
             chat_id: parse_id(id),
@@ -385,6 +356,13 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
                 chat_id: parse_id(id),
                 overlay: parse_overlay(overlay),
                 sidebar: false,
+            }
+        }
+        [id, overlay, "sidebar"] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
+            AppRoute::Chats {
+                chat_id: parse_id(id),
+                overlay: parse_overlay(overlay),
+                sidebar: true,
             }
         }
         _ => AppRoute::default(),
@@ -659,6 +637,16 @@ mod tests {
             AppRoute::Chats {
                 chat_id: Some(7),
                 overlay: None,
+                sidebar: true,
+            },
+            AppRoute::Chats {
+                chat_id: Some(42),
+                overlay: Some(Overlay::Character),
+                sidebar: true,
+            },
+            AppRoute::Chats {
+                chat_id: None,
+                overlay: Some(Overlay::Settings),
                 sidebar: true,
             },
         ];
