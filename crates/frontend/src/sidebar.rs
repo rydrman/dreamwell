@@ -140,9 +140,9 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
 fn chat_status(chat: &Chat) -> Option<String> {
     let job = chat.active_job.as_ref()?;
     match job.status {
-        JobStatus::Running => Some(chat_job_label(job)),
+        JobStatus::Running => Some(chat_running_label(job)),
         JobStatus::Queued => {
-            let label = chat_job_label(job);
+            let label = "queued".to_string();
             if chat.queued_jobs > 1 {
                 Some(format!("{label} ({})", chat.queued_jobs))
             } else {
@@ -153,7 +153,7 @@ fn chat_status(chat: &Chat) -> Option<String> {
     }
 }
 
-fn chat_job_label(job: &Job) -> String {
+fn chat_running_label(job: &Job) -> String {
     match job.job_type {
         JobType::ChatSummarize => "summarizing…".to_string(),
         _ => "writing…".to_string(),
@@ -172,5 +172,76 @@ fn story_status(story: &Story) -> Option<String> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_job(status: JobStatus, job_type: JobType) -> Job {
+        serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "job_type": job_type,
+            "chat_id": 1,
+            "message_id": 1,
+            "guidance_notes": "",
+            "status": status,
+            "position": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .expect("sample job")
+    }
+
+    fn sample_chat(active_job: Option<Job>, queued_jobs: i64) -> Chat {
+        let mut chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "title": "Test",
+            "character_id": 1,
+            "character_name": "Char",
+            "summary": "",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "queued_jobs": queued_jobs,
+        }))
+        .expect("sample chat");
+        chat.active_job = active_job;
+        chat
+    }
+
+    #[test]
+    fn running_chat_message_shows_writing() {
+        let chat = sample_chat(
+            Some(sample_job(JobStatus::Running, JobType::ChatMessage)),
+            0,
+        );
+        assert_eq!(chat_status(&chat), Some("writing…".to_string()));
+    }
+
+    #[test]
+    fn running_summarize_shows_summarizing() {
+        let chat = sample_chat(
+            Some(sample_job(JobStatus::Running, JobType::ChatSummarize)),
+            0,
+        );
+        assert_eq!(chat_status(&chat), Some("summarizing…".to_string()));
+    }
+
+    #[test]
+    fn queued_job_shows_queued_not_writing() {
+        let chat = sample_chat(Some(sample_job(JobStatus::Queued, JobType::ChatMessage)), 1);
+        assert_eq!(chat_status(&chat), Some("queued".to_string()));
+    }
+
+    #[test]
+    fn queued_jobs_show_count() {
+        let chat = sample_chat(Some(sample_job(JobStatus::Queued, JobType::ChatMessage)), 3);
+        assert_eq!(chat_status(&chat), Some("queued (3)".to_string()));
+    }
+
+    #[test]
+    fn no_active_job_shows_no_status() {
+        let chat = sample_chat(None, 0);
+        assert_eq!(chat_status(&chat), None);
     }
 }

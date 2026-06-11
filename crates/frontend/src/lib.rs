@@ -155,11 +155,23 @@ fn load_cached_archived_chats() -> Vec<Chat> {
     sort_archived_chats(load_cached_chat_list(ARCHIVED_CHATS_LIST_CACHE_KEY))
 }
 
+fn chat_list_for_cache(chats: &[Chat]) -> Vec<Chat> {
+    chats
+        .iter()
+        .map(|chat| Chat {
+            active_job: None,
+            queued_jobs: 0,
+            ..chat.clone()
+        })
+        .collect()
+}
+
 fn cache_chat_list(key: &str, chats: &[Chat]) {
     let Some(storage) = session_storage() else {
         return;
     };
-    if let Ok(json) = serde_json::to_string(chats) {
+    let cached = chat_list_for_cache(chats);
+    if let Ok(json) = serde_json::to_string(&cached) {
         let _ = storage.set_item(key, &json);
     }
 }
