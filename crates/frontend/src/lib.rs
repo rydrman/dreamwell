@@ -2149,6 +2149,7 @@ fn composer(props: &ComposerProps) -> Html {
     html! {
         <div class="composer">
             <textarea
+                rows="2"
                 value={(*text).clone()}
                 oninput={Callback::from({
                     let text = text.clone();
