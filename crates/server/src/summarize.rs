@@ -6,10 +6,12 @@ use serde_json::json;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
 
+use crate::config;
 use crate::db;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::inference::chat_completion;
 use crate::prompts::estimate_static_prompt_tokens;
+use crate::thoughts::parse_thought_blocks;
 
 const SUMMARIZE_PLACEHOLDER: &str = "Summarizing earlier messages…";
 pub const SUMMARIZE_FORCE_MARKER: &str = "force";
@@ -151,9 +153,9 @@ fn adaptive_keep_count(
 }
 
 const SUMMARIZE_SYSTEM_PROMPT: &str =
-    "Summarize the following roleplay conversation. Preserve key plot points, relationships, character voice, and established facts. Be concise but complete.";
+    "Summarize the following roleplay conversation. Preserve key plot points, relationships, character voice, and established facts. Be concise but complete. Output only the summary text. Do not use thinking, reasoning, or thought tags.";
 const REGENERATE_SYSTEM_PROMPT: &str =
-    "Regenerate the conversation summary using the previous summary and the messages still in the chat. Preserve key plot points, relationships, character voice, and established facts. Be concise but complete.";
+    "Regenerate the conversation summary using the previous summary and the messages still in the chat. Preserve key plot points, relationships, character voice, and established facts. Be concise but complete. Output only the summary text. Do not use thinking, reasoning, or thought tags.";
 const SUMMARIZE_SYSTEM_OVERHEAD_TOKENS: i64 = 80;
 const SUMMARIZE_USER_WRAPPER_TOKENS: i64 = 48;
 const SUMMARIZE_INPUT_BUDGET_FLOOR: i64 = 256;
@@ -300,11 +302,30 @@ fn build_regenerate_prompt(previous_summary: &str, transcript: &str) -> Vec<serd
     ]
 }
 
-async fn call_summarize_model(
+fn summarize_max_retries() -> u32 {
+    config::GENERATION_MAX_RETRIES
+        .load(std::sync::atomic::Ordering::SeqCst)
+        .max(1)
+}
+
+/// Strips reasoning blocks from summarize output and validates a visible summary body.
+pub(crate) fn process_summarize_output(raw: &str) -> Result<String, &'static str> {
+    let parsed = parse_thought_blocks(raw);
+    if !parsed.thought_complete {
+        return Err("summarization ended inside a thought block");
+    }
+    let summary = parsed.reply.trim().to_string();
+    if summary.is_empty() {
+        return Err("summarization returned no visible text");
+    }
+    Ok(summary)
+}
+
+async fn call_summarize_model_once(
     settings: &Settings,
     prompt: &[serde_json::Value],
 ) -> AppResult<String> {
-    let summary = chat_completion(
+    let raw = chat_completion(
         &settings.inference_url,
         &settings.model,
         prompt,
@@ -313,13 +334,35 @@ async fn call_summarize_model(
         summary_output_tokens(settings),
     )
     .await?;
-    let summary = summary.trim().to_string();
-    if summary.is_empty() {
-        return Err(crate::error::AppError::inference(
-            "summarization returned empty text",
-        ));
+    process_summarize_output(&raw).map_err(AppError::inference)
+}
+
+async fn call_summarize_model(
+    settings: &Settings,
+    prompt: &[serde_json::Value],
+) -> AppResult<String> {
+    let max_attempts = summarize_max_retries();
+    let mut last_error = "summarization failed".to_string();
+
+    for attempt in 1..=max_attempts {
+        match call_summarize_model_once(settings, prompt).await {
+            Ok(summary) => return Ok(summary),
+            Err(err) => {
+                last_error = err.to_string();
+                if attempt == max_attempts {
+                    return Err(err);
+                }
+                tracing::warn!(
+                    attempt,
+                    max_attempts,
+                    error = %last_error,
+                    "retrying summarization"
+                );
+            }
+        }
     }
-    Ok(summary)
+
+    Err(AppError::inference(last_error))
 }
 
 pub async fn maybe_enqueue_summarize(
@@ -848,6 +891,49 @@ mod tests {
             SummarizeJobKind::Regenerate
         );
         assert_eq!(summarize_job_kind(""), SummarizeJobKind::Auto);
+    }
+
+    #[test]
+    fn process_summarize_output_strips_thought_and_keeps_body() {
+        let raw = "<thinking>planning</thinking>\nThey met at the tavern.";
+        assert_eq!(
+            process_summarize_output(raw).expect("summary"),
+            "They met at the tavern."
+        );
+    }
+
+    #[test]
+    fn process_summarize_output_strips_gemma_thought_channel() {
+        let raw = "<|channel>thought\nnotes<channel|>Plot twist at the inn.";
+        assert_eq!(
+            process_summarize_output(raw).expect("summary"),
+            "Plot twist at the inn."
+        );
+    }
+
+    #[test]
+    fn process_summarize_output_rejects_unclosed_thought() {
+        assert_eq!(
+            process_summarize_output("Reply <thinking>still planning").unwrap_err(),
+            "summarization ended inside a thought block"
+        );
+    }
+
+    #[test]
+    fn process_summarize_output_rejects_thought_only() {
+        assert_eq!(
+            process_summarize_output("<thinking>notes only</thinking>").unwrap_err(),
+            "summarization returned no visible text"
+        );
+    }
+
+    #[test]
+    fn process_summarize_output_accepts_plain_text() {
+        let raw = "They traveled north and found shelter.";
+        assert_eq!(
+            process_summarize_output(raw).expect("summary"),
+            "They traveled north and found shelter."
+        );
     }
 
     #[test]
