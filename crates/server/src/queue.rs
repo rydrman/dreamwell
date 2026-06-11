@@ -24,7 +24,8 @@ use crate::summarize::{
 };
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
 use crate::variables::{
-    apply_variable_updates, build_message_variable_updates, extract_variables_from_text,
+    apply_variable_updates, build_message_variable_updates, parse_variable_updates,
+    visible_text_without_variables,
 };
 
 /// Slightly above inference request timeout so hung jobs do not block the queue forever.
@@ -65,14 +66,6 @@ enum BeatProseOutcome {
 fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> String {
     if settings.thought_blocks_enabled {
         strip_thought_blocks(text)
-    } else {
-        text.to_string()
-    }
-}
-
-fn strip_variable_tags(settings: &dreamwell_types::Settings, text: &str) -> String {
-    if settings.variables_enabled {
-        extract_variables_from_text(text).0
     } else {
         text.to_string()
     }
@@ -560,19 +553,17 @@ async fn run_chat_generation_attempt(
                     let parsed = parse_thought_blocks(&accumulated);
                     let (duration_ms, in_progress) =
                         thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
-                    let reply = strip_variable_tags(settings, &parsed.reply);
                     db::update_message_generation(
                         pool,
                         message_id,
-                        &reply,
+                        &parsed.reply,
                         &parsed.thought,
                         duration_ms,
                         in_progress,
                     )
                     .await?;
                 } else {
-                    let content = strip_variable_tags(settings, &accumulated);
-                    db::update_message_content(pool, message_id, &content).await?;
+                    db::update_message_content(pool, message_id, &accumulated).await?;
                 }
                 db::touch_chat(pool, chat_id).await?;
             }
@@ -583,11 +574,10 @@ async fn run_chat_generation_attempt(
                 db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
                 if settings.thought_blocks_enabled {
                     let parsed = parse_thought_blocks(&accumulated);
-                    let reply = strip_variable_tags(settings, &parsed.reply);
                     db::update_message_generation(
                         pool,
                         message_id,
-                        &reply,
+                        &parsed.reply,
                         &parsed.thought,
                         thought_duration_ms.filter(|_| !parsed.thought.is_empty()),
                         false,
@@ -640,13 +630,19 @@ async fn run_chat_generation_attempt(
         processed
     };
 
-    let (content_to_save, updates) = if settings.variables_enabled {
-        extract_variables_from_text(&processed)
+    let updates = if settings.variables_enabled {
+        parse_variable_updates(&processed)
     } else {
-        (processed.clone(), Vec::new())
+        Vec::new()
     };
 
-    if content_to_save.trim().is_empty() {
+    let visible_text = if settings.variables_enabled {
+        visible_text_without_variables(&processed)
+    } else {
+        processed.clone()
+    };
+
+    if visible_text.trim().is_empty() {
         return Ok(ChatGenerationOutcome::Retryable(
             "model returned no visible text".to_string(),
         ));
@@ -664,7 +660,7 @@ async fn run_chat_generation_attempt(
         db::finalize_message_generation(
             pool,
             message_id,
-            &content_to_save,
+            &processed,
             &thought_content,
             thought_duration_ms,
             false,

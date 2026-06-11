@@ -1,6 +1,7 @@
 use dreamwell_types::{Message, MessageVariableUpdate};
 use regex::Regex;
 use sqlx::SqlitePool;
+use std::sync::OnceLock;
 
 use crate::db;
 use crate::error::AppResult;
@@ -11,41 +12,202 @@ pub enum VariableUpdate {
     Delete { key: String },
 }
 
-pub fn extract_variables_from_text(text: &str) -> (String, Vec<VariableUpdate>) {
-    let delete_re = Regex::new(
-        r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["']\s+delete(?:\s*=\s*["']?(?:true|1)["']?)?\s*/>"#,
-    )
-    .unwrap();
-    let set_re =
-        Regex::new(r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["']\s*>(.*?)</(?:var|fact)>"#).unwrap();
-
+/// Parses variable updates from model output without mutating the stored text.
+pub fn parse_variable_updates(text: &str) -> Vec<VariableUpdate> {
     let mut updates = Vec::new();
-    let without_deletes = delete_re
+    let mut working = text.to_string();
+    working = extract_delete_tags(&working, &mut updates);
+    working = extract_set_value_tags(&working, &mut updates);
+    extract_set_tags(&working, &mut updates);
+    updates
+}
+
+/// Visible reply text after variable tags are removed. Used only for validation.
+pub(crate) fn visible_text_without_variables(text: &str) -> String {
+    strip_variable_markup(text, false)
+}
+
+fn strip_variable_markup(text: &str, hold_incomplete: bool) -> String {
+    let mut working = text.to_string();
+    working = strip_delete_tags(&working);
+    working = strip_set_value_tags(&working);
+    working = strip_set_tags(&working);
+    working = strip_orphan_closing_tags(&working);
+    working = strip_incomplete_variable_tags(&working, hold_incomplete);
+    collapse_spaces(working.trim())
+}
+
+fn delete_patterns() -> &'static [Regex] {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        vec![
+            Regex::new(
+                r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#,
+            )
+            .expect("delete self-closing regex"),
+            Regex::new(
+                r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bdelete\b[^>]*>\s*</(?:var|fact)>"#,
+            )
+            .expect("delete empty element regex"),
+        ]
+    })
+}
+
+fn set_value_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
+        )
+        .expect("set value self-closing regex")
+    })
+}
+
+fn set_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#)
+            .expect("set regex")
+    })
+}
+
+fn extract_delete_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
+    let mut working = text.to_string();
+    for re in delete_patterns() {
+        working = re
+            .replace_all(&working, |caps: &regex::Captures| {
+                push_delete_update(updates, caps.get(1).map(|m| m.as_str()).unwrap_or_default());
+                ""
+            })
+            .into_owned();
+    }
+    working
+}
+
+fn extract_set_value_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
+    set_value_pattern()
         .replace_all(text, |caps: &regex::Captures| {
             let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
-            if !key.is_empty() {
-                updates.push(VariableUpdate::Delete {
-                    key: key.to_string(),
-                });
-            }
+            let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
+            push_set_update(updates, key, value);
             ""
         })
-        .into_owned();
-    let cleaned = set_re
-        .replace_all(&without_deletes, |caps: &regex::Captures| {
+        .into_owned()
+}
+
+fn extract_set_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
+    set_pattern()
+        .replace_all(text, |caps: &regex::Captures| {
             let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
             let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
-            if !key.is_empty() {
-                updates.push(VariableUpdate::Set {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                });
-            }
+            push_set_update(updates, key, value);
             ""
         })
-        .trim()
-        .to_string();
-    (cleaned, updates)
+        .into_owned()
+}
+
+fn strip_delete_tags(text: &str) -> String {
+    let mut working = text.to_string();
+    for re in delete_patterns() {
+        working = re.replace_all(&working, "").into_owned();
+    }
+    working
+}
+
+fn strip_set_value_tags(text: &str) -> String {
+    set_value_pattern().replace_all(text, "").into_owned()
+}
+
+fn strip_set_tags(text: &str) -> String {
+    set_pattern().replace_all(text, "").into_owned()
+}
+
+fn push_delete_update(updates: &mut Vec<VariableUpdate>, key: &str) {
+    let key = key.trim();
+    if !key.is_empty() {
+        updates.push(VariableUpdate::Delete {
+            key: key.to_string(),
+        });
+    }
+}
+
+fn push_set_update(updates: &mut Vec<VariableUpdate>, key: &str, value: &str) {
+    let key = key.trim();
+    if !key.is_empty() {
+        updates.push(VariableUpdate::Set {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    }
+}
+
+fn strip_orphan_closing_tags(text: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"(?is)</(?:var|fact)\s*>").expect("orphan close regex"));
+    re.replace_all(text, "").into_owned()
+}
+
+fn strip_incomplete_variable_tags(text: &str, hold_incomplete: bool) -> String {
+    let (mut visible, has_unclosed) = split_unclosed_variable_tag(text);
+    if has_unclosed && !hold_incomplete {
+        return visible;
+    }
+
+    if hold_incomplete {
+        let holdback = trailing_partial_var_prefix(&visible);
+        let visible_len = visible.len().saturating_sub(holdback);
+        visible = visible[..visible_len].trim_end().to_string();
+    }
+    visible
+}
+
+fn split_unclosed_variable_tag(text: &str) -> (String, bool) {
+    let lower = text.to_lowercase();
+    let mut last_unclosed: Option<usize> = None;
+
+    for open in ["<var", "<fact"] {
+        if let Some(pos) = lower.rfind(open) {
+            if !variable_tag_is_complete(&lower[pos..])
+                && last_unclosed.is_none_or(|existing| pos > existing)
+            {
+                last_unclosed = Some(pos);
+            }
+        }
+    }
+
+    match last_unclosed {
+        Some(pos) => (text[..pos].trim_end().to_string(), true),
+        None => (text.to_string(), false),
+    }
+}
+
+fn variable_tag_is_complete(lower: &str) -> bool {
+    if let Some(slash_end) = lower.find("/>") {
+        if !lower[..slash_end].contains('>') {
+            return true;
+        }
+    }
+
+    lower.contains("</var>") || lower.contains("</fact>")
+}
+
+fn trailing_partial_var_prefix(text: &str) -> usize {
+    const PREFIXES: &[&str] = &["</fact>", "</var>", "<fact", "<var", "</", "<"];
+    let mut max_len = 0;
+    for prefix in PREFIXES {
+        for i in 1..prefix.len() {
+            if text.ends_with(&prefix[..i]) {
+                max_len = max_len.max(i);
+            }
+        }
+    }
+    max_len
+}
+
+fn collapse_spaces(text: &str) -> String {
+    static SPACES: OnceLock<Regex> = OnceLock::new();
+    let spaces = SPACES.get_or_init(|| Regex::new(r" {2,}").expect("space collapse regex"));
+    spaces.replace_all(text, " ").to_string()
 }
 
 pub async fn apply_variable_updates(
@@ -131,10 +293,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_var_tags() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"Hello <var key="location">tavern</var> world"#);
-        assert_eq!(cleaned, "Hello  world");
+    fn parse_var_tags() {
+        let updates = parse_variable_updates(r#"Hello <var key="location">tavern</var> world"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Set {
@@ -145,9 +305,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_legacy_fact_tags() {
-        let (cleaned, updates) = extract_variables_from_text(r#"<fact key="gold">12</fact>"#);
-        assert_eq!(cleaned, "");
+    fn parse_legacy_fact_tags() {
+        let updates = parse_variable_updates(r#"<fact key="gold">12</fact>"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Set {
@@ -158,15 +317,84 @@ mod tests {
     }
 
     #[test]
-    fn extract_delete_var_tags() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"Done <var key="quest_stage" delete/> here"#);
-        assert_eq!(cleaned, "Done  here");
+    fn parse_delete_var_tags() {
+        let updates = parse_variable_updates(r#"Done <var key="quest_stage" delete/> here"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Delete {
                 key: "quest_stage".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn parse_delete_var_tags_with_value() {
+        let updates = parse_variable_updates(
+            r#"Reset <var key="temp_buff" delete="true"/> and <var key="hp">50</var>"#,
+        );
+        assert_eq!(
+            updates,
+            vec![
+                VariableUpdate::Delete {
+                    key: "temp_buff".to_string(),
+                },
+                VariableUpdate::Set {
+                    key: "hp".to_string(),
+                    value: "50".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_self_closing_value_tags() {
+        let updates = parse_variable_updates(r#"Hi <var key="hp" value="50"/> there"#);
+        assert_eq!(
+            updates,
+            vec![VariableUpdate::Set {
+                key: "hp".to_string(),
+                value: "50".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_delete_empty_element_tags() {
+        let updates = parse_variable_updates(r#"Done <var key="quest" delete></var> now"#);
+        assert_eq!(
+            updates,
+            vec![VariableUpdate::Delete {
+                key: "quest".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn ignores_incomplete_tags() {
+        let updates = parse_variable_updates(r#"Visible only <var key="hp">50</var"#);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn is_case_insensitive_for_tags() {
+        let updates = parse_variable_updates(r#"<VAR key="x">y</VAR>"#);
+        assert_eq!(
+            updates,
+            vec![VariableUpdate::Set {
+                key: "x".to_string(),
+                value: "y".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn visible_text_strips_tags_for_validation() {
+        assert_eq!(
+            visible_text_without_variables(
+                r#"*narrates* <var key="hp">80</var>
+</var>"#
+            ),
+            "*narrates*"
         );
     }
 
@@ -335,25 +563,5 @@ mod tests {
             .await
             .expect("list")
             .is_empty());
-    }
-
-    #[test]
-    fn extract_delete_var_tags_with_value() {
-        let (cleaned, updates) = extract_variables_from_text(
-            r#"Reset <var key="temp_buff" delete="true"/> and <var key="hp">50</var>"#,
-        );
-        assert_eq!(cleaned, "Reset  and");
-        assert_eq!(
-            updates,
-            vec![
-                VariableUpdate::Delete {
-                    key: "temp_buff".to_string(),
-                },
-                VariableUpdate::Set {
-                    key: "hp".to_string(),
-                    value: "50".to_string(),
-                },
-            ]
-        );
     }
 }

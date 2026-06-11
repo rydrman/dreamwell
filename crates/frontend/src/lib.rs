@@ -6,6 +6,7 @@ mod router;
 mod sidebar;
 mod stories_ui;
 mod title_editor;
+mod variables;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -1873,6 +1874,7 @@ struct MessageBubbleProps {
     chat_id: i64,
     is_last: bool,
     after_count: usize,
+    display_content: String,
     rendered_content: Html,
     show_thoughts: bool,
     show_variables: bool,
@@ -2204,14 +2206,14 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     </button>
                     <button type="button" class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
                 </div>
-            } else if props.message.content.is_empty() && active {
+            } else if props.display_content.is_empty() && active {
                 { "…" }
-            } else if props.message.content.is_empty()
+            } else if props.display_content.is_empty()
                 && props.message.role == MessageRole::Assistant
                 && !props.message.thought_content.is_empty()
             {
                 <span class="muted">{"(No reply text — see thought block above)"}</span>
-            } else if props.message.content.is_empty()
+            } else if props.display_content.is_empty()
                 && props.message.role == MessageRole::Assistant
                 && !active
             {
@@ -2521,12 +2523,18 @@ fn message_list(props: &MessageListProps) -> Html {
                 { for props.messages.iter().enumerate().map(|(idx, m)| {
                     let after_count = props.messages.len().saturating_sub(idx + 1);
                     let is_last = last_id == Some(m.id);
-                    let rendered_content = if m.content.is_empty() {
+                    let streaming = matches!(m.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
+                    let display_content = if show_variables && m.role == MessageRole::Assistant {
+                        variables::strip_variables_for_display(&m.content, streaming)
+                    } else {
+                        m.content.clone()
+                    };
+                    let rendered_content = if display_content.is_empty() {
                         html! {}
                     } else if let Some(ctx) = macro_ctx.as_ref() {
-                        markdown::render_message_content(&substitute_macros(&m.content, ctx))
+                        markdown::render_message_content(&substitute_macros(&display_content, ctx))
                     } else {
-                        markdown::render_message_content(&m.content)
+                        markdown::render_message_content(&display_content)
                     };
                     if m.is_summary {
                         html! {
@@ -2547,6 +2555,7 @@ fn message_list(props: &MessageListProps) -> Html {
                                 chat_id={chat_id}
                                 is_last={is_last}
                                 after_count={after_count}
+                                display_content={display_content}
                                 rendered_content={rendered_content}
                                 show_thoughts={show_thoughts}
                                 show_variables={show_variables}
