@@ -13,6 +13,9 @@
   --app-topbar-height: calc(
     max(0.5rem, env(safe-area-inset-top, 0px)) + 2.75rem + 0.5rem
   );
+  --sidebar-width: 18rem;
+  --chat-column-max-width: 48rem;
+  --desktop-sidebar-min: 1024px;
   font-family: "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--fg);
@@ -322,7 +325,7 @@ button {
 .sidebar {
   background: var(--surface);
   border-color: var(--border);
-  width: 18rem;
+  width: var(--sidebar-width);
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   display: flex;
@@ -374,6 +377,16 @@ button {
 .content-scroll {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-pane {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: var(--chat-column-max-width);
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
 }
@@ -1484,6 +1497,36 @@ input.header-title {
 
   .settings-params-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 1024px) {
+  .app-shell {
+    flex-direction: row;
+  }
+
+  .sidebar {
+    position: static;
+    top: auto;
+    bottom: auto;
+    left: auto;
+    z-index: auto;
+    height: auto;
+    align-self: stretch;
+    transform: none;
+    transition: none;
+  }
+
+  .app-shell.pane-sidebar .sidebar {
+    transform: none;
+  }
+
+  .drawer-backdrop {
+    display: none;
+  }
+
+  .mode-bar-sidebar-toggle {
+    display: none;
   }
 }
 
