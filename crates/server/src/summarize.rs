@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 use dreamwell_types::{
-    estimate_token_count, prompt_token_budget, Character, Message, MessageRole, Settings,
+    estimate_token_count, prompt_token_budget, Character, Job, Message, MessageRole, Settings,
 };
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -12,6 +12,7 @@ use crate::inference::chat_completion;
 use crate::prompts::estimate_static_prompt_tokens;
 
 const SUMMARIZE_PLACEHOLDER: &str = "Summarizing earlier messages…";
+pub const SUMMARIZE_FORCE_MARKER: &str = "force";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SummarizePlan {
@@ -25,8 +26,9 @@ pub fn plan_summarization(
     chat_summary: &str,
     messages: &[Message],
     character: Option<&Character>,
+    force: bool,
 ) -> Option<SummarizePlan> {
-    if !settings.summarize_enabled {
+    if !force && !settings.summarize_enabled {
         return None;
     }
 
@@ -35,12 +37,16 @@ pub fn plan_summarization(
         .filter(|m| m.role != MessageRole::System && !m.is_summary)
         .collect();
 
-    let min_total = settings.summarize_after_messages.max(4) as usize;
+    let min_keep = settings.summarize_keep_recent.max(2) as usize;
+    let min_total = if force {
+        min_keep + 1
+    } else {
+        settings.summarize_after_messages.max(4) as usize
+    };
     if non_system.len() <= min_total {
         return None;
     }
 
-    let min_keep = settings.summarize_keep_recent.max(2) as usize;
     let keep = if settings.summarize_adaptive && settings.context_tokens > 0 {
         adaptive_keep_count(settings, chat_summary, &non_system, character, min_keep)
     } else {
@@ -52,7 +58,8 @@ pub fn plan_summarization(
         return None;
     }
 
-    if (!settings.summarize_adaptive || settings.context_tokens <= 0)
+    if !force
+        && (!settings.summarize_adaptive || settings.context_tokens <= 0)
         && (non_system.len() as i64 <= settings.summarize_after_messages)
     {
         return None;
@@ -109,19 +116,61 @@ pub async fn maybe_enqueue_summarize(
     chat_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
-    if !settings.summarize_enabled || settings.model.is_empty() {
-        return Ok(());
+    let _ = try_enqueue_summarize(pool, work_tx, chat_id, settings, false).await?;
+    Ok(())
+}
+
+pub async fn enqueue_summarize_for_chat(
+    pool: &SqlitePool,
+    work_tx: &mpsc::UnboundedSender<()>,
+    chat_id: i64,
+    settings: &Settings,
+) -> AppResult<Job> {
+    if settings.model.is_empty() {
+        return Err(crate::error::AppError::bad_request(
+            "Configure an inference model in Settings before summarizing",
+        ));
     }
     if db::has_active_summarize_job(pool, chat_id).await? {
-        return Ok(());
+        return Err(crate::error::AppError::bad_request(
+            "A summarization job is already in progress for this chat",
+        ));
+    }
+
+    try_enqueue_summarize(pool, work_tx, chat_id, settings, true)
+        .await?
+        .ok_or_else(|| {
+            crate::error::AppError::bad_request(
+                "Not enough messages to summarize — keep at least a few recent messages",
+            )
+        })
+}
+
+async fn try_enqueue_summarize(
+    pool: &SqlitePool,
+    work_tx: &mpsc::UnboundedSender<()>,
+    chat_id: i64,
+    settings: &Settings,
+    force: bool,
+) -> AppResult<Option<Job>> {
+    if !force && (!settings.summarize_enabled || settings.model.is_empty()) {
+        return Ok(None);
+    }
+    if db::has_active_summarize_job(pool, chat_id).await? {
+        return Ok(None);
     }
 
     let chat = db::get_chat(pool, chat_id).await?;
     let character = db::get_character(pool, chat.character_id).await.ok();
     let messages = db::list_messages(pool, chat_id).await?;
-    let Some(plan) = plan_summarization(settings, &chat.summary, &messages, character.as_ref())
-    else {
-        return Ok(());
+    let Some(plan) = plan_summarization(
+        settings,
+        &chat.summary,
+        &messages,
+        character.as_ref(),
+        force,
+    ) else {
+        return Ok(None);
     };
 
     let marker = db::insert_message(
@@ -135,9 +184,10 @@ pub async fn maybe_enqueue_summarize(
 
     let anchor = (plan.anchor_before - Duration::milliseconds(1)).to_rfc3339();
     db::set_message_created_at(pool, marker.id, &anchor).await?;
-    db::enqueue_summarize_job(pool, chat_id, marker.id).await?;
+    let guidance_notes = if force { SUMMARIZE_FORCE_MARKER } else { "" };
+    let job = db::enqueue_summarize_job(pool, chat_id, marker.id, guidance_notes).await?;
     let _ = work_tx.send(());
-    Ok(())
+    Ok(Some(job))
 }
 
 pub async fn run_summarize_job(
@@ -146,13 +196,19 @@ pub async fn run_summarize_job(
     chat_id: i64,
     marker_id: i64,
     settings: &Settings,
+    force: bool,
 ) -> AppResult<()> {
     let chat = db::get_chat(pool, chat_id).await?;
     let character = db::get_character(pool, chat.character_id).await.ok();
     let messages = db::list_messages(pool, chat_id).await?;
 
-    let Some(plan) = plan_summarization(settings, &chat.summary, &messages, character.as_ref())
-    else {
+    let Some(plan) = plan_summarization(
+        settings,
+        &chat.summary,
+        &messages,
+        character.as_ref(),
+        force,
+    ) else {
         db::delete_messages(pool, &[marker_id]).await?;
         db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
         return Ok(());
@@ -285,7 +341,7 @@ mod tests {
     fn adaptive_plan_trims_when_history_exceeds_budget() {
         let settings = test_settings();
         let messages: Vec<Message> = (0..12).map(|i| msg(i, &"word ".repeat(200))).collect();
-        let plan = plan_summarization(&settings, "", &messages, None);
+        let plan = plan_summarization(&settings, "", &messages, None, false);
         assert!(plan.is_some());
         let plan = plan.unwrap();
         assert!(plan.summarized_count > 0);
@@ -299,10 +355,23 @@ mod tests {
         settings.summarize_after_messages = 20;
         settings.summarize_keep_recent = 8;
         let messages: Vec<Message> = (0..10).map(|i| msg(i, "hi")).collect();
-        assert!(plan_summarization(&settings, "", &messages, None).is_none());
+        assert!(plan_summarization(&settings, "", &messages, None, false).is_none());
         let messages: Vec<Message> = (0..25).map(|i| msg(i, "hi")).collect();
-        let plan = plan_summarization(&settings, "", &messages, None).unwrap();
+        let plan = plan_summarization(&settings, "", &messages, None, false).unwrap();
         assert_eq!(plan.summarized_count, 17);
+    }
+
+    #[test]
+    fn forced_plan_bypasses_auto_thresholds() {
+        let mut settings = test_settings();
+        settings.summarize_enabled = false;
+        settings.summarize_adaptive = false;
+        settings.summarize_after_messages = 20;
+        settings.summarize_keep_recent = 2;
+        let messages: Vec<Message> = (0..10).map(|i| msg(i, "hi")).collect();
+        assert!(plan_summarization(&settings, "", &messages, None, false).is_none());
+        let plan = plan_summarization(&settings, "", &messages, None, true).unwrap();
+        assert_eq!(plan.summarized_count, 8);
     }
 
     #[test]

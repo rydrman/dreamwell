@@ -18,7 +18,9 @@ use crate::story_prompts::{
     build_propose_beats_messages, build_propose_chapters_messages, parse_beats_proposal_json,
     parse_chapters_proposal_json, parse_outline_json,
 };
-use crate::summarize::{maybe_enqueue_summarize, run_summarize_job};
+use crate::summarize::{
+    enqueue_summarize_for_chat, maybe_enqueue_summarize, run_summarize_job, SUMMARIZE_FORCE_MARKER,
+};
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
 use crate::variables::{
     apply_variable_updates, build_message_variable_updates, extract_variables_from_text,
@@ -120,6 +122,17 @@ impl JobQueue {
 
     pub fn wake(&self) {
         let _ = self.work_tx.send(());
+    }
+
+    pub async fn enqueue_summarize(
+        &self,
+        pool: &SqlitePool,
+        chat_id: i64,
+        settings: &dreamwell_types::Settings,
+    ) -> AppResult<dreamwell_types::Job> {
+        let job = enqueue_summarize_for_chat(pool, &self.work_tx, chat_id, settings).await?;
+        self.wake();
+        Ok(job)
     }
 
     pub async fn cancel_job(&self, pool: &SqlitePool, job_id: i64) -> AppResult<Job> {
@@ -401,7 +414,8 @@ async fn run_summarize_job_handler(
         .message_id
         .ok_or_else(|| AppError::internal("summarize job missing message_id"))?;
 
-    match run_summarize_job(pool, job_id, chat_id, marker_id, settings).await {
+    let force = job.guidance_notes == SUMMARIZE_FORCE_MARKER;
+    match run_summarize_job(pool, job_id, chat_id, marker_id, settings, force).await {
         Ok(()) => Ok(()),
         Err(err) => {
             fail_job(pool, job_id, job, &err.to_string()).await?;

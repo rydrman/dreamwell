@@ -12,8 +12,8 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    Chat, ChatCreate, ChatStreamPayload, ChatUpdate, ChatVariable, ChatVariableUpdate, Message,
-    MessageRole, OkResponse, QueueStatus, RegenerateMessageRequest, SendMessageRequest,
+    Chat, ChatCreate, ChatStreamPayload, ChatUpdate, ChatVariable, ChatVariableUpdate, Job,
+    Message, MessageRole, OkResponse, QueueStatus, RegenerateMessageRequest, SendMessageRequest,
     UpdateMessageRequest,
 };
 
@@ -44,6 +44,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/:id/variables", get(list_variables).put(upsert_variable))
         .route("/:id/variables/:key", delete(delete_variable))
+        .route("/:id/summarize", post(summarize_chat))
         .route("/:id/stream", get(stream_chat))
 }
 
@@ -252,6 +253,20 @@ async fn delete_variable(
 ) -> AppResult<Json<OkResponse>> {
     db::delete_variable(&state.pool, id, &key).await?;
     Ok(Json(OkResponse { ok: true }))
+}
+
+async fn summarize_chat(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Job>> {
+    let _ = db::get_chat(&state.pool, id).await?;
+    let settings = db::get_settings(&state.pool).await?;
+    let job = state
+        .queue
+        .enqueue_summarize(&state.pool, id, &settings)
+        .await?;
+    db::touch_chat(&state.pool, id).await?;
+    Ok(Json(job))
 }
 
 async fn stream_chat(
