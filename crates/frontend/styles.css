@@ -330,24 +330,24 @@ button {
   font-size: 1.1rem;
 }
 
-.chat-title-editable {
+.title-editable {
   cursor: text;
   border-radius: 0.25rem;
   padding: 0.1rem 0.25rem;
   margin: -0.1rem -0.25rem;
 }
 
-.chat-title-editable:hover {
+.title-editable:hover {
   background: var(--surface);
 }
 
-.chat-title-editable-compact {
+.title-editable-compact {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.chat-item.selected .chat-title-editable:hover {
+.chat-item.selected .title-editable:hover {
   background: rgba(255, 255, 255, 0.12);
 }
 
@@ -355,8 +355,33 @@ button {
   font-weight: 600;
 }
 
-.chat-title-input-compact,
-.header-title.chat-title-input-compact {
+.title-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.title-editor-row.header-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.title-editor-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-edit-btn {
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.title-input-compact,
+.header-title.title-input-compact {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--border);
@@ -366,7 +391,7 @@ button {
   color: inherit;
 }
 
-.chat-item.selected .chat-title-input-compact {
+.chat-item.selected .title-input-compact {
   background: var(--bg);
   color: var(--fg);
 }
