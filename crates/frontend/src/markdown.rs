@@ -49,6 +49,15 @@ mod tests {
     }
 
     #[test]
+    fn renders_html_var_element_as_italic() {
+        let html = message_content_to_html(r#"<var name="hp">80</var>"#);
+        assert!(
+            html.contains("<var") || html.contains("<em>"),
+            "expected raw var html to pass through markdown: {html}"
+        );
+    }
+
+    #[test]
     fn renders_long_roleplay_message() {
         let text = concat!(
             "(NOTICE: Type \"Status\" at any time)\n\n",
