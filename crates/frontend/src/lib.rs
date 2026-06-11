@@ -53,6 +53,7 @@ fn app() -> Html {
     let loading = use_state(|| true);
     let refresh_generation = use_state(|| 0u32);
     let chat_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
+    let summarize_watch = use_mut_ref(|| None::<i64>);
     let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
 
     let navigate = {
@@ -139,12 +140,14 @@ fn app() -> Html {
         let messages_loading = messages_loading.clone();
         let chats = chats.clone();
         let chat_stream_nudge = chat_stream_nudge.clone();
+        let summarize_watch = summarize_watch.clone();
         let refresh_generation = *refresh_generation;
         use_effect_with(
             (selected_chat_id, refresh_generation),
             move |(chat_id, _)| {
                 let mut stream_holder = None::<api::ChatStream>;
                 *chat_stream_nudge.borrow_mut() = None;
+                *summarize_watch.borrow_mut() = None;
                 if let Some(chat_id) = *chat_id {
                     messages_loading.set(true);
                     let messages_for_fetch = messages.clone();
@@ -156,7 +159,34 @@ fn app() -> Html {
                         }
                         messages_loading_for_fetch.set(false);
                     });
+                    let summarize_watch = summarize_watch.clone();
                     let stream = api::ChatStream::new(chat_id, move |payload| {
+                        if let Some(marker_id) = *summarize_watch.borrow() {
+                            let completed = payload.messages.iter().any(|message| {
+                                message.id == marker_id
+                                    && message.is_summary
+                                    && message
+                                        .content
+                                        .starts_with("**Earlier conversation summarized**")
+                            });
+                            let vanished = !payload
+                                .messages
+                                .iter()
+                                .any(|message| message.id == marker_id);
+                            if completed {
+                                *summarize_watch.borrow_mut() = None;
+                            } else if vanished {
+                                *summarize_watch.borrow_mut() = None;
+                                if let Some(window) = web_sys::window() {
+                                    let _ = window.alert_with_message(
+                                        "Summarization failed. Check that your inference server is reachable and try again.",
+                                    );
+                                }
+                            }
+                        }
+                        if let Some(marker_id) = summarize_placeholder_id(&payload.messages) {
+                            *summarize_watch.borrow_mut() = Some(marker_id);
+                        }
                         messages.set(payload.messages.clone());
                         messages_loading.set(false);
                         let current = (*chats).clone();
@@ -610,6 +640,7 @@ fn app() -> Html {
                                 let payload = ChatUpdate {
                                     character_id: Some(character_id),
                                     title: None,
+                                    summary: None,
                                 };
                                 let _ = api::update_chat(chat_id, &payload).await;
                                 if let Ok(list) = api::list_chats().await {
@@ -850,6 +881,7 @@ fn app() -> Html {
                                         let payload = ChatUpdate {
                                             title: Some(title),
                                             character_id: None,
+                                            summary: None,
                                         };
                                         if api::update_chat(chat_id, &payload).await.is_ok() {
                                             if let Ok(list) = api::list_chats().await {
@@ -941,6 +973,10 @@ fn app() -> Html {
                 } else {
                     <MessageList
                         chat_id={selected_chat_id}
+                        chat_summary={selected.as_ref().map(|c| c.summary.clone()).unwrap_or_default()}
+                        summarize_busy={selected.as_ref().is_some_and(|chat| {
+                            summarize_in_progress(chat, &messages)
+                        })}
                         messages={(*messages).clone()}
                         loading={*messages_loading}
                         settings={(*settings).clone()}
@@ -950,16 +986,21 @@ fn app() -> Html {
                         char_name={selected.as_ref().map(|c| c.character_name.clone())}
                         on_messages_change={Callback::from({
                             let messages = messages.clone();
+                            let chats = chats.clone();
                             let queue = queue.clone();
                             let bump_stream = bump_stream.clone();
                             move |_| {
                                 let Some(chat_id) = selected_chat_id else { return };
                                 let messages = messages.clone();
+                                let chats = chats.clone();
                                 let queue = queue.clone();
                                 bump_stream.emit(());
                                 wasm_bindgen_futures::spawn_local(async move {
                                     if let Ok(msgs) = api::get_messages(chat_id).await {
                                         messages.set(msgs);
+                                    }
+                                    if let Ok(list) = api::list_chats().await {
+                                        chats.set(sort_chats(list));
                                     }
                                     if let Ok(status) = api::get_queue().await {
                                         queue.set(Some(status));
@@ -970,7 +1011,15 @@ fn app() -> Html {
                     />
                 }
                 <Composer
-                    disabled={selected_chat_id.is_none()}
+                    disabled={
+                        selected_chat_id.is_none()
+                            || selected.as_ref().is_some_and(|chat| {
+                                summarize_in_progress(chat, &messages)
+                            })
+                    }
+                    summarizing={selected.as_ref().is_some_and(|chat| {
+                        summarize_in_progress(chat, &messages)
+                    })}
                     on_send={Callback::from({
                         let messages = messages.clone();
                         let chats = chats.clone();
@@ -1341,6 +1390,13 @@ fn job_status_label(job: &Job) -> String {
     }
 }
 
+fn summarize_placeholder_id(messages: &[Message]) -> Option<i64> {
+    messages
+        .iter()
+        .find(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
+        .map(|message| message.id)
+}
+
 fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
     chat.active_job
         .as_ref()
@@ -1360,7 +1416,9 @@ fn can_summarize_chat(messages: &[Message], settings: &Option<Settings>) -> bool
     let min_keep = settings.summarize_keep_recent.max(2) as usize;
     let count = messages
         .iter()
-        .filter(|message| !message.is_summary && message.role != MessageRole::System)
+        .filter(|message| {
+            !message.is_summary && message.role != MessageRole::System && !message.in_summary
+        })
         .count();
     count > min_keep
 }
@@ -1371,6 +1429,17 @@ fn confirm_character_delete(name: &str) -> bool {
             w.confirm_with_message(&format!(
                 "Delete character \"{name}\"? Linked chats will also be deleted."
             ))
+            .ok()
+        })
+        .unwrap_or(false)
+}
+
+fn confirm_delete_chat_summary() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.confirm_with_message(
+                "Delete this chat summary and remove summary breaks from the timeline? All messages will stay in the chat; they will be included in the model context again.",
+            )
             .ok()
         })
         .unwrap_or(false)
@@ -2042,24 +2111,156 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
 
 const SUMMARIZE_PLACEHOLDER: &str = "Summarizing earlier messages…";
 
+#[derive(Clone, Copy, PartialEq)]
+enum SummaryMarkerMode {
+    View,
+    Edit,
+}
+
 #[derive(Properties, PartialEq)]
 struct SummaryMarkerProps {
     message: Message,
-    rendered_content: Html,
+    chat_id: i64,
+    chat_summary: String,
+    summarize_busy: bool,
+    on_changed: Callback<()>,
 }
 
 #[function_component(SummaryMarker)]
 fn summary_marker(props: &SummaryMarkerProps) -> Html {
     let expanded = use_state(|| true);
+    let mode = use_state(|| SummaryMarkerMode::View);
+    let edit_text = use_state(String::new);
+    let acting = use_state(|| false);
     let active = matches!(
         props.message.job_status,
         Some(JobStatus::Queued) | Some(JobStatus::Running)
     );
     let pending = active || props.message.content == SUMMARIZE_PLACEHOLDER;
+    let summary_html = if props.chat_summary.is_empty() {
+        html! { <span class="muted">{"(Empty summary)"}</span> }
+    } else {
+        markdown::render_message_content(&props.chat_summary)
+    };
 
     let toggle = {
         let expanded = expanded.clone();
         Callback::from(move |_| expanded.set(!*expanded))
+    };
+
+    let start_edit = {
+        let mode = mode.clone();
+        let edit_text = edit_text.clone();
+        let expanded = expanded.clone();
+        let chat_summary = props.chat_summary.clone();
+        Callback::from(move |_| {
+            edit_text.set(chat_summary.clone());
+            mode.set(SummaryMarkerMode::Edit);
+            expanded.set(true);
+        })
+    };
+
+    let cancel_edit = {
+        let mode = mode.clone();
+        Callback::from(move |_| mode.set(SummaryMarkerMode::View))
+    };
+
+    let can_manage = !pending && !props.summarize_busy && !*acting;
+    let has_summary = !props.chat_summary.trim().is_empty();
+
+    let regenerate_summary = {
+        let acting = acting.clone();
+        let on_changed = props.on_changed.clone();
+        let chat_id = props.chat_id;
+        let marker_id = props.message.id;
+        Callback::from(move |_| {
+            if *acting || !has_summary {
+                return;
+            }
+            acting.set(true);
+            let acting = acting.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::regenerate_chat_summary(chat_id, marker_id).await {
+                    Ok(_) => on_changed.emit(()),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&format!(
+                                "Could not regenerate summary: {err}"
+                            ));
+                        }
+                    }
+                }
+                acting.set(false);
+            });
+        })
+    };
+
+    let delete_summary = {
+        let acting = acting.clone();
+        let on_changed = props.on_changed.clone();
+        let chat_id = props.chat_id;
+        Callback::from(move |_| {
+            if *acting || !has_summary {
+                return;
+            }
+            if !confirm_delete_chat_summary() {
+                return;
+            }
+            acting.set(true);
+            let acting = acting.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::delete_chat_summary(chat_id).await {
+                    Ok(_) => on_changed.emit(()),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not delete summary: {err}"));
+                        }
+                    }
+                }
+                acting.set(false);
+            });
+        })
+    };
+
+    let save_edit = {
+        let mode = mode.clone();
+        let edit_text = edit_text.clone();
+        let acting = acting.clone();
+        let on_changed = props.on_changed.clone();
+        let chat_id = props.chat_id;
+        Callback::from(move |_| {
+            let summary = (*edit_text).trim().to_string();
+            if summary.is_empty() || *acting {
+                return;
+            }
+            acting.set(true);
+            let mode = mode.clone();
+            let acting = acting.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let payload = ChatUpdate {
+                    title: None,
+                    character_id: None,
+                    summary: Some(summary),
+                };
+                match api::update_chat(chat_id, &payload).await {
+                    Ok(_) => {
+                        mode.set(SummaryMarkerMode::View);
+                        on_changed.emit(());
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not save summary: {err}"));
+                        }
+                    }
+                }
+                acting.set(false);
+            });
+        })
     };
 
     html! {
@@ -2082,12 +2283,47 @@ fn summary_marker(props: &SummaryMarkerProps) -> Html {
                     </p>
                 } else {
                     <>
-                        <button type="button" class="message-summary-toggle" onclick={toggle}>
-                            <span class="message-summary-chevron">{ if *expanded { "▾" } else { "▸" } }</span>
-                            <span>{"View summary"}</span>
-                        </button>
+                        <div class="message-summary-actions">
+                            <button type="button" class="message-summary-toggle" onclick={toggle}>
+                                <span class="message-summary-chevron">{ if *expanded { "▾" } else { "▸" } }</span>
+                                <span>{"View summary"}</span>
+                            </button>
+                            if *mode == SummaryMarkerMode::View && can_manage && has_summary {
+                                <button type="button" class="message-summary-toggle" onclick={start_edit}>
+                                    {"Edit summary"}
+                                </button>
+                                <button type="button" class="message-summary-toggle" onclick={regenerate_summary}>
+                                    {"Regenerate"}
+                                </button>
+                                <button type="button" class="message-summary-toggle" onclick={delete_summary}>
+                                    {"Delete summary"}
+                                </button>
+                            }
+                        </div>
                         if *expanded {
-                            <div class="message-summary-content">{ props.rendered_content.clone() }</div>
+                            if *mode == SummaryMarkerMode::Edit {
+                                <div class="message-summary-editor">
+                                    <textarea
+                                        rows="8"
+                                        value={(*edit_text).clone()}
+                                        oninput={Callback::from({
+                                            let edit_text = edit_text.clone();
+                                            move |e: InputEvent| {
+                                                let input: HtmlInputElement = e.target_unchecked_into();
+                                                edit_text.set(input.value());
+                                            }
+                                        })}
+                                    />
+                                    <div class="message-summary-editor-actions">
+                                        <button class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
+                                        <button class="btn" onclick={save_edit} disabled={*acting || edit_text.trim().is_empty()}>
+                                            { if *acting { "Saving…" } else { "Save summary" } }
+                                        </button>
+                                    </div>
+                                </div>
+                            } else {
+                                <div class="message-summary-content">{ summary_html }</div>
+                            }
                         }
                     </>
                 }
@@ -2099,6 +2335,8 @@ fn summary_marker(props: &SummaryMarkerProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct MessageListProps {
     chat_id: Option<i64>,
+    chat_summary: String,
+    summarize_busy: bool,
     messages: Vec<Message>,
     loading: bool,
     settings: Option<Settings>,
@@ -2178,7 +2416,10 @@ fn message_list(props: &MessageListProps) -> Html {
                             <SummaryMarker
                                 key={m.id}
                                 message={m.clone()}
-                                rendered_content={rendered_content}
+                                chat_id={chat_id}
+                                chat_summary={props.chat_summary.clone()}
+                                summarize_busy={props.summarize_busy}
+                                on_changed={props.on_messages_change.clone()}
                             />
                         }
                     } else {
@@ -2205,6 +2446,7 @@ fn message_list(props: &MessageListProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct ComposerProps {
     disabled: bool,
+    summarizing: bool,
     on_send: Callback<String>,
 }
 
@@ -2231,24 +2473,36 @@ fn composer(props: &ComposerProps) -> Html {
     };
 
     html! {
-        <div class="composer">
-            <textarea
-                rows="2"
-                value={(*text).clone()}
-                oninput={Callback::from({
-                    let text = text.clone();
-                    move |e: InputEvent| {
-                        let input: HtmlInputElement = e.target_unchecked_into();
-                        text.set(input.value());
-                    }
-                })}
-                placeholder="Write your message…"
-                disabled={props.disabled || *sending}
-            />
-            <button class="btn" onclick={on_send} disabled={props.disabled || *sending || text.trim().is_empty()}>
-                { if *sending { "Queuing…" } else { "Send" } }
-            </button>
-        </div>
+        <>
+            if props.summarizing {
+                <div class="composer-status" role="status" aria-live="polite">
+                    <span class="settings-save-spinner" aria-hidden="true"></span>
+                    <span>{"Summarizing earlier messages…"}</span>
+                </div>
+            }
+            <div class="composer">
+                <textarea
+                    rows="2"
+                    value={(*text).clone()}
+                    oninput={Callback::from({
+                        let text = text.clone();
+                        move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            text.set(input.value());
+                        }
+                    })}
+                    placeholder={if props.summarizing {
+                        "Summarization in progress…"
+                    } else {
+                        "Write your message…"
+                    }}
+                    disabled={props.disabled || *sending}
+                />
+                <button class="btn" onclick={on_send} disabled={props.disabled || *sending || text.trim().is_empty()}>
+                    { if *sending { "Queuing…" } else { "Send" } }
+                </button>
+            </div>
+        </>
     }
 }
 
@@ -3201,7 +3455,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             <div class="settings-group">
                 <strong>{"Auto summarize"}</strong>
                 <p class="muted" style="margin:0.35rem 0 0.5rem;">
-                    {"Compresses older messages into a summary so the chat fits your context window. Summarization runs as a queued job and appears as a break in the chat."}
+                    {"Folds older messages into a summary for the model context window. Your full chat history stays visible; summarized messages are omitted from future prompts. Summarization runs as a queued job and appears as a break in the chat."}
                 </p>
                 <label style="display:flex;gap:0.5rem;margin:0.5rem 0;">
                     <input type="checkbox" checked={s.summarize_enabled} onclick={{

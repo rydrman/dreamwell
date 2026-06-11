@@ -19,7 +19,8 @@ use crate::story_prompts::{
     parse_chapters_proposal_json, parse_outline_json,
 };
 use crate::summarize::{
-    enqueue_summarize_for_chat, maybe_enqueue_summarize, run_summarize_job, SUMMARIZE_FORCE_MARKER,
+    enqueue_regenerate_summary_for_chat, enqueue_summarize_for_chat, maybe_enqueue_summarize,
+    run_summarize_job, summarize_job_kind,
 };
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
 use crate::variables::{
@@ -131,6 +132,20 @@ impl JobQueue {
         settings: &dreamwell_types::Settings,
     ) -> AppResult<dreamwell_types::Job> {
         let job = enqueue_summarize_for_chat(pool, &self.work_tx, chat_id, settings).await?;
+        self.wake();
+        Ok(job)
+    }
+
+    pub async fn enqueue_regenerate_summary(
+        &self,
+        pool: &SqlitePool,
+        chat_id: i64,
+        marker_id: i64,
+        settings: &dreamwell_types::Settings,
+    ) -> AppResult<dreamwell_types::Job> {
+        let job =
+            enqueue_regenerate_summary_for_chat(pool, &self.work_tx, chat_id, marker_id, settings)
+                .await?;
         self.wake();
         Ok(job)
     }
@@ -343,14 +358,19 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
             }
         }
         JobType::ChatSummarize => {
-            if let Some(message_id) = job.message_id {
-                db::update_message_content(pool, message_id, "[Summarization cancelled]").await?;
-            }
+            remove_summarize_marker(pool, job).await?;
         }
         JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
         | JobType::StoryBeatOutline
         | JobType::StoryProposeBeats => {}
+    }
+    Ok(())
+}
+
+async fn remove_summarize_marker(pool: &SqlitePool, job: &dreamwell_types::Job) -> AppResult<()> {
+    if let Some(message_id) = job.message_id {
+        db::delete_messages(pool, &[message_id]).await?;
     }
     Ok(())
 }
@@ -380,14 +400,7 @@ async fn fail_job(
             }
         }
         JobType::ChatSummarize => {
-            if let Some(message_id) = job.message_id {
-                db::update_message_content(
-                    pool,
-                    message_id,
-                    &format!("[Summarization failed: {message}]"),
-                )
-                .await?;
-            }
+            remove_summarize_marker(pool, job).await?;
         }
         JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
@@ -414,8 +427,8 @@ async fn run_summarize_job_handler(
         .message_id
         .ok_or_else(|| AppError::internal("summarize job missing message_id"))?;
 
-    let force = job.guidance_notes == SUMMARIZE_FORCE_MARKER;
-    match run_summarize_job(pool, job_id, chat_id, marker_id, settings, force).await {
+    let kind = summarize_job_kind(&job.guidance_notes);
+    match run_summarize_job(pool, job_id, chat_id, marker_id, settings, kind).await {
         Ok(()) => Ok(()),
         Err(err) => {
             fail_job(pool, job_id, job, &err.to_string()).await?;

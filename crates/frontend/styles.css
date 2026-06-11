@@ -543,6 +543,12 @@ input.header-title {
   font-size: 0.875rem;
 }
 
+.message-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .message-summary-toggle {
   display: inline-flex;
   align-items: center;
@@ -569,6 +575,33 @@ input.header-title {
   border-radius: 0 0.35rem 0.35rem 0;
   font-size: 0.9rem;
   color: var(--muted);
+}
+
+.message-summary-editor {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.message-summary-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 10rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0.75rem 1rem;
+  line-height: 1.4;
+  resize: vertical;
+  font: inherit;
+}
+
+.message-summary-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .message .message-thought {
@@ -881,6 +914,18 @@ input.header-title {
   max-width: 100%;
   background: var(--surface);
   border: 1px dashed var(--border);
+}
+
+.composer-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 .composer {

@@ -147,6 +147,12 @@ fn default_title() -> String {
 pub struct ChatUpdate {
     pub title: Option<String>,
     pub character_id: Option<i64>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegenerateSummaryRequest {
+    pub marker_id: i64,
 }
 
 /// SillyTavern-style main prompt default.
@@ -181,6 +187,9 @@ pub struct Message {
     #[serde(default)]
     pub variable_updates: Vec<MessageVariableUpdate>,
     pub is_summary: bool,
+    /// True when this message has been folded into `chat.summary` (kept in UI, omitted from model context).
+    #[serde(default)]
+    pub in_summary: bool,
     pub created_at: DateTime<Utc>,
     pub job_status: Option<JobStatus>,
 }
