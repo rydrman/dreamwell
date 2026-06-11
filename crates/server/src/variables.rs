@@ -12,34 +12,34 @@ pub enum VariableUpdate {
     Delete { key: String },
 }
 
-/// Strips variable markup for live display while generation is still in progress.
-pub fn strip_variables_for_display(text: &str) -> String {
-    strip_variable_markup(text, &mut Vec::new(), true)
-}
-
-pub fn extract_variables_from_text(text: &str) -> (String, Vec<VariableUpdate>) {
+/// Parses variable updates from model output without mutating the stored text.
+pub fn parse_variable_updates(text: &str) -> Vec<VariableUpdate> {
     let mut updates = Vec::new();
-    let cleaned = strip_variable_markup(text, &mut updates, false);
-    (cleaned, updates)
+    let mut working = text.to_string();
+    working = extract_delete_tags(&working, &mut updates);
+    working = extract_set_value_tags(&working, &mut updates);
+    extract_set_tags(&working, &mut updates);
+    updates
 }
 
-fn strip_variable_markup(
-    text: &str,
-    updates: &mut Vec<VariableUpdate>,
-    hold_incomplete: bool,
-) -> String {
+/// Visible reply text after variable tags are removed. Used only for validation.
+pub(crate) fn visible_text_without_variables(text: &str) -> String {
+    strip_variable_markup(text, false)
+}
+
+fn strip_variable_markup(text: &str, hold_incomplete: bool) -> String {
     let mut working = text.to_string();
-    working = apply_delete_tags(&working, updates);
-    working = apply_set_value_tags(&working, updates);
-    working = apply_set_tags(&working, updates);
+    working = strip_delete_tags(&working);
+    working = strip_set_value_tags(&working);
+    working = strip_set_tags(&working);
     working = strip_orphan_closing_tags(&working);
     working = strip_incomplete_variable_tags(&working, hold_incomplete);
     collapse_spaces(working.trim())
 }
 
-fn apply_delete_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
+fn delete_patterns() -> &'static [Regex] {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
-    let patterns = PATTERNS.get_or_init(|| {
+    PATTERNS.get_or_init(|| {
         vec![
             Regex::new(
                 r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#,
@@ -50,10 +50,30 @@ fn apply_delete_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
             )
             .expect("delete empty element regex"),
         ]
-    });
+    })
+}
 
+fn set_value_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
+        )
+        .expect("set value self-closing regex")
+    })
+}
+
+fn set_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#)
+            .expect("set regex")
+    })
+}
+
+fn extract_delete_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
     let mut working = text.to_string();
-    for re in patterns {
+    for re in delete_patterns() {
         working = re
             .replace_all(&working, |caps: &regex::Captures| {
                 push_delete_update(updates, caps.get(1).map(|m| m.as_str()).unwrap_or_default());
@@ -64,38 +84,42 @@ fn apply_delete_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
     working
 }
 
-fn apply_set_value_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(
-            r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
-        )
-        .expect("set value self-closing regex")
-    });
-
-    re.replace_all(text, |caps: &regex::Captures| {
-        let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
-        let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
-        push_set_update(updates, key, value);
-        ""
-    })
-    .into_owned()
+fn extract_set_value_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
+    set_value_pattern()
+        .replace_all(text, |caps: &regex::Captures| {
+            let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
+            let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
+            push_set_update(updates, key, value);
+            ""
+        })
+        .into_owned()
 }
 
-fn apply_set_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#)
-            .expect("set regex")
-    });
+fn extract_set_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
+    set_pattern()
+        .replace_all(text, |caps: &regex::Captures| {
+            let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
+            let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
+            push_set_update(updates, key, value);
+            ""
+        })
+        .into_owned()
+}
 
-    re.replace_all(text, |caps: &regex::Captures| {
-        let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
-        let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
-        push_set_update(updates, key, value);
-        ""
-    })
-    .into_owned()
+fn strip_delete_tags(text: &str) -> String {
+    let mut working = text.to_string();
+    for re in delete_patterns() {
+        working = re.replace_all(&working, "").into_owned();
+    }
+    working
+}
+
+fn strip_set_value_tags(text: &str) -> String {
+    set_value_pattern().replace_all(text, "").into_owned()
+}
+
+fn strip_set_tags(text: &str) -> String {
+    set_pattern().replace_all(text, "").into_owned()
 }
 
 fn push_delete_update(updates: &mut Vec<VariableUpdate>, key: &str) {
@@ -269,10 +293,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_var_tags() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"Hello <var key="location">tavern</var> world"#);
-        assert_eq!(cleaned, "Hello world");
+    fn parse_var_tags() {
+        let updates = parse_variable_updates(r#"Hello <var key="location">tavern</var> world"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Set {
@@ -283,9 +305,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_legacy_fact_tags() {
-        let (cleaned, updates) = extract_variables_from_text(r#"<fact key="gold">12</fact>"#);
-        assert_eq!(cleaned, "");
+    fn parse_legacy_fact_tags() {
+        let updates = parse_variable_updates(r#"<fact key="gold">12</fact>"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Set {
@@ -296,10 +317,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_delete_var_tags() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"Done <var key="quest_stage" delete/> here"#);
-        assert_eq!(cleaned, "Done here");
+    fn parse_delete_var_tags() {
+        let updates = parse_variable_updates(r#"Done <var key="quest_stage" delete/> here"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Delete {
@@ -309,11 +328,10 @@ mod tests {
     }
 
     #[test]
-    fn extract_delete_var_tags_with_value() {
-        let (cleaned, updates) = extract_variables_from_text(
+    fn parse_delete_var_tags_with_value() {
+        let updates = parse_variable_updates(
             r#"Reset <var key="temp_buff" delete="true"/> and <var key="hp">50</var>"#,
         );
-        assert_eq!(cleaned, "Reset and");
         assert_eq!(
             updates,
             vec![
@@ -329,40 +347,8 @@ mod tests {
     }
 
     #[test]
-    fn strips_orphan_closing_tags() {
-        let (cleaned, updates) = extract_variables_from_text(
-            r#"*narrates* <var key="hp">80</var>
-</var>"#,
-        );
-        assert_eq!(cleaned, "*narrates*");
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "hp".to_string(),
-                value: "80".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn strips_duplicate_closing_tags() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"<var key="location">tavern</var></var>"#);
-        assert_eq!(cleaned, "");
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "location".to_string(),
-                value: "tavern".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn extracts_self_closing_value_tags() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"Hi <var key="hp" value="50"/> there"#);
-        assert_eq!(cleaned, "Hi there");
+    fn parses_self_closing_value_tags() {
+        let updates = parse_variable_updates(r#"Hi <var key="hp" value="50"/> there"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Set {
@@ -373,10 +359,8 @@ mod tests {
     }
 
     #[test]
-    fn extracts_delete_empty_element_tags() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"Done <var key="quest" delete></var> now"#);
-        assert_eq!(cleaned, "Done now");
+    fn parses_delete_empty_element_tags() {
+        let updates = parse_variable_updates(r#"Done <var key="quest" delete></var> now"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Delete {
@@ -386,39 +370,31 @@ mod tests {
     }
 
     #[test]
-    fn strips_incomplete_tags_on_finalize() {
-        let (cleaned, updates) =
-            extract_variables_from_text(r#"Visible only <var key="hp">50</var"#);
-        assert_eq!(cleaned, "Visible only");
+    fn ignores_incomplete_tags() {
+        let updates = parse_variable_updates(r#"Visible only <var key="hp">50</var"#);
         assert!(updates.is_empty());
     }
 
     #[test]
-    fn holds_back_incomplete_tags_during_display() {
-        assert_eq!(
-            strip_variables_for_display(r#"Visible only <var key="hp">50</var"#),
-            "Visible only"
-        );
-        assert_eq!(
-            strip_variables_for_display(r#"Visible only <var key="hp">50"#),
-            "Visible only"
-        );
-        assert_eq!(
-            strip_variables_for_display(r#"Visible only <v"#),
-            "Visible only"
-        );
-    }
-
-    #[test]
     fn is_case_insensitive_for_tags() {
-        let (cleaned, updates) = extract_variables_from_text(r#"<VAR key="x">y</VAR>"#);
-        assert_eq!(cleaned, "");
+        let updates = parse_variable_updates(r#"<VAR key="x">y</VAR>"#);
         assert_eq!(
             updates,
             vec![VariableUpdate::Set {
                 key: "x".to_string(),
                 value: "y".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn visible_text_strips_tags_for_validation() {
+        assert_eq!(
+            visible_text_without_variables(
+                r#"*narrates* <var key="hp">80</var>
+</var>"#
+            ),
+            "*narrates*"
         );
     }
 
