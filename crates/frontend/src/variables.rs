@@ -17,11 +17,11 @@ fn delete_patterns() -> &'static [Regex] {
     PATTERNS.get_or_init(|| {
         vec![
             Regex::new(
-                r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#,
+                r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#,
             )
             .expect("delete self-closing regex"),
             Regex::new(
-                r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bdelete\b[^>]*>\s*</(?:var|fact)>"#,
+                r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bdelete\b[^>]*>\s*</(?:var|fact)>"#,
             )
             .expect("delete empty element regex"),
         ]
@@ -32,7 +32,7 @@ fn set_value_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
+            r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
         )
         .expect("set value self-closing regex")
     })
@@ -41,8 +41,10 @@ fn set_value_pattern() -> &'static Regex {
 fn set_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#)
-            .expect("set regex")
+        Regex::new(
+            r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#,
+        )
+        .expect("set regex")
     })
 }
 
@@ -134,6 +136,14 @@ fn collapse_spaces(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_name_attribute_tags() {
+        assert_eq!(
+            strip_variables_for_display(r#"*smiles* <var name="hp">80</var>"#, false),
+            "*smiles*"
+        );
+    }
 
     #[test]
     fn strips_var_tags_from_display_text() {
