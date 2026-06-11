@@ -42,11 +42,11 @@ fn delete_patterns() -> &'static [Regex] {
     PATTERNS.get_or_init(|| {
         vec![
             Regex::new(
-                r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#,
+                r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bdelete\b(?:\s*=\s*["']?(?:true|1)["']?)?[^>]*/>"#,
             )
             .expect("delete self-closing regex"),
             Regex::new(
-                r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bdelete\b[^>]*>\s*</(?:var|fact)>"#,
+                r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bdelete\b[^>]*>\s*</(?:var|fact)>"#,
             )
             .expect("delete empty element regex"),
         ]
@@ -57,7 +57,7 @@ fn set_value_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
+            r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*\bvalue=["']([^"']*)["'][^>]*/>"#,
         )
         .expect("set value self-closing regex")
     })
@@ -66,8 +66,10 @@ fn set_value_pattern() -> &'static Regex {
 fn set_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?is)<(?:var|fact)\s+key=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#)
-            .expect("set regex")
+        Regex::new(
+            r#"(?is)<(?:var|fact)\s+(?:key|name)=["']([^"']+)["'][^>]*>(.*?)</(?:var|fact)>"#,
+        )
+        .expect("set regex")
     })
 }
 
@@ -291,6 +293,18 @@ pub async fn revert_variable_updates_from_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_name_attribute_tags() {
+        let updates = parse_variable_updates(r#"<var name="location">tavern</var>"#);
+        assert_eq!(
+            updates,
+            vec![VariableUpdate::Set {
+                key: "location".to_string(),
+                value: "tavern".to_string(),
+            }]
+        );
+    }
 
     #[test]
     fn parse_var_tags() {

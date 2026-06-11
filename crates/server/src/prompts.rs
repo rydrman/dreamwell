@@ -91,7 +91,7 @@ fn format_variables(variables: &[dreamwell_types::ChatVariable]) -> String {
 }
 
 fn variables_instruction() -> &'static str {
-    "You may update chat variables using XML tags like <var key=\"location\">tavern</var>. Reusing a key replaces its value. Remove a variable with <var key=\"location\" delete/>. Only emit var tags for mutable session state that should persist (location, inventory, quest stage, etc.), not for static lore."
+    "You may update chat variables using XML tags like <var key=\"location\">tavern</var>. Use the key attribute (not name). Reusing a key replaces its value. Remove a variable with <var key=\"location\" delete/>. Only emit var tags for mutable session state that should persist (location, inventory, quest stage, etc.), not for static lore."
 }
 
 /// Rough token budget for permanent prompt content (character card, system prompts).
