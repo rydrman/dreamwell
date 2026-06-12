@@ -134,7 +134,8 @@ pub fn banner_kind() -> Option<InstallKind> {
         return None;
     }
     match install_kind() {
-        InstallKind::Unavailable => None,
+        // Chrome shows its own install promotion when beforeinstallprompt fires.
+        InstallKind::NativePrompt | InstallKind::Unavailable => None,
         kind => Some(kind),
     }
 }
@@ -150,7 +151,8 @@ pub fn init(on_available: Callback<()>) {
 
     let on_available = Rc::new(on_available);
     let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
-        event.prevent_default();
+        // Do not call preventDefault here. Chrome uses that to suppress its own
+        // install banner; we want the browser-native promotion when available.
         DEFERRED_PROMPT.with(|prompt| *prompt.borrow_mut() = Some(event.into()));
         on_available.emit(());
     }) as Box<dyn FnMut(_)>);
@@ -343,7 +345,7 @@ pub fn install_settings(props: &InstallSettingsProps) -> Html {
                 </p>
             } else if matches!(kind, InstallKind::NativePrompt) {
                 <p class="muted" style="margin:0.35rem 0 0.5rem;">
-                    {"Install Dreamwell on this device for quick access from your home screen."}
+                    {"Chrome should offer to install Dreamwell automatically. If you dismissed that prompt, use the button below or Chrome's menu → \"Install Dreamwell\"."}
                 </p>
                 <InstallActions kind={InstallKind::NativePrompt} on_change={props.on_change.clone()} />
             } else {
@@ -370,7 +372,7 @@ fn manual_intro(kind: InstallKind) -> &'static str {
             "iPhone and iPad do not show an automatic install button. Add Dreamwell manually:"
         }
         InstallKind::AndroidManual => {
-            "If the Install button does not appear, add Dreamwell manually from Chrome:"
+            "If Chrome does not show an install offer at the top of the page, add Dreamwell manually:"
         }
         InstallKind::DesktopManual => "Install Dreamwell as a desktop app from Chrome or Edge:",
         InstallKind::NativePrompt | InstallKind::Unavailable => "",
