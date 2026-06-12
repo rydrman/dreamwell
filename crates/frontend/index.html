@@ -11,12 +11,18 @@
     <title>Dreamwell</title>
     <link rel="icon" href="icons/favicon.ico" sizes="32x32" />
     <link rel="apple-touch-icon" href="icons/icon-180.png" />
-    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="manifest" href="manifest.json" />
     <link data-trunk rel="css" href="styles.css" />
     <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="z" />
-    <link data-trunk rel="copy-file" href="manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="manifest.json" />
+    <link data-trunk rel="copy-file" href="sw.js" />
     <link data-trunk rel="copy-dir" href="icons" />
     <base href="/" />
+    <script>
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>

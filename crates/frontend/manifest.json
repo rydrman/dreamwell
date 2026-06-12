@@ -1,4 +1,5 @@
 {
+  "id": "/",
   "name": "Dreamwell",
   "short_name": "Dreamwell",
   "description": "Character chat and storytelling",
@@ -19,6 +20,12 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

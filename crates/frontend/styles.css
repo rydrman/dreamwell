@@ -1719,6 +1719,20 @@ input.header-title {
   flex-wrap: wrap;
 }
 
+.install-steps {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--fg);
+}
+
+.install-steps li {
+  margin: 0.35rem 0;
+}
+
+.install-steps li::marker {
+  color: var(--muted);
+}
+
 @media (min-width: 769px) {
   .install-banner {
     flex-direction: row;
