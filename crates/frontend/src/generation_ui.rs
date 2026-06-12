@@ -1,0 +1,352 @@
+use dreamwell_types::*;
+use yew::prelude::*;
+
+const GENERATION_FAILED_PREFIX: &str = "[Generation failed: ";
+
+pub fn generation_error_from_content(content: &str) -> Option<String> {
+    if content.starts_with(GENERATION_FAILED_PREFIX) && content.ends_with(']') {
+        return content
+            .strip_prefix(GENERATION_FAILED_PREFIX)
+            .and_then(|rest| rest.strip_suffix(']'))
+            .map(str::to_string);
+    }
+    None
+}
+
+pub fn generation_error_message(content: &str, explicit: Option<&str>) -> Option<String> {
+    if let Some(error) = explicit {
+        if !error.is_empty() {
+            return Some(error.to_string());
+        }
+    }
+    generation_error_from_content(content)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationPhase {
+    Writing,
+    Summarizing,
+    ProposingOutline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationNotice {
+    Queued,
+    Running(GenerationPhase),
+}
+
+impl GenerationNotice {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Queued => "Queued — waiting for server…",
+            Self::Running(GenerationPhase::Writing) => "Still writing — more coming…",
+            Self::Running(GenerationPhase::Summarizing) => "Summarizing earlier messages…",
+            Self::Running(GenerationPhase::ProposingOutline) => "Proposing outline…",
+        }
+    }
+
+    pub fn status_class(self) -> &'static str {
+        match self {
+            Self::Queued => "composer-status--queued",
+            Self::Running(GenerationPhase::Summarizing) => "composer-status--summarize",
+            Self::Running(GenerationPhase::Writing)
+            | Self::Running(GenerationPhase::ProposingOutline) => "composer-status--writing",
+        }
+    }
+
+    pub fn textarea_placeholder(self) -> &'static str {
+        match self {
+            Self::Queued => "Reply waiting in queue…",
+            Self::Running(GenerationPhase::Writing) => "Reply still generating…",
+            Self::Running(GenerationPhase::Summarizing) => "Summarization in progress…",
+            Self::Running(GenerationPhase::ProposingOutline) => "Outline proposal in progress…",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobStatusBadge {
+    pub label: String,
+    pub variant: JobStatusVariant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobStatusVariant {
+    Streaming,
+    Queued,
+}
+
+impl JobStatusBadge {
+    pub fn variant_class(&self) -> &'static str {
+        match self.variant {
+            JobStatusVariant::Streaming => "badge--streaming",
+            JobStatusVariant::Queued => "badge--queued",
+        }
+    }
+}
+
+pub fn job_running_label(job_type: JobType) -> &'static str {
+    match job_type {
+        JobType::ChatMessage => "writing…",
+        JobType::ChatSummarize => "summarizing…",
+        JobType::ChatVariableRecheck => "checking variables…",
+        JobType::StoryProposeChapters => "proposing chapters…",
+        JobType::StoryProposeBeats => "proposing beats…",
+        JobType::StoryBeatProse => "writing prose…",
+        JobType::StoryChapterOutline => "outlining chapter…",
+        JobType::StoryBeatOutline => "outlining beats…",
+    }
+}
+
+pub fn job_status_badge(active_job: &Job, queued_jobs: i64) -> Option<JobStatusBadge> {
+    match active_job.status {
+        JobStatus::Running => Some(JobStatusBadge {
+            label: job_running_label(active_job.job_type).to_string(),
+            variant: JobStatusVariant::Streaming,
+        }),
+        JobStatus::Queued => {
+            let label = if queued_jobs > 1 {
+                format!("queued ({queued_jobs})")
+            } else {
+                "queued".to_string()
+            };
+            Some(JobStatusBadge {
+                label,
+                variant: JobStatusVariant::Queued,
+            })
+        }
+        _ => Some(JobStatusBadge {
+            label: format!("{:?}", active_job.status).to_lowercase(),
+            variant: JobStatusVariant::Queued,
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockGenerationStatus {
+    Queued,
+    Streaming,
+}
+
+impl BlockGenerationStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Queued => "waiting in queue…",
+            Self::Streaming => "generating…",
+        }
+    }
+
+    pub fn variant_class(self) -> &'static str {
+        match self {
+            Self::Queued => "badge--queued",
+            Self::Streaming => "badge--streaming",
+        }
+    }
+}
+
+fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
+    chat.active_job
+        .as_ref()
+        .is_some_and(|job| job.job_type == JobType::ChatSummarize)
+        || messages
+            .iter()
+            .any(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
+}
+
+pub fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<GenerationNotice> {
+    if summarize_in_progress(chat, messages) {
+        return Some(GenerationNotice::Running(GenerationPhase::Summarizing));
+    }
+    if messages
+        .iter()
+        .any(|message| message.job_status == Some(JobStatus::Running))
+    {
+        return Some(GenerationNotice::Running(GenerationPhase::Writing));
+    }
+    if messages
+        .iter()
+        .any(|message| message.job_status == Some(JobStatus::Queued))
+    {
+        return Some(GenerationNotice::Queued);
+    }
+    let job = chat.active_job.as_ref()?;
+    match job.status {
+        JobStatus::Running => Some(GenerationNotice::Running(GenerationPhase::Writing)),
+        JobStatus::Queued => Some(GenerationNotice::Queued),
+        _ => None,
+    }
+}
+
+pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
+    for chapter in &detail.chapters {
+        for beat in &chapter.beats {
+            match beat.job_status {
+                Some(JobStatus::Running) => {
+                    return Some(GenerationNotice::Running(GenerationPhase::Writing));
+                }
+                Some(JobStatus::Queued) => return Some(GenerationNotice::Queued),
+                _ => {}
+            }
+        }
+    }
+
+    let job = detail.story.active_job.as_ref()?;
+    match job.status {
+        JobStatus::Running => {
+            let phase = match job.job_type {
+                JobType::StoryProposeChapters | JobType::StoryProposeBeats => {
+                    GenerationPhase::ProposingOutline
+                }
+                JobType::StoryBeatProse => GenerationPhase::Writing,
+                _ => GenerationPhase::ProposingOutline,
+            };
+            Some(GenerationNotice::Running(phase))
+        }
+        JobStatus::Queued => Some(GenerationNotice::Queued),
+        _ => None,
+    }
+}
+
+pub fn chapter_block_status(
+    chapter: &StoryChapter,
+    active_job: Option<&Job>,
+) -> Option<BlockGenerationStatus> {
+    let job = active_job?;
+    let scoped = match job.job_type {
+        JobType::StoryProposeChapters => chapter.title.is_empty() && chapter.synopsis.is_empty(),
+        JobType::StoryProposeBeats => job.chapter_id == Some(chapter.id),
+        _ => false,
+    };
+    if !scoped {
+        return None;
+    }
+    match job.status {
+        JobStatus::Queued => Some(BlockGenerationStatus::Queued),
+        JobStatus::Running => Some(BlockGenerationStatus::Streaming),
+        _ => None,
+    }
+}
+
+pub fn beat_block_status(beat: &StoryBeat) -> Option<BlockGenerationStatus> {
+    match beat.job_status {
+        Some(JobStatus::Queued) => Some(BlockGenerationStatus::Queued),
+        Some(JobStatus::Running) => Some(BlockGenerationStatus::Streaming),
+        _ => None,
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct GenerationStatusBarProps {
+    pub notice: GenerationNotice,
+}
+
+#[function_component(GenerationStatusBar)]
+pub fn generation_status_bar(props: &GenerationStatusBarProps) -> Html {
+    let notice = props.notice;
+    html! {
+        <div
+            class={classes!("composer-status", notice.status_class())}
+            role="status"
+            aria-live="polite"
+        >
+            <span class="settings-save-spinner" aria-hidden="true"></span>
+            <span>{ notice.message() }</span>
+        </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_job(status: JobStatus, job_type: JobType) -> Job {
+        serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "job_type": job_type,
+            "chat_id": 1,
+            "message_id": 1,
+            "guidance_notes": "",
+            "status": status,
+            "position": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .expect("sample job")
+    }
+
+    #[test]
+    fn parses_generation_error_from_content() {
+        assert_eq!(
+            generation_error_from_content("[Generation failed: timeout]"),
+            Some("timeout".to_string())
+        );
+        assert_eq!(generation_error_from_content("normal prose"), None);
+    }
+
+    #[test]
+    fn running_chat_message_shows_writing() {
+        let job = sample_job(JobStatus::Running, JobType::ChatMessage);
+        let badge = job_status_badge(&job, 0).expect("badge");
+        assert_eq!(badge.label, "writing…");
+        assert_eq!(badge.variant, JobStatusVariant::Streaming);
+    }
+
+    #[test]
+    fn running_story_prose_shows_writing_prose() {
+        let job = sample_job(JobStatus::Running, JobType::StoryBeatProse);
+        let badge = job_status_badge(&job, 0).expect("badge");
+        assert_eq!(badge.label, "writing prose…");
+    }
+
+    #[test]
+    fn beat_job_running_takes_precedence_in_story_notice() {
+        let detail: StoryDetail = serde_json::from_value(serde_json::json!({
+            "story": {
+                "id": 1,
+                "title": "Test",
+                "premise": "",
+                "tone": "",
+                "genre": "",
+                "pov": "",
+                "length_preset": "short",
+                "notes": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "queued_jobs": 0,
+                "active_job": {
+                    "id": 2,
+                    "job_type": "story_propose_chapters",
+                    "story_id": 1,
+                    "guidance_notes": "",
+                    "status": "running",
+                    "position": 0,
+                    "created_at": "2026-01-01T00:00:00Z"
+                }
+            },
+            "chapters": [{
+                "id": 10,
+                "story_id": 1,
+                "title": "Ch1",
+                "synopsis": "",
+                "sort_order": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "beats": [{
+                    "id": 20,
+                    "chapter_id": 10,
+                    "title": "Beat",
+                    "synopsis": "",
+                    "content": "",
+                    "sort_order": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "job_status": "running"
+                }]
+            }]
+        }))
+        .expect("story detail");
+        assert_eq!(
+            story_notice(&detail),
+            Some(GenerationNotice::Running(GenerationPhase::Writing))
+        );
+    }
+}
