@@ -21,7 +21,7 @@ use wasm_bindgen::JsCast;
 
 use dreamwell_types::*;
 use gloo_timers::callback::{Interval, Timeout};
-use install::{InstallBanner, InstallKind};
+use install::{InstallBanner, InstallKind, InstallSettings};
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
@@ -249,13 +249,23 @@ fn app() -> Html {
     let summarize_watch = use_mut_ref(|| None::<i64>);
     let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
     let install_kind = use_state(install::install_kind);
+    let install_ui_tick = use_state(|| 0u32);
+
+    let refresh_install_ui = {
+        let install_kind = install_kind.clone();
+        let install_ui_tick = install_ui_tick.clone();
+        Callback::from(move |_| {
+            install_kind.set(install::install_kind());
+            install_ui_tick.set(*install_ui_tick + 1);
+        })
+    };
 
     {
         let install_kind = install_kind.clone();
-        let install_kind_for_init = install_kind.clone();
+        let refresh_install_ui = refresh_install_ui.clone();
         use_effect_with((), move |_| {
             install::init(Callback::from(move |_| {
-                install_kind_for_init.set(install::install_kind());
+                refresh_install_ui.emit(());
             }));
             install_kind.set(install::install_kind());
             || ()
@@ -263,22 +273,19 @@ fn app() -> Html {
     }
 
     let dismiss_install = {
-        let install_kind = install_kind.clone();
+        let refresh_install_ui = refresh_install_ui.clone();
         Callback::from(move |_| {
             install::dismiss_hint();
-            install_kind.set(install::install_kind());
+            refresh_install_ui.emit(());
         })
     };
 
-    let on_install_finished = {
-        let install_kind = install_kind.clone();
-        Callback::from(move |_| install_kind.set(install::install_kind()))
-    };
+    let on_install_finished = refresh_install_ui.clone();
 
-    let show_install_banner = matches!(
-        *install_kind,
-        InstallKind::NativePrompt | InstallKind::IosHint
-    );
+    let active_banner = {
+        let _ = *install_ui_tick;
+        install::banner_kind()
+    };
 
     let navigate = {
         let router = router.clone();
@@ -737,7 +744,13 @@ fn app() -> Html {
                     on_close_overlay={close_overlay.clone()}
                 />
                 if route.overlay() == Some(Overlay::Settings) {
-                    <SettingsOverlay settings={settings.clone()} on_close={close_overlay.clone()} />
+                    <SettingsOverlay
+                        settings={settings.clone()}
+                        install_kind={*install_kind}
+                        install_dismissed={install::is_dismissed()}
+                        on_install_change={refresh_install_ui.clone()}
+                        on_close={close_overlay.clone()}
+                    />
                 }
                 <QueuePage
                     queue={(*queue).clone()}
@@ -779,9 +792,9 @@ fn app() -> Html {
                         move |status| queue.set(Some(status))
                     })}
                 />
-                if show_install_banner {
+                if let Some(kind) = active_banner {
                     <InstallBanner
-                        kind={*install_kind}
+                        kind={kind}
                         on_dismiss={dismiss_install.clone()}
                         on_installed={on_install_finished.clone()}
                     />
@@ -918,7 +931,13 @@ fn app() -> Html {
                 />
             }
             if overlay == Some(Overlay::Settings) {
-                <SettingsOverlay settings={settings.clone()} on_close={close_overlay.clone()} />
+                <SettingsOverlay
+                    settings={settings.clone()}
+                    install_kind={*install_kind}
+                    install_dismissed={install::is_dismissed()}
+                    on_install_change={refresh_install_ui.clone()}
+                    on_close={close_overlay.clone()}
+                />
             }
             if mode == AppMode::Chats
                 && (overlay == Some(Overlay::Character) || overlay == Some(Overlay::Variables))
@@ -1422,9 +1441,9 @@ fn app() -> Html {
                 </div>
                 }
             </main>
-            if show_install_banner {
+            if let Some(kind) = active_banner {
                 <InstallBanner
-                    kind={*install_kind}
+                    kind={kind}
                     on_dismiss={dismiss_install}
                     on_installed={on_install_finished}
                 />
@@ -1497,6 +1516,9 @@ fn mode_bar(props: &ModeBarProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct SettingsOverlayProps {
     settings: UseStateHandle<Option<Settings>>,
+    install_kind: InstallKind,
+    install_dismissed: bool,
+    on_install_change: Callback<()>,
     on_close: Callback<()>,
 }
 
@@ -1550,7 +1572,12 @@ fn settings_overlay(props: &SettingsOverlayProps) -> Html {
                 <h2>{"Settings"}</h2>
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
             </div>
-            <SettingsPanel save_ctx={save_ctx} />
+            <SettingsPanel
+                save_ctx={save_ctx}
+                install_kind={props.install_kind}
+                install_dismissed={props.install_dismissed}
+                on_install_change={props.on_install_change.clone()}
+            />
         </div>
     }
 }
@@ -3682,6 +3709,9 @@ fn settings_save_status_html(phase: &SettingsSavePhase) -> Html {
 #[derive(Properties, PartialEq)]
 struct SettingsPanelProps {
     save_ctx: SettingsSaveContext,
+    install_kind: InstallKind,
+    install_dismissed: bool,
+    on_install_change: Callback<()>,
 }
 
 #[function_component(SettingsPanel)]
@@ -3909,7 +3939,11 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 }} />
                 {"Extract reasoning into collapsible thought block"}
             </label>
-            <install::InstallSettings />
+            <InstallSettings
+                kind={props.install_kind}
+                dismissed={props.install_dismissed}
+                on_change={props.on_install_change.clone()}
+            />
             <NotificationSettings />
         </div>
     }
