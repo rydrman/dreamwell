@@ -1,4 +1,5 @@
 mod api;
+mod generation_ui;
 mod install;
 mod markdown;
 mod notifications;
@@ -20,6 +21,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use dreamwell_types::*;
+use generation_ui::{
+    composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
+};
 use gloo_timers::callback::{Interval, Timeout};
 use install::{InstallBanner, InstallKind, InstallSettings};
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
@@ -585,7 +589,7 @@ fn app() -> Html {
                         router.navigate(
                             AppRoute::Stories {
                                 story_id: Some(story_id),
-                                nav: StoryNav::Basics,
+                                nav: StoryNav::None,
                                 overlay: None,
                                 sidebar: false,
                             },
@@ -728,7 +732,10 @@ fn app() -> Html {
                 },
                 AppMode::Stories => AppRoute::Stories {
                     story_id: story_id_from_route(&route),
-                    nav: StoryNav::Basics,
+                    nav: match &route {
+                        AppRoute::Stories { nav, .. } => *nav,
+                        _ => StoryNav::None,
+                    },
                     overlay: None,
                     sidebar: false,
                 },
@@ -788,7 +795,7 @@ fn app() -> Html {
                             navigate.emit((
                                 AppRoute::Stories {
                                     story_id: Some(story_id),
-                                    nav: StoryNav::Basics,
+                                    nav: StoryNav::None,
                                     overlay: None,
                                     sidebar: false,
                                 },
@@ -1174,7 +1181,7 @@ fn app() -> Html {
                         navigate.emit((
                             AppRoute::Stories {
                                 story_id: Some(id),
-                                nav: StoryNav::Basics,
+                                nav: StoryNav::None,
                                 overlay: None,
                                 sidebar: false,
                             },
@@ -1225,7 +1232,7 @@ fn app() -> Html {
                                     navigate.emit((
                                         AppRoute::Stories {
                                             story_id: list.first().map(|s| s.id),
-                                            nav: StoryNav::Basics,
+                                            nav: StoryNav::None,
                                             overlay: None,
                                             sidebar: false,
                                         },
@@ -1700,83 +1707,13 @@ fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
             .any(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComposerNotice {
-    Summarizing,
-    Writing,
-    Queued,
-}
-
-impl ComposerNotice {
-    fn message(self) -> &'static str {
-        match self {
-            Self::Summarizing => "Summarizing earlier messages…",
-            Self::Writing => "Still writing — more coming…",
-            Self::Queued => "Reply queued — waiting for server…",
-        }
-    }
-
-    fn status_class(self) -> &'static str {
-        match self {
-            Self::Summarizing => "composer-status--summarize",
-            Self::Writing => "composer-status--writing",
-            Self::Queued => "composer-status--queued",
-        }
-    }
-
-    fn textarea_placeholder(self) -> &'static str {
-        match self {
-            Self::Summarizing => "Summarization in progress…",
-            Self::Writing => "Reply still generating…",
-            Self::Queued => "Reply waiting in queue…",
-        }
-    }
-}
-
 fn message_generation_error(message: &Message) -> Option<String> {
-    if let Some(error) = message.generation_error.as_ref() {
-        if !error.is_empty() {
-            return Some(error.clone());
-        }
-    }
-    let prefix = "[Generation failed: ";
-    if message.content.starts_with(prefix) && message.content.ends_with(']') {
-        return message
-            .content
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_suffix(']'))
-            .map(str::to_string);
-    }
-    None
+    generation_error_message(&message.content, message.generation_error.as_deref())
 }
 
 fn legacy_failure_only_message(message: &Message) -> bool {
     message_generation_error(message).is_some()
         && message.content.starts_with("[Generation failed: ")
-}
-
-fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<ComposerNotice> {
-    if summarize_in_progress(chat, messages) {
-        return Some(ComposerNotice::Summarizing);
-    }
-    if messages
-        .iter()
-        .any(|message| message.job_status == Some(JobStatus::Running))
-    {
-        return Some(ComposerNotice::Writing);
-    }
-    if messages
-        .iter()
-        .any(|message| message.job_status == Some(JobStatus::Queued))
-    {
-        return Some(ComposerNotice::Queued);
-    }
-    let job = chat.active_job.as_ref()?;
-    match job.status {
-        JobStatus::Running => Some(ComposerNotice::Writing),
-        JobStatus::Queued => Some(ComposerNotice::Queued),
-        _ => None,
-    }
 }
 
 fn can_summarize_chat(messages: &[Message], settings: &Option<Settings>) -> bool {
@@ -2897,7 +2834,7 @@ fn message_list(props: &MessageListProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct ComposerProps {
     disabled: bool,
-    notice: Option<ComposerNotice>,
+    notice: Option<GenerationNotice>,
     on_send: Callback<String>,
 }
 
@@ -2925,20 +2862,13 @@ fn composer(props: &ComposerProps) -> Html {
 
     let placeholder = props
         .notice
-        .map(ComposerNotice::textarea_placeholder)
+        .map(GenerationNotice::textarea_placeholder)
         .unwrap_or("Write your message…");
 
     html! {
         <>
             if let Some(notice) = props.notice {
-                <div
-                    class={classes!("composer-status", notice.status_class())}
-                    role="status"
-                    aria-live="polite"
-                >
-                    <span class="settings-save-spinner" aria-hidden="true"></span>
-                    <span>{ notice.message() }</span>
-                </div>
+                <GenerationStatusBar notice={notice} />
             }
             <div class="composer">
                 <textarea

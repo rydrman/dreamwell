@@ -1,6 +1,7 @@
 use dreamwell_types::*;
 use yew::prelude::*;
 
+use crate::generation_ui::job_status_badge;
 use crate::queue_ui::AppMode;
 
 #[derive(Properties, PartialEq)]
@@ -55,7 +56,7 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                 if chats_active {
                     { for props.chats.iter().map(|chat| {
                         let id = chat.id;
-                        let status = chat_status(chat);
+                        let status = chat.active_job.as_ref().and_then(|job| job_status_badge(job, chat.queued_jobs));
                         let selected = props.selected_chat_id == Some(chat.id);
                         html! {
                             <div key={id} class={classes!("chat-item", selected.then_some("selected"))}>
@@ -82,14 +83,14 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                     { for props.stories.iter().map(|story| {
                         let id = story.id;
                         let selected = props.selected_story_id == Some(story.id);
-                        let status = story_status(story);
+                        let status = story.active_job.as_ref().and_then(|job| job_status_badge(job, story.queued_jobs));
                         html! {
                             <div key={id} class={classes!("chat-item", selected.then_some("selected"))}>
                                 <div style="display:flex;gap:0.5rem;">
                                     <div style="flex:1;min-width:0;" onclick={props.on_select_story.reform(move |_| id)}>
                                         <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &story.title }</div>
-                                        if let Some(label) = status {
-                                            <span class="badge">{ label }</span>
+                                        if let Some(status) = status {
+                                            <span class={classes!("badge", status.variant_class())}>{ status.label }</span>
                                         }
                                     </div>
                                     <button class="btn secondary btn-compact" onclick={props.on_delete_story.reform(move |_| id)}>{"✕"}</button>
@@ -137,78 +138,10 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChatStatusBadge {
-    label: String,
-    variant: ChatStatusVariant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChatStatusVariant {
-    Streaming,
-    Queued,
-}
-
-impl ChatStatusBadge {
-    fn variant_class(&self) -> &'static str {
-        match self.variant {
-            ChatStatusVariant::Streaming => "badge--streaming",
-            ChatStatusVariant::Queued => "badge--queued",
-        }
-    }
-}
-
-fn chat_status(chat: &Chat) -> Option<ChatStatusBadge> {
-    let job = chat.active_job.as_ref()?;
-    match job.status {
-        JobStatus::Running => Some(ChatStatusBadge {
-            label: chat_running_label(job),
-            variant: ChatStatusVariant::Streaming,
-        }),
-        JobStatus::Queued => {
-            let label = if chat.queued_jobs > 1 {
-                format!("queued ({})", chat.queued_jobs)
-            } else {
-                "queued".to_string()
-            };
-            Some(ChatStatusBadge {
-                label,
-                variant: ChatStatusVariant::Queued,
-            })
-        }
-        _ => Some(ChatStatusBadge {
-            label: format!("{:?}", job.status).to_lowercase(),
-            variant: ChatStatusVariant::Queued,
-        }),
-    }
-}
-
-fn chat_running_label(job: &Job) -> String {
-    match job.job_type {
-        JobType::ChatSummarize => "summarizing…".to_string(),
-        JobType::ChatVariableRecheck => "checking variables…".to_string(),
-        _ => "writing…".to_string(),
-    }
-}
-
-fn story_status(story: &Story) -> Option<String> {
-    let job = story.active_job.as_ref()?;
-    match job.status {
-        JobStatus::Running => Some("generating…".to_string()),
-        JobStatus::Queued => {
-            if story.queued_jobs > 1 {
-                Some(format!("queued ({})", story.queued_jobs))
-            } else {
-                Some("queued".to_string())
-            }
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generation_ui::{job_status_badge, JobStatusVariant};
 
     fn sample_job(status: JobStatus, job_type: JobType) -> Job {
         serde_json::from_value(serde_json::json!({
@@ -246,13 +179,13 @@ mod tests {
             Some(sample_job(JobStatus::Running, JobType::ChatMessage)),
             0,
         );
-        assert_eq!(
-            chat_status(&chat),
-            Some(ChatStatusBadge {
-                label: "writing…".to_string(),
-                variant: ChatStatusVariant::Streaming,
-            })
-        );
+        let badge = chat
+            .active_job
+            .as_ref()
+            .and_then(|job| job_status_badge(job, chat.queued_jobs))
+            .expect("badge");
+        assert_eq!(badge.label, "writing…");
+        assert_eq!(badge.variant, JobStatusVariant::Streaming);
     }
 
     #[test]
@@ -261,42 +194,47 @@ mod tests {
             Some(sample_job(JobStatus::Running, JobType::ChatSummarize)),
             0,
         );
-        assert_eq!(
-            chat_status(&chat),
-            Some(ChatStatusBadge {
-                label: "summarizing…".to_string(),
-                variant: ChatStatusVariant::Streaming,
-            })
-        );
+        let badge = chat
+            .active_job
+            .as_ref()
+            .and_then(|job| job_status_badge(job, chat.queued_jobs))
+            .expect("badge");
+        assert_eq!(badge.label, "summarizing…");
+        assert_eq!(badge.variant, JobStatusVariant::Streaming);
     }
 
     #[test]
     fn queued_job_shows_queued_not_writing() {
         let chat = sample_chat(Some(sample_job(JobStatus::Queued, JobType::ChatMessage)), 1);
-        assert_eq!(
-            chat_status(&chat),
-            Some(ChatStatusBadge {
-                label: "queued".to_string(),
-                variant: ChatStatusVariant::Queued,
-            })
-        );
+        let badge = chat
+            .active_job
+            .as_ref()
+            .and_then(|job| job_status_badge(job, chat.queued_jobs))
+            .expect("badge");
+        assert_eq!(badge.label, "queued");
+        assert_eq!(badge.variant, JobStatusVariant::Queued);
     }
 
     #[test]
     fn queued_jobs_show_count() {
         let chat = sample_chat(Some(sample_job(JobStatus::Queued, JobType::ChatMessage)), 3);
-        assert_eq!(
-            chat_status(&chat),
-            Some(ChatStatusBadge {
-                label: "queued (3)".to_string(),
-                variant: ChatStatusVariant::Queued,
-            })
-        );
+        let badge = chat
+            .active_job
+            .as_ref()
+            .and_then(|job| job_status_badge(job, chat.queued_jobs))
+            .expect("badge");
+        assert_eq!(badge.label, "queued (3)");
+        assert_eq!(badge.variant, JobStatusVariant::Queued);
     }
 
     #[test]
     fn no_active_job_shows_no_status() {
         let chat = sample_chat(None, 0);
-        assert_eq!(chat_status(&chat), None);
+        assert_eq!(
+            chat.active_job
+                .as_ref()
+                .and_then(|job| job_status_badge(job, chat.queued_jobs)),
+            None
+        );
     }
 }

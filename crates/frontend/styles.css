@@ -1337,8 +1337,26 @@ input.header-title {
 }
 
 .story-block-header.open {
-  border-color: color-mix(in srgb, var(--fg) 30%, var(--border));
-  background: color-mix(in srgb, var(--fg) 8%, var(--bg));
+  border: 2px solid var(--fg);
+  background: var(--surface);
+  box-shadow: inset 4px 0 0 var(--fg);
+}
+
+.story-block-header.open .story-block-label {
+  font-weight: 700;
+}
+
+.story-block-header.open .story-block-chevron {
+  opacity: 1;
+  font-weight: 700;
+}
+
+.story-block-body--streaming {
+  box-shadow: inset 3px 0 0 var(--success);
+}
+
+.story-prose--streaming {
+  box-shadow: inset 3px 0 0 var(--success);
 }
 
 .story-block-header.indented {

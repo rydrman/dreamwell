@@ -7,18 +7,32 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
+use crate::generation_ui::{
+    beat_block_status, chapter_block_status, generation_error_from_content, story_notice,
+    BlockGenerationStatus, GenerationStatusBar,
+};
 use crate::router::{AppRoute, StoryNav};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum StorySelection {
+    Closed,
     Basics,
     Chapter(i64),
     Beat { chapter_id: i64, beat_id: i64 },
 }
 
+fn toggle_selection(current: StorySelection, target: StorySelection) -> StorySelection {
+    if current == target {
+        StorySelection::Closed
+    } else {
+        target
+    }
+}
+
 fn story_nav_from_selection(selection: StorySelection) -> StoryNav {
     match selection {
+        StorySelection::Closed => StoryNav::None,
         StorySelection::Basics => StoryNav::Basics,
         StorySelection::Chapter(id) => StoryNav::Chapter(id),
         StorySelection::Beat {
@@ -33,6 +47,7 @@ fn story_nav_from_selection(selection: StorySelection) -> StoryNav {
 
 fn selection_from_story_nav(nav: StoryNav) -> StorySelection {
     match nav {
+        StoryNav::None => StorySelection::Closed,
         StoryNav::Basics => StorySelection::Basics,
         StoryNav::Chapter(id) => StorySelection::Chapter(id),
         StoryNav::Beat {
@@ -55,7 +70,7 @@ fn story_id_from_route(route: &AppRoute) -> Option<i64> {
 fn story_nav_from_route(route: &AppRoute) -> StoryNav {
     match route {
         AppRoute::Stories { nav, .. } => *nav,
-        _ => StoryNav::Basics,
+        _ => StoryNav::None,
     }
 }
 
@@ -71,6 +86,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let detail = use_state(|| None::<StoryDetail>);
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
+    let detail_loading = use_state(|| false);
     let refresh_generation = use_state(|| 0u32);
     let story_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let selected_story_id = story_id_from_route(&props.route);
@@ -90,7 +106,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                             on_navigate.emit((
                                 AppRoute::Stories {
                                     story_id: Some(first.id),
-                                    nav: StoryNav::Basics,
+                                    nav: StoryNav::None,
                                     overlay: None,
                                     sidebar: false,
                                 },
@@ -109,6 +125,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     {
         let detail = detail.clone();
         let stories = stories.clone();
+        let detail_loading = detail_loading.clone();
         let story_stream_nudge = story_stream_nudge.clone();
         let refresh_generation = *refresh_generation;
         let route = props.route.clone();
@@ -117,14 +134,20 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
             let mut stream_holder = None::<api::StoryStream>;
             *story_stream_nudge.borrow_mut() = None;
             if let Some(story_id) = story_id {
+                detail.set(None);
+                detail_loading.set(true);
                 let detail_for_fetch = detail.clone();
+                let detail_loading_for_fetch = detail_loading.clone();
                 let stories = stories.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(d) = api::get_story(story_id).await {
                         detail_for_fetch.set(Some(d));
                     }
+                    detail_loading_for_fetch.set(false);
                 });
+                let detail_loading_for_stream = detail_loading.clone();
                 let stream = api::StoryStream::new(story_id, move |payload| {
+                    detail_loading_for_stream.set(false);
                     detail.set(Some(payload.detail.clone()));
                     let current = (*stories).clone();
                     stories.set(
@@ -144,6 +167,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 stream_holder = Some(stream);
             } else {
                 detail.set(None);
+                detail_loading.set(false);
             }
             move || {
                 *story_stream_nudge.borrow_mut() = None;
@@ -170,7 +194,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     on_navigate.emit((
                         AppRoute::Stories {
                             story_id: story_ids.first().copied(),
-                            nav: StoryNav::Basics,
+                            nav: StoryNav::None,
                             overlay: None,
                             sidebar: false,
                         },
@@ -289,11 +313,18 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         })
     };
 
+    let bump_stream = {
+        let refresh_generation = refresh_generation.clone();
+        Callback::from(move |_| refresh_generation.set(*refresh_generation + 1))
+    };
+
     html! {
         <StoryEditor
             detail={(*detail).clone()}
+            detail_loading={*detail_loading}
             selection={selection}
             guidance={(*guidance).clone()}
+            bump_stream={bump_stream.clone()}
             on_guidance={Callback::from({
                 let guidance = guidance.clone();
                 move |v| guidance.set(v)
@@ -337,8 +368,10 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct StoryEditorProps {
     detail: Option<StoryDetail>,
+    detail_loading: bool,
     selection: StorySelection,
     guidance: String,
+    bump_stream: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
@@ -346,6 +379,17 @@ struct StoryEditorProps {
 
 #[function_component(StoryEditor)]
 fn story_editor(props: &StoryEditorProps) -> Html {
+    if props.detail_loading {
+        return html! {
+            <>
+                <header class="header content-header">
+                    <h1 class="header-title">{"Loading story…"}</h1>
+                </header>
+                <div class="loading-screen muted">{"Loading story…"}</div>
+            </>
+        };
+    }
+
     let Some(detail) = props.detail.clone() else {
         return html! {
             <>
@@ -364,7 +408,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
         job.job_type == JobType::StoryProposeChapters
             && matches!(job.status, JobStatus::Queued | JobStatus::Running)
     });
-    let show_story_actions = props.selection == StorySelection::Basics;
+    let generation_notice = story_notice(&detail);
 
     html! {
         <>
@@ -396,25 +440,28 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                             }
                         })}
                     />
-                    if show_story_actions {
-                        <div class="header-actions">
-                            <button
-                                class="btn secondary btn-compact header-icon-btn"
-                                title="Propose chapters from story basics"
-                                disabled={proposing_chapters}
-                                onclick={propose_chapters_action(story_id, props.guidance.clone(), props.on_detail.clone())}
-                            >
-                                { if proposing_chapters { "Proposing…" } else { "Chapters" } }
-                            </button>
-                            <button
-                                class="btn secondary btn-compact header-icon-btn"
-                                title="Add chapter manually"
-                                onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}
-                            >
-                                {"+ Chapter"}
-                            </button>
-                        </div>
-                    }
+                    <div class="header-actions">
+                        <button
+                            class="btn secondary btn-compact header-icon-btn"
+                            title="Propose chapters from story basics"
+                            disabled={proposing_chapters}
+                            onclick={propose_chapters_action(
+                                story_id,
+                                props.guidance.clone(),
+                                props.on_detail.clone(),
+                                props.bump_stream.clone(),
+                            )}
+                        >
+                            { if proposing_chapters { "Proposing…" } else { "Chapters" } }
+                        </button>
+                        <button
+                            class="btn secondary btn-compact header-icon-btn"
+                            title="Add chapter manually"
+                            onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}
+                        >
+                            {"+ Chapter"}
+                        </button>
+                    </div>
                 </div>
                 <p class="header-subtitle muted">
                     { format!(
@@ -428,11 +475,15 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                     }
                 </p>
             </header>
+            if let Some(notice) = generation_notice {
+                <GenerationStatusBar notice={notice} />
+            }
             <div class="story-editor">
                 <StoryBlockList
                     detail={detail}
                     selection={props.selection}
                     guidance={props.guidance.clone()}
+                    bump_stream={props.bump_stream.clone()}
                     on_guidance={props.on_guidance.clone()}
                     on_detail={props.on_detail.clone()}
                     on_selection={props.on_selection.clone()}
@@ -447,6 +498,7 @@ struct StoryBlockListProps {
     detail: StoryDetail,
     selection: StorySelection,
     guidance: String,
+    bump_stream: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
@@ -455,6 +507,8 @@ struct StoryBlockListProps {
 #[function_component(StoryBlockList)]
 fn story_block_list(props: &StoryBlockListProps) -> Html {
     let story_id = props.detail.story.id;
+    let active_job = props.detail.story.active_job.as_ref();
+    let current_selection = props.selection;
 
     html! {
         <div class="story-blocks">
@@ -462,7 +516,9 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                 label={"Story basics".to_string()}
                 subtitle={props.detail.story.title.clone()}
                 open={props.selection == StorySelection::Basics}
-                on_toggle={props.on_selection.reform(|_| StorySelection::Basics)}
+                on_toggle={props.on_selection.reform(move |_| {
+                    toggle_selection(current_selection, StorySelection::Basics)
+                })}
             />
             if props.selection == StorySelection::Basics {
                 <div class="story-block-body">
@@ -500,6 +556,30 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                     <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
                         {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
                     </p>
+                    <div class="story-actions" style="margin-top:0.75rem;">
+                        <button
+                            class="btn"
+                            disabled={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                job.job_type == JobType::StoryProposeChapters
+                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                            })}
+                            onclick={propose_chapters_action(
+                                story_id,
+                                props.guidance.clone(),
+                                props.on_detail.clone(),
+                                props.bump_stream.clone(),
+                            )}
+                        >
+                            { if props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                job.job_type == JobType::StoryProposeChapters
+                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                            }) {
+                                "Proposing chapters…"
+                            } else {
+                                "Propose chapters"
+                            } }
+                        </button>
+                    </div>
                 </div>
             }
 
@@ -508,16 +588,18 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                 let ch_open = props.selection == StorySelection::Chapter(ch_id);
                 let ch_label = format!("Chapter {}", ch.sort_order + 1);
                 let ch_subtitle = if ch.title.is_empty() { "…".to_string() } else { ch.title.clone() };
-                let generating = ch.title.is_empty() && ch.synopsis.is_empty()
-                    && props.detail.story.active_job.is_some();
+                let chapter_status = chapter_block_status(ch, active_job);
+                let chapter_target = StorySelection::Chapter(ch_id);
                 html! {
                     <div key={ch_id} class="story-chapter-block">
                         <StoryBlockHeader
                             label={ch_label}
                             subtitle={ch_subtitle}
                             open={ch_open}
-                            badge={generating.then_some("generating…".to_string())}
-                            on_toggle={props.on_selection.reform(move |_| StorySelection::Chapter(ch_id))}
+                            status_badge={chapter_status}
+                            on_toggle={props.on_selection.reform(move |_| {
+                                toggle_selection(current_selection, chapter_target)
+                            })}
                         />
                         if ch_open {
                             <div class="story-block-body">
@@ -530,6 +612,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                             && matches!(job.status, JobStatus::Queued | JobStatus::Running)
                                     })}
                                     guidance={props.guidance.clone()}
+                                    bump_stream={props.bump_stream.clone()}
                                     on_guidance={props.on_guidance.clone()}
                                     on_detail={props.on_detail.clone()}
                                 />
@@ -540,7 +623,8 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                             let beat_open = props.selection == StorySelection::Beat { chapter_id: ch_id, beat_id };
                             let beat_label = format!("Beat {}", beat.sort_order + 1);
                             let beat_subtitle = if beat.title.is_empty() { "…".to_string() } else { beat.title.clone() };
-                            let streaming = matches!(beat.job_status, Some(JobStatus::Running) | Some(JobStatus::Queued));
+                            let beat_status = beat_block_status(beat);
+                            let beat_target = StorySelection::Beat { chapter_id: ch_id, beat_id };
                             html! {
                                 <div key={beat_id} class="story-beat-block">
                                     <StoryBlockHeader
@@ -548,16 +632,23 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                         subtitle={beat_subtitle}
                                         open={beat_open}
                                         indent={true}
-                                        badge={streaming.then_some("…".to_string())}
-                                        on_toggle={props.on_selection.reform(move |_| StorySelection::Beat { chapter_id: ch_id, beat_id })}
+                                        status_badge={beat_status}
+                                        on_toggle={props.on_selection.reform(move |_| {
+                                            toggle_selection(current_selection, beat_target)
+                                        })}
                                     />
                                     if beat_open {
-                                        <div class="story-block-body story-block-body-nested">
+                                        <div class={classes!(
+                                            "story-block-body",
+                                            "story-block-body-nested",
+                                            (beat.job_status == Some(JobStatus::Running)).then_some("story-block-body--streaming"),
+                                        )}>
                                             <BeatEditor
                                                 story_id={story_id}
                                                 chapter_id={ch_id}
                                                 beat={Some(beat.clone())}
                                                 guidance={props.guidance.clone()}
+                                                bump_stream={props.bump_stream.clone()}
                                                 on_guidance={props.on_guidance.clone()}
                                                 on_detail={props.on_detail.clone()}
                                             />
@@ -577,13 +668,16 @@ fn propose_chapters_action(
     story_id: i64,
     guidance: String,
     on_detail: Callback<StoryDetail>,
+    bump_stream: Callback<()>,
 ) -> Callback<MouseEvent> {
     Callback::from(move |_| {
         let on_detail = on_detail.clone();
+        let bump_stream = bump_stream.clone();
         let notes = guidance.clone();
         wasm_bindgen_futures::spawn_local(async move {
             if let Ok(d) = api::propose_chapters(story_id, &notes).await {
                 on_detail.emit(d);
+                bump_stream.emit(());
             }
         });
     })
@@ -623,7 +717,7 @@ struct StoryBlockHeaderProps {
     #[prop_or_default]
     indent: bool,
     #[prop_or_default]
-    badge: Option<String>,
+    status_badge: Option<BlockGenerationStatus>,
     on_toggle: Callback<()>,
 }
 
@@ -642,8 +736,8 @@ fn story_block_header(props: &StoryBlockHeaderProps) -> Html {
             <span class="story-block-chevron">{ if props.open { "▾" } else { "▸" } }</span>
             <span class="story-block-label">{ &props.label }</span>
             <span class="story-block-subtitle muted">{ &props.subtitle }</span>
-            if let Some(badge) = &props.badge {
-                <span class="badge">{ badge }</span>
+            if let Some(status) = props.status_badge {
+                <span class={classes!("badge", status.variant_class())}>{ status.label() }</span>
             }
         </button>
     }
@@ -782,6 +876,7 @@ struct ChapterEditorProps {
     #[prop_or(false)]
     proposing_beats: bool,
     guidance: String,
+    bump_stream: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
 }
@@ -848,13 +943,16 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                 }}>{"Save chapter"}</button>
                 <button class="btn" disabled={proposing_beats} onclick={{
                     let on_detail = props.on_detail.clone();
+                    let bump_stream = props.bump_stream.clone();
                     let guidance = props.guidance.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
+                        let bump_stream = bump_stream.clone();
                         let notes = guidance.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(d) = api::propose_beats(story_id, chapter_id, &notes).await {
                                 on_detail.emit(d);
+                                bump_stream.emit(());
                             }
                         });
                     })
@@ -896,6 +994,7 @@ struct BeatEditorProps {
     chapter_id: i64,
     beat: Option<StoryBeat>,
     guidance: String,
+    bump_stream: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
 }
@@ -908,27 +1007,65 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let title = use_state(|| beat.title.clone());
     let synopsis = use_state(|| beat.synopsis.clone());
     let content = use_state(|| beat.content.clone());
+    let user_edited_prose = use_state(|| false);
 
     {
         let title = title.clone();
         let synopsis = synopsis.clone();
         let content = content.clone();
+        let user_edited_prose = user_edited_prose.clone();
         let beat = beat.clone();
         use_effect_with(beat.id, move |_| {
             title.set(beat.title.clone());
             synopsis.set(beat.synopsis.clone());
             content.set(beat.content.clone());
+            user_edited_prose.set(false);
             || ()
         });
     }
 
-    let streaming = matches!(
-        beat.job_status,
-        Some(JobStatus::Running) | Some(JobStatus::Queued)
-    );
+    {
+        let content = content.clone();
+        let user_edited_prose = user_edited_prose.clone();
+        let server_content = beat.content.clone();
+        let job_status = beat.job_status;
+        use_effect_with(
+            (beat.id, server_content, job_status),
+            move |(_, server_content, job_status)| {
+                let generation_active = matches!(
+                    job_status,
+                    Some(JobStatus::Running) | Some(JobStatus::Queued)
+                );
+                if generation_active && !*user_edited_prose {
+                    content.set(server_content.clone());
+                }
+                || ()
+            },
+        );
+    }
+
+    let queued = matches!(beat.job_status, Some(JobStatus::Queued));
+    let streaming = matches!(beat.job_status, Some(JobStatus::Running));
+    let generation_active = queued || streaming;
+    let generation_error = generation_error_from_content(&beat.content);
+    let prose_failure_only = generation_error.is_some();
     let story_id = props.story_id;
     let chapter_id = props.chapter_id;
     let beat_id = beat.id;
+
+    let prose_display = if prose_failure_only || ((*content).is_empty() && queued) {
+        String::new()
+    } else {
+        (*content).clone()
+    };
+
+    let prose_placeholder = if queued && (*content).is_empty() {
+        "Waiting in queue…"
+    } else if streaming && (*content).is_empty() {
+        "…"
+    } else {
+        ""
+    };
 
     html! {
         <div class="story-form">
@@ -938,13 +1075,30 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
             <label class="field"><span class="muted">{"Synopsis"}</span>
                 <textarea value={(*synopsis).clone()} rows="3" oninput={string_input(synopsis.clone())} />
             </label>
-            <label class="field"><span class="muted">{"Prose"}{ if streaming { " · streaming on server" } else { "" } }</span>
+            <label class="field"><span class="muted">{"Prose"}</span>
                 <textarea
-                    class="prose-editor"
-                    value={ if (*content).is_empty() && streaming { "…".to_string() } else { (*content).clone() } }
+                    class={classes!(
+                        "prose-editor",
+                        streaming.then_some("story-prose--streaming"),
+                    )}
+                    value={prose_display}
+                    placeholder={prose_placeholder}
                     rows="12"
-                    oninput={string_input(content.clone())}
+                    readonly={generation_active && !*user_edited_prose}
+                    oninput={prose_input(content.clone(), user_edited_prose.clone())}
                 />
+                if queued && (*content).is_empty() && !prose_failure_only {
+                    <span class="muted" style="font-size:0.85rem;">{"Waiting in queue…"}</span>
+                }
+                if streaming && !prose_failure_only {
+                    <div class="message-streaming-note muted">{"Still writing…"}</div>
+                }
+                if let Some(error) = generation_error {
+                    <div class="message-error" role="alert">
+                        <strong>{"Generation failed"}</strong>
+                        <span>{ error }</span>
+                    </div>
+                }
             </label>
             <label class="field">
                 <span class="muted">{"Guidance for generation"}</span>
@@ -977,16 +1131,19 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             }
                         });
                     })
-                }}>{"Save beat"}</button>
-                <button class="btn" onclick={{
+                }} disabled={generation_active}>{"Save beat"}</button>
+                <button class="btn" disabled={generation_active} onclick={{
                     let on_detail = props.on_detail.clone();
+                    let bump_stream = props.bump_stream.clone();
                     let guidance = props.guidance.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
+                        let bump_stream = bump_stream.clone();
                         let notes = guidance.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(d) = api::generate_prose(story_id, chapter_id, beat_id, &notes).await {
                                 on_detail.emit(d);
+                                bump_stream.emit(());
                             }
                         });
                     })
@@ -1002,10 +1159,21 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             }
                         });
                     })
-                }}>{"Delete beat"}</button>
+                }} disabled={generation_active}>{"Delete beat"}</button>
             </div>
         </div>
     }
+}
+
+fn prose_input(
+    state: UseStateHandle<String>,
+    user_edited: UseStateHandle<bool>,
+) -> Callback<InputEvent> {
+    Callback::from(move |e: InputEvent| {
+        let input: HtmlInputElement = e.target_unchecked_into();
+        user_edited.set(true);
+        state.set(input.value());
+    })
 }
 
 fn string_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
