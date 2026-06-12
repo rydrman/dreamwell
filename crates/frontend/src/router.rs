@@ -12,9 +12,14 @@ pub enum Overlay {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoryNav {
+    /// Story selected with all outline sections collapsed.
+    None,
     Basics,
     Chapter(i64),
-    Beat { chapter_id: i64, beat_id: i64 },
+    Beat {
+        chapter_id: i64,
+        beat_id: i64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,40 +151,58 @@ impl AppRoute {
             } => chats_to_path(*chat_id, *overlay, *sidebar),
             Self::Stories {
                 story_id: None,
-                nav: StoryNav::Basics,
+                nav: StoryNav::None | StoryNav::Basics,
                 overlay: Some(overlay),
                 sidebar: false,
             } => format!("/stories/{}", overlay_segment(*overlay)),
             Self::Stories {
                 story_id: None,
-                nav: StoryNav::Basics,
+                nav: StoryNav::None | StoryNav::Basics,
                 overlay: None,
                 sidebar: true,
             } => "/stories/sidebar".to_string(),
             Self::Stories {
                 story_id: None,
-                nav: StoryNav::Basics,
+                nav: StoryNav::None | StoryNav::Basics,
                 overlay: None,
                 sidebar: false,
             } => "/stories".to_string(),
             Self::Stories {
                 story_id: Some(id),
-                nav: StoryNav::Basics,
+                nav: StoryNav::None,
                 overlay: Some(overlay),
                 sidebar: false,
             } => format!("/stories/{id}/{}", overlay_segment(*overlay)),
             Self::Stories {
                 story_id: Some(id),
-                nav: StoryNav::Basics,
+                nav: StoryNav::None,
                 overlay: None,
                 sidebar: true,
             } => format!("/stories/{id}/sidebar"),
             Self::Stories {
                 story_id: Some(id),
-                nav: StoryNav::Basics,
+                nav: StoryNav::None,
                 overlay: None,
                 sidebar: false,
             } => format!("/stories/{id}"),
+            Self::Stories {
+                story_id: Some(id),
+                nav: StoryNav::Basics,
+                overlay: Some(overlay),
+                sidebar: false,
+            } => format!("/stories/{id}/basics/{}", overlay_segment(*overlay)),
+            Self::Stories {
+                story_id: Some(id),
+                nav: StoryNav::Basics,
+                overlay: None,
+                sidebar: true,
+            } => format!("/stories/{id}/basics/sidebar"),
+            Self::Stories {
+                story_id: Some(id),
+                nav: StoryNav::Basics,
+                overlay: None,
+                sidebar: false,
+            } => format!("/stories/{id}/basics"),
             Self::Stories {
                 story_id: Some(id),
                 nav: StoryNav::Chapter(chapter_id),
@@ -240,28 +263,28 @@ impl AppRoute {
             Self::Queue { overlay: None } => "/queue".to_string(),
             Self::Stories {
                 story_id: None,
-                nav: StoryNav::Chapter(_),
+                nav: StoryNav::Chapter(_) | StoryNav::Beat { .. },
                 overlay: None,
                 sidebar: false,
             } => "/stories".to_string(),
             Self::Stories {
                 story_id: None,
-                nav: StoryNav::Beat { .. },
-                overlay: None,
-                sidebar: false,
-            } => "/stories".to_string(),
-            Self::Stories {
-                story_id: None,
-                nav: StoryNav::Basics,
+                nav: StoryNav::None | StoryNav::Basics,
                 overlay: Some(overlay),
                 sidebar: true,
             } => format!("/stories/{}/sidebar", overlay_segment(*overlay)),
             Self::Stories {
                 story_id: Some(id),
-                nav: StoryNav::Basics,
+                nav: StoryNav::None,
                 overlay: Some(overlay),
                 sidebar: true,
             } => format!("/stories/{id}/{}/sidebar", overlay_segment(*overlay)),
+            Self::Stories {
+                story_id: Some(id),
+                nav: StoryNav::Basics,
+                overlay: Some(overlay),
+                sidebar: true,
+            } => format!("/stories/{id}/basics/{}/sidebar", overlay_segment(*overlay)),
             Self::Stories {
                 story_id: Some(id),
                 nav: StoryNav::Chapter(chapter_id),
@@ -407,40 +430,78 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
     match segments {
         [] => AppRoute::Stories {
             story_id: None,
-            nav: StoryNav::Basics,
+            nav: StoryNav::None,
             overlay: None,
             sidebar: false,
         },
         ["sidebar"] => AppRoute::Stories {
             story_id: None,
-            nav: StoryNav::Basics,
+            nav: StoryNav::None,
             overlay: None,
             sidebar: true,
         },
         [overlay] if parse_overlay(overlay).is_some() => AppRoute::Stories {
             story_id: None,
-            nav: StoryNav::Basics,
+            nav: StoryNav::None,
             overlay: parse_overlay(overlay),
             sidebar: false,
         },
         [id] if parse_id(id).is_some() => AppRoute::Stories {
             story_id: parse_id(id),
-            nav: StoryNav::Basics,
+            nav: StoryNav::None,
             overlay: None,
             sidebar: false,
         },
         [id, "sidebar"] if parse_id(id).is_some() => AppRoute::Stories {
             story_id: parse_id(id),
-            nav: StoryNav::Basics,
+            nav: StoryNav::None,
             overlay: None,
             sidebar: true,
         },
         [id, overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
             AppRoute::Stories {
                 story_id: parse_id(id),
+                nav: StoryNav::None,
+                overlay: parse_overlay(overlay),
+                sidebar: false,
+            }
+        }
+        [id, overlay, "sidebar"] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
+            AppRoute::Stories {
+                story_id: parse_id(id),
+                nav: StoryNav::None,
+                overlay: parse_overlay(overlay),
+                sidebar: true,
+            }
+        }
+        [id, "basics"] if parse_id(id).is_some() => AppRoute::Stories {
+            story_id: parse_id(id),
+            nav: StoryNav::Basics,
+            overlay: None,
+            sidebar: false,
+        },
+        [id, "basics", "sidebar"] if parse_id(id).is_some() => AppRoute::Stories {
+            story_id: parse_id(id),
+            nav: StoryNav::Basics,
+            overlay: None,
+            sidebar: true,
+        },
+        [id, "basics", overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
+            AppRoute::Stories {
+                story_id: parse_id(id),
                 nav: StoryNav::Basics,
                 overlay: parse_overlay(overlay),
                 sidebar: false,
+            }
+        }
+        [id, "basics", overlay, "sidebar"]
+            if parse_id(id).is_some() && parse_overlay(overlay).is_some() =>
+        {
+            AppRoute::Stories {
+                story_id: parse_id(id),
+                nav: StoryNav::Basics,
+                overlay: parse_overlay(overlay),
+                sidebar: true,
             }
         }
         [id, "chapters", chapter_id]
@@ -523,7 +584,7 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
         }
         _ => AppRoute::Stories {
             story_id: None,
-            nav: StoryNav::Basics,
+            nav: StoryNav::None,
             overlay: None,
             sidebar: false,
         },
@@ -693,6 +754,12 @@ mod tests {
     #[test]
     fn round_trip_stories() {
         let routes = [
+            AppRoute::Stories {
+                story_id: Some(3),
+                nav: StoryNav::None,
+                overlay: None,
+                sidebar: false,
+            },
             AppRoute::Stories {
                 story_id: Some(3),
                 nav: StoryNav::Basics,
