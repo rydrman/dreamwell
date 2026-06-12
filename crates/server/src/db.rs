@@ -83,6 +83,7 @@ pub(crate) fn parse_job_type(s: &str) -> JobType {
         "story_propose_beats" => JobType::StoryProposeBeats,
         "story_beat_prose" => JobType::StoryBeatProse,
         "chat_summarize" => JobType::ChatSummarize,
+        "chat_variable_recheck" => JobType::ChatVariableRecheck,
         _ => JobType::ChatMessage,
     }
 }
@@ -91,6 +92,7 @@ pub(crate) fn job_type_str(job_type: JobType) -> &'static str {
     match job_type {
         JobType::ChatMessage => "chat_message",
         JobType::ChatSummarize => "chat_summarize",
+        JobType::ChatVariableRecheck => "chat_variable_recheck",
         JobType::StoryChapterOutline => "story_chapter_outline",
         JobType::StoryProposeChapters => "story_propose_chapters",
         JobType::StoryBeatOutline => "story_beat_outline",
@@ -287,7 +289,7 @@ async fn chat_from_row(pool: &SqlitePool, row: ChatRow) -> AppResult<Chat> {
     };
     let queued_jobs: i64 = if row.archived_at.is_none() {
         sqlx::query_scalar(
-            "SELECT COUNT(*) FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize') AND status = 'queued'",
+            "SELECT COUNT(*) FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize', 'chat_variable_recheck') AND status = 'queued'",
         )
         .bind(row.id)
         .fetch_one(pool)
@@ -433,7 +435,7 @@ pub async fn purge_expired_archived_chats(pool: &SqlitePool) -> AppResult<u64> {
 
 pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Job>> {
     let rows = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize') AND status IN ('queued','running') ORDER BY created_at ASC",
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize', 'chat_variable_recheck') AND status IN ('queued','running') ORDER BY created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -694,6 +696,33 @@ pub async fn clear_message_variable_updates(pool: &SqlitePool, message_id: i64) 
     Ok(())
 }
 
+pub async fn append_message_variable_recheck(
+    pool: &SqlitePool,
+    message_id: i64,
+    content: &str,
+    additional_updates: &[dreamwell_types::MessageVariableUpdate],
+) -> AppResult<()> {
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT variable_updates, content FROM messages WHERE id = ?1",
+    )
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("Message not found"))?;
+    let mut existing: Vec<dreamwell_types::MessageVariableUpdate> =
+        serde_json::from_str(&row.0).unwrap_or_default();
+    existing.extend_from_slice(additional_updates);
+    let variable_updates_json = serde_json::to_string(&existing)
+        .map_err(|e| AppError::internal(format!("serialize variable updates: {e}")))?;
+    sqlx::query("UPDATE messages SET content = ?1, variable_updates = ?2 WHERE id = ?3")
+        .bind(content)
+        .bind(variable_updates_json)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_thought_in_progress(
     pool: &SqlitePool,
     message_id: i64,
@@ -920,6 +949,41 @@ pub async fn has_active_summarize_job(pool: &SqlitePool, chat_id: i64) -> AppRes
     Ok(count > 0)
 }
 
+pub async fn has_active_variable_recheck_job(
+    pool: &SqlitePool,
+    message_id: i64,
+) -> AppResult<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM generation_jobs WHERE message_id = ?1 AND job_type = 'chat_variable_recheck' AND status IN ('queued','running')",
+    )
+    .bind(message_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn enqueue_variable_recheck_job(
+    pool: &SqlitePool,
+    chat_id: i64,
+    message_id: i64,
+) -> AppResult<Job> {
+    let now = Utc::now().to_rfc3339();
+    let position: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM generation_jobs WHERE status = 'queued'")
+            .fetch_one(pool)
+            .await?;
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO generation_jobs (job_type, chat_id, message_id, status, position, created_at) VALUES ('chat_variable_recheck',?1,?2,'queued',?3,?4) RETURNING id",
+    )
+    .bind(chat_id)
+    .bind(message_id)
+    .bind(position + 1)
+    .bind(&now)
+    .fetch_one(pool)
+    .await?;
+    get_job(pool, id).await
+}
+
 pub async fn enqueue_summarize_job(
     pool: &SqlitePool,
     chat_id: i64,
@@ -988,7 +1052,7 @@ pub async fn get_job(pool: &SqlitePool, id: i64) -> AppResult<Job> {
 
 pub async fn get_active_job(pool: &SqlitePool, chat_id: i64) -> AppResult<Option<Job>> {
     let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize') AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize', 'chat_variable_recheck') AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
     )
     .bind(chat_id)
     .fetch_optional(pool)

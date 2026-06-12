@@ -20,6 +20,7 @@ pub enum JobStatus {
 pub enum JobType {
     ChatMessage,
     ChatSummarize,
+    ChatVariableRecheck,
     StoryChapterOutline,
     StoryProposeChapters,
     StoryBeatOutline,

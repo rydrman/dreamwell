@@ -1,4 +1,6 @@
-use dreamwell_types::{Message, MessageVariableUpdate};
+use std::collections::HashSet;
+
+use dreamwell_types::{ChatVariable, Message, MessageVariableUpdate};
 use regex::Regex;
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -292,6 +294,106 @@ pub async fn revert_message_variable_updates(
     Ok(())
 }
 
+/// Serializes variable updates as `<var>` tags for embedding in message content.
+pub fn format_variable_tags(updates: &[VariableUpdate]) -> String {
+    updates
+        .iter()
+        .map(|update| match update {
+            VariableUpdate::Set { key, value } => format!(r#"<var key="{key}">{value}</var>"#),
+            VariableUpdate::Delete { key } => format!(r#"<var key="{key}" delete/>"#),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Removes variable tags whose keys appear in `keys`.
+pub fn remove_variable_tags_for_keys(text: &str, keys: &HashSet<&str>) -> String {
+    if keys.is_empty() {
+        return text.to_string();
+    }
+    let mut working = text.to_string();
+    for re in delete_patterns() {
+        working = re
+            .replace_all(&working, |caps: &regex::Captures| {
+                let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
+                if keys.contains(key) {
+                    String::new()
+                } else {
+                    caps.get(0)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default()
+                }
+            })
+            .into_owned();
+    }
+    working = set_value_pattern()
+        .replace_all(&working, |caps: &regex::Captures| {
+            let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
+            if keys.contains(key) {
+                String::new()
+            } else {
+                caps.get(0)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default()
+            }
+        })
+        .into_owned();
+    working = set_pattern()
+        .replace_all(&working, |caps: &regex::Captures| {
+            let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
+            if keys.contains(key) {
+                String::new()
+            } else {
+                caps.get(0)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default()
+            }
+        })
+        .into_owned();
+    collapse_spaces(working.trim()).to_string()
+}
+
+/// Replaces or appends variable tags in message content so future prompts see corrected state.
+pub fn merge_variable_tags_into_message(content: &str, updates: &[VariableUpdate]) -> String {
+    if updates.is_empty() {
+        return content.to_string();
+    }
+    let keys: HashSet<&str> = updates
+        .iter()
+        .map(|update| match update {
+            VariableUpdate::Set { key, .. } | VariableUpdate::Delete { key } => key.as_str(),
+        })
+        .collect();
+    let stripped = remove_variable_tags_for_keys(content, &keys);
+    let tags = format_variable_tags(updates);
+    if tags.is_empty() {
+        stripped
+    } else if stripped.trim().is_empty() {
+        tags
+    } else {
+        format!("{stripped}\n{tags}")
+    }
+}
+
+/// Keeps only updates that would change current chat variable state.
+pub fn filter_meaningful_updates(
+    updates: &[VariableUpdate],
+    current_variables: &[ChatVariable],
+) -> Vec<VariableUpdate> {
+    updates
+        .iter()
+        .filter(|update| match update {
+            VariableUpdate::Set { key, value } => current_variables
+                .iter()
+                .find(|v| v.key == *key)
+                .map(|v| v.value != *value)
+                .unwrap_or(true),
+            VariableUpdate::Delete { key } => current_variables.iter().any(|v| v.key == *key),
+        })
+        .cloned()
+        .collect()
+}
+
 pub async fn revert_variable_updates_from_messages(
     pool: &SqlitePool,
     chat_id: i64,
@@ -435,6 +537,55 @@ mod tests {
                 key: "x".to_string(),
                 value: "y".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn merge_replaces_existing_key_and_appends_new() {
+        let content = r#"Hello <var key="location">forest</var> world"#;
+        let updates = vec![
+            VariableUpdate::Set {
+                key: "location".into(),
+                value: "tavern".into(),
+            },
+            VariableUpdate::Set {
+                key: "gold".into(),
+                value: "12".into(),
+            },
+        ];
+        let merged = merge_variable_tags_into_message(content, &updates);
+        assert!(!merged.contains("forest"));
+        assert!(merged.contains(r#"<var key="location">tavern</var>"#));
+        assert!(merged.contains(r#"<var key="gold">12</var>"#));
+    }
+
+    #[test]
+    fn filter_meaningful_updates_skips_unchanged_values() {
+        let current = vec![ChatVariable {
+            id: 1,
+            chat_id: 1,
+            key: "hp".into(),
+            value: "80".into(),
+            updated_at: chrono::Utc::now(),
+        }];
+        let updates = vec![
+            VariableUpdate::Set {
+                key: "hp".into(),
+                value: "80".into(),
+            },
+            VariableUpdate::Set {
+                key: "gold".into(),
+                value: "5".into(),
+            },
+        ];
+        let filtered = filter_meaningful_updates(&updates, &current);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0],
+            VariableUpdate::Set {
+                key: "gold".into(),
+                value: "5".into(),
+            }
         );
     }
 

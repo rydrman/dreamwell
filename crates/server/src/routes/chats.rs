@@ -43,6 +43,10 @@ pub fn router() -> Router<AppState> {
             "/:id/messages/:message_id/regenerate",
             post(regenerate_message),
         )
+        .route(
+            "/:id/messages/:message_id/variables/recheck",
+            post(recheck_message_variables),
+        )
         .route("/:id/variables", get(list_variables).put(upsert_variable))
         .route("/:id/variables/:key", delete(delete_variable))
         .route("/:id/summarize", post(summarize_chat))
@@ -237,6 +241,20 @@ async fn regenerate_message(
     let mut updated = db::get_message(&state.pool, id, message_id).await?;
     updated.job_status = Some(job.status);
     Ok(Json(updated))
+}
+
+async fn recheck_message_variables(
+    State(state): State<AppState>,
+    Path((id, message_id)): Path<(i64, i64)>,
+) -> AppResult<Json<Job>> {
+    let _ = db::get_message(&state.pool, id, message_id).await?;
+    let settings = db::get_settings(&state.pool).await?;
+    let job = state
+        .queue
+        .enqueue_variable_recheck(&state.pool, id, message_id, &settings)
+        .await?;
+    db::touch_chat(&state.pool, id).await?;
+    Ok(Json(job))
 }
 
 async fn list_variables(
