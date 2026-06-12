@@ -1,4 +1,5 @@
 mod api;
+mod install;
 mod markdown;
 mod notifications;
 mod queue_ui;
@@ -20,6 +21,7 @@ use wasm_bindgen::JsCast;
 
 use dreamwell_types::*;
 use gloo_timers::callback::{Interval, Timeout};
+use install::{InstallBanner, InstallKind};
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
@@ -246,6 +248,37 @@ fn app() -> Html {
     let chat_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let summarize_watch = use_mut_ref(|| None::<i64>);
     let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
+    let install_kind = use_state(install::install_kind);
+
+    {
+        let install_kind = install_kind.clone();
+        let install_kind_for_init = install_kind.clone();
+        use_effect_with((), move |_| {
+            install::init(Callback::from(move |_| {
+                install_kind_for_init.set(install::install_kind());
+            }));
+            install_kind.set(install::install_kind());
+            || ()
+        });
+    }
+
+    let dismiss_install = {
+        let install_kind = install_kind.clone();
+        Callback::from(move |_| {
+            install::dismiss_hint();
+            install_kind.set(install::install_kind());
+        })
+    };
+
+    let on_install_finished = {
+        let install_kind = install_kind.clone();
+        Callback::from(move |_| install_kind.set(install::install_kind()))
+    };
+
+    let show_install_banner = matches!(
+        *install_kind,
+        InstallKind::NativePrompt | InstallKind::IosHint
+    );
 
     let navigate = {
         let router = router.clone();
@@ -746,6 +779,13 @@ fn app() -> Html {
                         move |status| queue.set(Some(status))
                     })}
                 />
+                if show_install_banner {
+                    <InstallBanner
+                        kind={*install_kind}
+                        on_dismiss={dismiss_install.clone()}
+                        on_installed={on_install_finished.clone()}
+                    />
+                }
             </div>
         };
     }
@@ -1382,6 +1422,13 @@ fn app() -> Html {
                 </div>
                 }
             </main>
+            if show_install_banner {
+                <InstallBanner
+                    kind={*install_kind}
+                    on_dismiss={dismiss_install}
+                    on_installed={on_install_finished}
+                />
+            }
         </div>
         </div>
     }
@@ -3862,6 +3909,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 }} />
                 {"Extract reasoning into collapsible thought block"}
             </label>
+            <install::InstallSettings />
             <NotificationSettings />
         </div>
     }
