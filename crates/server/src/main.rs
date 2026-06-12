@@ -3,12 +3,14 @@ mod config;
 mod db;
 mod error;
 mod inference;
+mod message_followups;
 mod prompts;
 mod queue;
 mod routes;
 mod story_prompts;
 mod summarize;
 mod thoughts;
+mod variable_recheck;
 mod variables;
 
 use std::net::SocketAddr;

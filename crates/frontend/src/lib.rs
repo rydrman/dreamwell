@@ -1991,6 +1991,10 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let can_menu =
         !props.message.is_summary && props.message.role != MessageRole::System && !active;
     let show_regenerate = props.message.role == MessageRole::Assistant;
+    let show_recheck_variables = props.show_variables
+        && props.is_last
+        && props.message.role == MessageRole::Assistant
+        && !props.message.content.trim().is_empty();
     let show_thought_block = props.show_thoughts
         && props.message.role == MessageRole::Assistant
         && (!props.message.thought_content.is_empty()
@@ -2205,6 +2209,35 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         })
     };
 
+    let recheck_variables = {
+        let menu_open = menu_open.clone();
+        let acting = acting.clone();
+        let on_changed = props.on_changed.clone();
+        let chat_id = props.chat_id;
+        let message_id = props.message.id;
+        Callback::from(move |_| {
+            if *acting {
+                return;
+            }
+            menu_open.set(false);
+            acting.set(true);
+            let acting = acting.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::recheck_message_variables(chat_id, message_id).await {
+                    Ok(_) => on_changed.emit(()),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not recheck variables: {err}"));
+                        }
+                    }
+                }
+                acting.set(false);
+            });
+        })
+    };
+
     let pending = queued && props.display_content.is_empty();
     let generation_error = message_generation_error(&props.message);
     let failure_only = legacy_failure_only_message(&props.message);
@@ -2261,6 +2294,9 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                                 <button type="button" class="message-menu-item" onclick={start_edit}>{"Edit"}</button>
                                 if show_regenerate {
                                     <button type="button" class="message-menu-item" onclick={regenerate}>{"Regenerate"}</button>
+                                }
+                                if show_recheck_variables {
+                                    <button type="button" class="message-menu-item" onclick={recheck_variables}>{"Recheck variables"}</button>
                                 }
                                 <button
                                     type="button"
