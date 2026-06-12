@@ -24,7 +24,7 @@ use crate::summarize::{
     summarize_job_kind,
 };
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
-use crate::variable_recheck::run_variable_recheck_job;
+use crate::variable_recheck::{enqueue_variable_recheck_for_message, run_variable_recheck_job};
 use crate::variables::{
     apply_variable_updates, build_message_variable_updates, parse_variable_updates,
     visible_text_without_variables,
@@ -141,6 +141,25 @@ impl JobQueue {
         let job =
             enqueue_regenerate_summary_for_chat(pool, &self.work_tx, chat_id, marker_id, settings)
                 .await?;
+        self.wake();
+        Ok(job)
+    }
+
+    pub async fn enqueue_variable_recheck(
+        &self,
+        pool: &SqlitePool,
+        chat_id: i64,
+        message_id: i64,
+        settings: &dreamwell_types::Settings,
+    ) -> AppResult<dreamwell_types::Job> {
+        let job = enqueue_variable_recheck_for_message(
+            pool,
+            &self.work_tx,
+            chat_id,
+            message_id,
+            settings,
+        )
+        .await?;
         self.wake();
         Ok(job)
     }
@@ -523,7 +542,6 @@ async fn run_chat_job(
                     pool,
                     work_tx,
                     chat_id,
-                    message_id,
                     settings,
                 })
                 .await?;

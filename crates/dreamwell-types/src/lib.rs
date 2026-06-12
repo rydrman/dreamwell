@@ -405,8 +405,6 @@ pub struct Settings {
     /// Minimum recent messages to always keep verbatim.
     pub summarize_keep_recent: i64,
     pub variables_enabled: bool,
-    /// When true, enqueue a follow-up job after each assistant reply to correct or add variable tags.
-    pub variables_recheck_enabled: bool,
     pub thought_blocks_enabled: bool,
     pub max_context_messages: i64,
     /// Total model context window (prompt + response). Used for budgeting hints.
@@ -432,7 +430,6 @@ pub struct SettingsUpdate {
     pub summarize_after_messages: Option<i64>,
     pub summarize_keep_recent: Option<i64>,
     pub variables_enabled: Option<bool>,
-    pub variables_recheck_enabled: Option<bool>,
     pub thought_blocks_enabled: Option<bool>,
     pub max_context_messages: Option<i64>,
     pub context_tokens: Option<i64>,

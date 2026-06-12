@@ -845,7 +845,7 @@ pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, key: &str) -> AppR
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_adaptive, summarize_after_messages, summarize_keep_recent, variables_enabled, variables_recheck_enabled, thought_blocks_enabled, max_context_messages, context_tokens, auto_context_on_model_change FROM app_settings WHERE id = 1",
+        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_adaptive, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages, context_tokens, auto_context_on_model_change FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
@@ -896,9 +896,6 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     if let Some(v) = payload.variables_enabled {
         current.variables_enabled = v;
     }
-    if let Some(v) = payload.variables_recheck_enabled {
-        current.variables_recheck_enabled = v;
-    }
     if let Some(v) = payload.thought_blocks_enabled {
         current.thought_blocks_enabled = v;
     }
@@ -917,7 +914,7 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     }
 
     sqlx::query(
-        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_adaptive=?11, summarize_after_messages=?12, summarize_keep_recent=?13, variables_enabled=?14, variables_recheck_enabled=?15, thought_blocks_enabled=?16, max_context_messages=?17, context_tokens=?18, auto_context_on_model_change=?19 WHERE id=1",
+        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_adaptive=?11, summarize_after_messages=?12, summarize_keep_recent=?13, variables_enabled=?14, thought_blocks_enabled=?15, max_context_messages=?16, context_tokens=?17, auto_context_on_model_change=?18 WHERE id=1",
     )
     .bind(&current.inference_url)
     .bind(&current.model)
@@ -933,7 +930,6 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     .bind(current.summarize_after_messages)
     .bind(current.summarize_keep_recent)
     .bind(current.variables_enabled as i64)
-    .bind(current.variables_recheck_enabled as i64)
     .bind(current.thought_blocks_enabled as i64)
     .bind(current.max_context_messages)
     .bind(current.context_tokens)
@@ -1401,7 +1397,6 @@ struct SettingsRow {
     summarize_after_messages: i64,
     summarize_keep_recent: i64,
     variables_enabled: i64,
-    variables_recheck_enabled: i64,
     thought_blocks_enabled: i64,
     max_context_messages: i64,
     context_tokens: i64,
@@ -1425,7 +1420,6 @@ impl SettingsRow {
             summarize_after_messages: self.summarize_after_messages,
             summarize_keep_recent: self.summarize_keep_recent,
             variables_enabled: self.variables_enabled != 0,
-            variables_recheck_enabled: self.variables_recheck_enabled != 0,
             thought_blocks_enabled: self.thought_blocks_enabled != 0,
             max_context_messages: self.max_context_messages,
             context_tokens: self.context_tokens,

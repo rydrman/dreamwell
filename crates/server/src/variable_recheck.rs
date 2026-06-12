@@ -1,4 +1,4 @@
-use dreamwell_types::{MessageRole, Settings};
+use dreamwell_types::{Job, JobType, MessageRole, Settings};
 use serde_json::json;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -70,45 +70,58 @@ fn build_recheck_prompt(
     ]
 }
 
-pub async fn maybe_enqueue_variable_recheck(
+pub async fn enqueue_variable_recheck_for_message(
     pool: &SqlitePool,
     work_tx: &mpsc::UnboundedSender<()>,
     chat_id: i64,
     message_id: i64,
     settings: &Settings,
-) -> AppResult<()> {
-    let _ = try_enqueue_variable_recheck(pool, work_tx, chat_id, message_id, settings).await?;
-    Ok(())
-}
-
-async fn try_enqueue_variable_recheck(
-    pool: &SqlitePool,
-    work_tx: &mpsc::UnboundedSender<()>,
-    chat_id: i64,
-    message_id: i64,
-    settings: &Settings,
-) -> AppResult<Option<dreamwell_types::Job>> {
-    if !settings.variables_enabled
-        || !settings.variables_recheck_enabled
-        || settings.model.is_empty()
-    {
-        return Ok(None);
+) -> AppResult<Job> {
+    if !settings.variables_enabled {
+        return Err(AppError::bad_request(
+            "Chat variables are disabled in settings",
+        ));
+    }
+    if settings.model.is_empty() {
+        return Err(AppError::bad_request(
+            "Configure an inference model in Settings before rechecking variables",
+        ));
+    }
+    if !db::is_last_message(pool, chat_id, message_id).await? {
+        return Err(AppError::bad_request(
+            "Only the latest message can be rechecked",
+        ));
     }
     if db::has_active_variable_recheck_job(pool, message_id).await? {
-        return Ok(None);
+        return Err(AppError::bad_request(
+            "A variable recheck is already in progress for this message",
+        ));
     }
 
     let message = db::get_message(pool, chat_id, message_id).await?;
-    if message.role != MessageRole::Assistant
-        || message.is_summary
-        || message.content.trim().is_empty()
-    {
-        return Ok(None);
+    if message.role != MessageRole::Assistant {
+        return Err(AppError::bad_request(
+            "Only assistant messages can be rechecked",
+        ));
+    }
+    if message.is_summary {
+        return Err(AppError::bad_request("Cannot recheck summary messages"));
+    }
+    if message.content.trim().is_empty() {
+        return Err(AppError::bad_request("Message has no content to recheck"));
+    }
+
+    for job in db::list_active_jobs_for_message(pool, message_id).await? {
+        if job.job_type == JobType::ChatMessage {
+            return Err(AppError::bad_request(
+                "Wait for generation to finish before rechecking variables",
+            ));
+        }
     }
 
     let job = db::enqueue_variable_recheck_job(pool, chat_id, message_id).await?;
     let _ = work_tx.send(());
-    Ok(Some(job))
+    Ok(job)
 }
 
 pub async fn run_variable_recheck_job(
@@ -118,6 +131,11 @@ pub async fn run_variable_recheck_job(
     message_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
+    if !settings.variables_enabled {
+        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+        return Ok(());
+    }
+
     let message = db::get_message(pool, chat_id, message_id).await?;
     if message.content.trim().is_empty() {
         db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;

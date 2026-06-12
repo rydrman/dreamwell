@@ -10,27 +10,17 @@ use tokio::sync::mpsc;
 
 use crate::error::AppResult;
 use crate::summarize::maybe_enqueue_summarize;
-use crate::variable_recheck::maybe_enqueue_variable_recheck;
 
 /// Context for enqueueing follow-up jobs after chat generation succeeds.
 pub struct ChatGenerationComplete<'a> {
     pub pool: &'a SqlitePool,
     pub work_tx: &'a mpsc::UnboundedSender<()>,
     pub chat_id: i64,
-    pub message_id: i64,
     pub settings: &'a Settings,
 }
 
 /// Enqueue all enabled post-generation follow-up jobs for a completed chat reply.
 pub async fn enqueue_chat_followups(ctx: &ChatGenerationComplete<'_>) -> AppResult<()> {
-    maybe_enqueue_variable_recheck(
-        ctx.pool,
-        ctx.work_tx,
-        ctx.chat_id,
-        ctx.message_id,
-        ctx.settings,
-    )
-    .await?;
     maybe_enqueue_summarize(ctx.pool, ctx.work_tx, ctx.chat_id, ctx.settings).await?;
     Ok(())
 }
