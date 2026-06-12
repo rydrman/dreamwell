@@ -1568,6 +1568,31 @@ input.header-title {
     z-index: 12;
   }
 
+  .app-layout--chat-scroll-chrome .mode-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    transition: transform 0.2s ease;
+    transform: translateY(-100%);
+  }
+
+  .app-layout--chat-scroll-chrome .content-header {
+    position: fixed;
+    top: var(--app-topbar-height);
+    left: 0;
+    right: 0;
+    z-index: 19;
+    transition: transform 0.2s ease;
+    transform: translateY(calc(-100% - var(--app-topbar-height)));
+  }
+
+  .app-layout--chat-scroll-chrome.mobile-chrome-visible .mode-bar,
+  .app-layout--chat-scroll-chrome.mobile-chrome-visible .content-header {
+    transform: translateY(0);
+  }
+
   .content-scroll {
     overflow: visible;
     flex: none;

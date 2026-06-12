@@ -28,6 +28,40 @@ use title_editor::TitleEditor;
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
 
+fn is_mobile_viewport() -> bool {
+    web_sys::window()
+        .and_then(|window| window.match_media("(max-width: 768px)").ok().flatten())
+        .map(|mq| mq.matches())
+        .unwrap_or(false)
+}
+
+fn window_scroll_y() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.scroll_y().ok())
+        .unwrap_or(0.0)
+}
+
+fn scroll_chat_view_to_bottom(messages_el: Option<&HtmlElement>) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if is_mobile_viewport() {
+        let height = window
+            .document()
+            .map(|document| {
+                document
+                    .document_element()
+                    .map(|root| root.scroll_height())
+                    .or_else(|| document.body().map(|body| body.scroll_height()))
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0) as f64;
+        window.scroll_to_with_x_and_y(0.0, height);
+    } else if let Some(el) = messages_el {
+        el.set_scroll_top(el.scroll_height());
+    }
+}
+
 fn chat_id_from_route(route: &AppRoute) -> Option<i64> {
     match route {
         AppRoute::Chats { chat_id, .. } => *chat_id,
@@ -718,6 +752,48 @@ fn app() -> Html {
 
     let selected = selected_chat_id.and_then(|id| chats.iter().find(|c| c.id == id).cloned());
     let active_header = active_chat_header(&selected, selected_chat_id);
+    let mobile_chrome_visible = use_state(|| false);
+
+    {
+        let mobile_chrome_visible = mobile_chrome_visible.clone();
+        use_effect_with((mode, selected_chat_id), move |(mode, chat_id)| {
+            mobile_chrome_visible.set(false);
+            let mode = *mode;
+            let chat_id = *chat_id;
+            let mobile_chrome_visible = mobile_chrome_visible.clone();
+            let last_scroll_y = Rc::new(RefCell::new(window_scroll_y()));
+            let scroll_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                if mode != AppMode::Chats || chat_id.is_none() || !is_mobile_viewport() {
+                    return;
+                }
+                let current = window_scroll_y();
+                let mut last = last_scroll_y.borrow_mut();
+                if current <= 0.0 || current < *last {
+                    mobile_chrome_visible.set(true);
+                } else if current > *last {
+                    mobile_chrome_visible.set(false);
+                }
+                *last = current;
+            }) as Box<dyn FnMut(_)>);
+
+            let window = web_sys::window();
+            if let Some(window) = window.as_ref() {
+                let _ = window.add_event_listener_with_callback(
+                    "scroll",
+                    scroll_callback.as_ref().unchecked_ref(),
+                );
+            }
+
+            move || {
+                if let Some(window) = window.as_ref() {
+                    let _ = window.remove_event_listener_with_callback(
+                        "scroll",
+                        scroll_callback.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+        });
+    }
 
     let sidebar_open = sidebar_open_from_route(&route);
     let overlay = route.overlay();
@@ -773,7 +849,11 @@ fn app() -> Html {
     };
 
     html! {
-        <div class="app-layout">
+        <div class={classes!(
+            "app-layout",
+            (mode == AppMode::Chats).then_some("app-layout--chat-scroll-chrome"),
+            (*mobile_chrome_visible).then_some("mobile-chrome-visible"),
+        )}>
             <ModeBar
                 mode={mode}
                 queue={(*queue).clone()}
@@ -2594,9 +2674,8 @@ fn message_list(props: &MessageListProps) -> Html {
             if chat_id.is_some() && !*loading && *len > 0 {
                 let messages_ref = messages_ref.clone();
                 Timeout::new(0, move || {
-                    if let Some(el) = messages_ref.cast::<HtmlElement>() {
-                        el.set_scroll_top(el.scroll_height());
-                    }
+                    let el = messages_ref.cast::<HtmlElement>();
+                    scroll_chat_view_to_bottom(el.as_ref());
                 })
                 .forget();
             }
