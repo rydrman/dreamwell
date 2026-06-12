@@ -216,7 +216,7 @@ pub async fn list_chats(pool: &SqlitePool) -> AppResult<Vec<Chat>> {
          FROM chats c
          JOIN characters ch ON ch.id = c.character_id
          WHERE c.archived_at IS NULL
-         ORDER BY c.updated_at DESC",
+         ORDER BY c.updated_at DESC, c.title ASC",
     )
     .fetch_all(pool)
     .await?;
@@ -234,7 +234,7 @@ pub async fn list_archived_chats(pool: &SqlitePool) -> AppResult<Vec<Chat>> {
          FROM chats c
          JOIN characters ch ON ch.id = c.character_id
          WHERE c.archived_at IS NOT NULL
-         ORDER BY c.archived_at DESC",
+         ORDER BY c.archived_at DESC, c.title ASC",
     )
     .fetch_all(pool)
     .await?;
