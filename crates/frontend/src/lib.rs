@@ -3466,6 +3466,7 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         summarize_after_messages: Some(current.summarize_after_messages),
         summarize_keep_recent: Some(current.summarize_keep_recent),
         variables_enabled: Some(current.variables_enabled),
+        variables_recheck_enabled: Some(current.variables_recheck_enabled),
         thought_blocks_enabled: Some(current.thought_blocks_enabled),
         max_context_messages: Some(current.max_context_messages),
         context_tokens: Some(current.context_tokens),
@@ -3737,6 +3738,15 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     })
                 }} />
                 {"Enable chat variables in prompts"}
+            </label>
+            <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
+                <input type="checkbox" checked={s.variables_recheck_enabled} disabled={!s.variables_enabled} onclick={{
+                    let save_ctx = save_ctx.clone();
+                    Callback::from(move |_| {
+                        save_ctx.update_field(|current| current.variables_recheck_enabled = !current.variables_recheck_enabled);
+                    })
+                }} />
+                {"Recheck variables after each reply (corrects or adds missed tags)"}
             </label>
             <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
                 <input type="checkbox" checked={s.thought_blocks_enabled} onclick={{

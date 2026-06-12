@@ -1,0 +1,208 @@
+use dreamwell_types::{MessageRole, Settings};
+use serde_json::json;
+use sqlx::SqlitePool;
+use tokio::sync::mpsc;
+
+use crate::config;
+use crate::db;
+use crate::error::{AppError, AppResult};
+use crate::inference::chat_completion;
+use crate::variables::{
+    apply_variable_updates, build_message_variable_updates, filter_meaningful_updates,
+    merge_variable_tags_into_message, parse_variable_updates,
+};
+
+const RECHECK_SYSTEM_PROMPT: &str = r#"You review assistant chat replies for chat variable state.
+
+Given the reply text and current variables, output ONLY <var> XML tags to correct, add, or remove variables that should persist across the session (location, inventory, HP, quest stage, mood, etc.).
+
+Rules:
+- Use <var key="name">value</var> to set or replace a value
+- Use <var key="name" delete/> to remove a variable
+- Fix values that contradict the narrative
+- Add variables for state changes described in prose but missing tags
+- Do not repeat tags for values that are already correct
+- Output nothing (empty response) if no corrections are needed
+- Do not include prose, markdown, or explanations — only var tags"#;
+
+fn recheck_output_tokens(settings: &Settings) -> i64 {
+    if settings.context_tokens > 0 {
+        (settings.context_tokens / 16).clamp(128, 512)
+    } else {
+        256
+    }
+}
+
+fn recheck_max_retries() -> u32 {
+    config::GENERATION_MAX_RETRIES
+        .load(std::sync::atomic::Ordering::SeqCst)
+        .max(1)
+}
+
+fn format_current_variables(variables: &[dreamwell_types::ChatVariable]) -> String {
+    if variables.is_empty() {
+        "(none)".to_string()
+    } else {
+        variables
+            .iter()
+            .map(|v| format!("- {}: {}", v.key, v.value))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn build_recheck_prompt(
+    reply: &str,
+    variables: &[dreamwell_types::ChatVariable],
+) -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "role": "system",
+            "content": RECHECK_SYSTEM_PROMPT,
+        }),
+        json!({
+            "role": "user",
+            "content": format!(
+                "Current chat variables:\n{}\n\nAssistant reply to review:\n{reply}",
+                format_current_variables(variables),
+            ),
+        }),
+    ]
+}
+
+pub async fn maybe_enqueue_variable_recheck(
+    pool: &SqlitePool,
+    work_tx: &mpsc::UnboundedSender<()>,
+    chat_id: i64,
+    message_id: i64,
+    settings: &Settings,
+) -> AppResult<()> {
+    let _ = try_enqueue_variable_recheck(pool, work_tx, chat_id, message_id, settings).await?;
+    Ok(())
+}
+
+async fn try_enqueue_variable_recheck(
+    pool: &SqlitePool,
+    work_tx: &mpsc::UnboundedSender<()>,
+    chat_id: i64,
+    message_id: i64,
+    settings: &Settings,
+) -> AppResult<Option<dreamwell_types::Job>> {
+    if !settings.variables_enabled
+        || !settings.variables_recheck_enabled
+        || settings.model.is_empty()
+    {
+        return Ok(None);
+    }
+    if db::has_active_variable_recheck_job(pool, message_id).await? {
+        return Ok(None);
+    }
+
+    let message = db::get_message(pool, chat_id, message_id).await?;
+    if message.role != MessageRole::Assistant
+        || message.is_summary
+        || message.content.trim().is_empty()
+    {
+        return Ok(None);
+    }
+
+    let job = db::enqueue_variable_recheck_job(pool, chat_id, message_id).await?;
+    let _ = work_tx.send(());
+    Ok(Some(job))
+}
+
+pub async fn run_variable_recheck_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    chat_id: i64,
+    message_id: i64,
+    settings: &Settings,
+) -> AppResult<()> {
+    let message = db::get_message(pool, chat_id, message_id).await?;
+    if message.content.trim().is_empty() {
+        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+        return Ok(());
+    }
+
+    let variables = db::list_variables(pool, chat_id).await?;
+    let prompt = build_recheck_prompt(&message.content, &variables);
+
+    let max_attempts = recheck_max_retries();
+    let mut raw = None;
+
+    for attempt in 1..=max_attempts {
+        match chat_completion(
+            &settings.inference_url,
+            &settings.model,
+            &prompt,
+            0.2,
+            settings.top_p,
+            recheck_output_tokens(settings),
+        )
+        .await
+        {
+            Ok(response) => {
+                raw = Some(response);
+                break;
+            }
+            Err(err) => {
+                let last_error = err.to_string();
+                if attempt == max_attempts {
+                    return Err(AppError::inference(last_error));
+                }
+                tracing::warn!(
+                    attempt,
+                    max_attempts,
+                    error = %last_error,
+                    "retrying variable recheck"
+                );
+            }
+        }
+    }
+
+    let raw = raw.unwrap_or_default();
+
+    let parsed = parse_variable_updates(&raw);
+    if parsed.is_empty() {
+        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+        return Ok(());
+    }
+
+    let meaningful = filter_meaningful_updates(&parsed, &variables);
+    if meaningful.is_empty() {
+        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+        return Ok(());
+    }
+
+    let updates_for_message = build_message_variable_updates(pool, chat_id, &meaningful).await?;
+    apply_variable_updates(pool, chat_id, &meaningful).await?;
+
+    let updated_content = merge_variable_tags_into_message(&message.content, &meaningful);
+    db::append_message_variable_recheck(pool, message_id, &updated_content, &updates_for_message)
+        .await?;
+    db::touch_chat(pool, chat_id).await?;
+    db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recheck_prompt_includes_reply_and_variables() {
+        let prompt = build_recheck_prompt(
+            "You enter the tavern.",
+            &[dreamwell_types::ChatVariable {
+                id: 1,
+                chat_id: 1,
+                key: "location".into(),
+                value: "forest".into(),
+                updated_at: chrono::Utc::now(),
+            }],
+        );
+        let user = prompt[1]["content"].as_str().unwrap();
+        assert!(user.contains("location: forest"));
+        assert!(user.contains("You enter the tavern."));
+    }
+}

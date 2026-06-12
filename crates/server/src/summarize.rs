@@ -789,6 +789,7 @@ mod tests {
             summarize_after_messages: 4,
             summarize_keep_recent: 2,
             variables_enabled: true,
+            variables_recheck_enabled: true,
             thought_blocks_enabled: true,
             max_context_messages: 40,
             context_tokens: 4096,

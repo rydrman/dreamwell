@@ -12,6 +12,7 @@ use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::inference::{chat_completion, stream_chat_completion};
+use crate::message_followups::{enqueue_chat_followups, ChatGenerationComplete};
 use crate::prompts::build_messages_for_inference;
 use crate::story_prompts::{
     build_beat_outline_messages, build_beat_prose_messages, build_chapter_outline_messages,
@@ -19,10 +20,11 @@ use crate::story_prompts::{
     parse_chapters_proposal_json, parse_outline_json,
 };
 use crate::summarize::{
-    enqueue_regenerate_summary_for_chat, enqueue_summarize_for_chat, maybe_enqueue_summarize,
-    run_summarize_job, summarize_job_kind,
+    enqueue_regenerate_summary_for_chat, enqueue_summarize_for_chat, run_summarize_job,
+    summarize_job_kind,
 };
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
+use crate::variable_recheck::run_variable_recheck_job;
 use crate::variables::{
     apply_variable_updates, build_message_variable_updates, parse_variable_updates,
     visible_text_without_variables,
@@ -297,6 +299,9 @@ async fn run_job(
         JobType::ChatSummarize => {
             run_summarize_job_handler(pool, job_id, &job, &settings, token).await
         }
+        JobType::ChatVariableRecheck => {
+            run_variable_recheck_job_handler(pool, job_id, &job, &settings, token).await
+        }
         JobType::StoryChapterOutline => {
             run_story_chapter_outline(pool, job_id, &job, &settings, token).await
         }
@@ -353,7 +358,8 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
         JobType::ChatSummarize => {
             remove_summarize_marker(pool, job).await?;
         }
-        JobType::StoryChapterOutline
+        JobType::ChatVariableRecheck
+        | JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
         | JobType::StoryBeatOutline
         | JobType::StoryProposeBeats => {}
@@ -390,12 +396,39 @@ async fn fail_job(
         JobType::ChatSummarize => {
             remove_summarize_marker(pool, job).await?;
         }
-        JobType::StoryChapterOutline
+        JobType::ChatVariableRecheck
+        | JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
         | JobType::StoryBeatOutline
         | JobType::StoryProposeBeats => {}
     }
     Ok(())
+}
+
+async fn run_variable_recheck_job_handler(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &dreamwell_types::Job,
+    settings: &dreamwell_types::Settings,
+    token: CancellationToken,
+) -> AppResult<()> {
+    if token.is_cancelled() {
+        return cancel_job_record(pool, job).await;
+    }
+    let chat_id = job
+        .chat_id
+        .ok_or_else(|| AppError::internal("variable recheck job missing chat_id"))?;
+    let message_id = job
+        .message_id
+        .ok_or_else(|| AppError::internal("variable recheck job missing message_id"))?;
+
+    match run_variable_recheck_job(pool, job_id, chat_id, message_id, settings).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            fail_job(pool, job_id, job, &err.to_string()).await?;
+            Ok(())
+        }
+    }
 }
 
 async fn run_summarize_job_handler(
@@ -486,7 +519,14 @@ async fn run_chat_job(
         {
             ChatGenerationOutcome::Success => {
                 db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
-                maybe_enqueue_summarize(pool, work_tx, chat_id, settings).await?;
+                enqueue_chat_followups(&ChatGenerationComplete {
+                    pool,
+                    work_tx,
+                    chat_id,
+                    message_id,
+                    settings,
+                })
+                .await?;
                 return Ok(());
             }
             ChatGenerationOutcome::Retryable(message) => {

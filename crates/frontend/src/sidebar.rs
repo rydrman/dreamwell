@@ -186,6 +186,7 @@ fn chat_status(chat: &Chat) -> Option<ChatStatusBadge> {
 fn chat_running_label(job: &Job) -> String {
     match job.job_type {
         JobType::ChatSummarize => "summarizing…".to_string(),
+        JobType::ChatVariableRecheck => "checking variables…".to_string(),
         _ => "writing…".to_string(),
     }
 }
