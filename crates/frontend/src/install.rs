@@ -21,8 +21,17 @@ thread_local! {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallKind {
     NativePrompt,
-    IosHint,
+    IosManual,
+    AndroidManual,
+    DesktopManual,
     Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Platform {
+    Ios,
+    Android,
+    Desktop,
 }
 
 pub fn is_installed() -> bool {
@@ -55,27 +64,29 @@ fn is_ios_standalone() -> bool {
         .unwrap_or(false)
 }
 
-pub fn is_ios_browser() -> bool {
-    user_agent()
-        .map(|ua| {
-            let ua = ua.to_lowercase();
-            (ua.contains("iphone") || ua.contains("ipad") || ua.contains("ipod"))
-                && ua.contains("safari")
-                && !ua.contains("crios")
-                && !ua.contains("fxios")
-        })
-        .unwrap_or(false)
-}
-
 fn user_agent() -> Option<String> {
     web_sys::window().map(|window| window.navigator().user_agent().unwrap_or_default())
 }
 
-fn is_mobile_viewport() -> bool {
-    web_sys::window()
-        .and_then(|window| window.match_media("(max-width: 768px)").ok().flatten())
-        .map(|mq| mq.matches())
-        .unwrap_or(false)
+fn platform_from_user_agent(ua: &str) -> Platform {
+    let ua = ua.to_lowercase();
+    if ua.contains("iphone")
+        || ua.contains("ipad")
+        || ua.contains("ipod")
+        || (ua.contains("macintosh") && ua.contains("mobile"))
+    {
+        Platform::Ios
+    } else if ua.contains("android") {
+        Platform::Android
+    } else {
+        Platform::Desktop
+    }
+}
+
+fn current_platform() -> Platform {
+    user_agent()
+        .map(|ua| platform_from_user_agent(&ua))
+        .unwrap_or(Platform::Desktop)
 }
 
 pub fn is_dismissed() -> bool {
@@ -90,6 +101,12 @@ pub fn dismiss_hint() {
     }
 }
 
+pub fn restore_hint() {
+    if let Some(storage) = local_storage() {
+        let _ = storage.remove_item(DISMISS_KEY);
+    }
+}
+
 fn local_storage() -> Option<Storage> {
     web_sys::window().and_then(|window| window.local_storage().ok().flatten())
 }
@@ -99,16 +116,28 @@ pub fn has_deferred_prompt() -> bool {
 }
 
 pub fn install_kind() -> InstallKind {
-    if is_installed() || is_dismissed() {
+    if is_installed() {
         return InstallKind::Unavailable;
     }
     if has_deferred_prompt() {
         return InstallKind::NativePrompt;
     }
-    if is_ios_browser() && is_mobile_viewport() {
-        return InstallKind::IosHint;
+    match current_platform() {
+        Platform::Ios => InstallKind::IosManual,
+        Platform::Android => InstallKind::AndroidManual,
+        Platform::Desktop => InstallKind::DesktopManual,
     }
-    InstallKind::Unavailable
+}
+
+pub fn banner_kind() -> Option<InstallKind> {
+    if is_installed() || is_dismissed() {
+        return None;
+    }
+    match install_kind() {
+        // Chrome shows its own install promotion when beforeinstallprompt fires.
+        InstallKind::NativePrompt | InstallKind::Unavailable => None,
+        kind => Some(kind),
+    }
 }
 
 pub fn init(on_available: Callback<()>) {
@@ -122,7 +151,8 @@ pub fn init(on_available: Callback<()>) {
 
     let on_available = Rc::new(on_available);
     let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
-        event.prevent_default();
+        // Do not call preventDefault here. Chrome uses that to suppress its own
+        // install banner; we want the browser-native promotion when available.
         DEFERRED_PROMPT.with(|prompt| *prompt.borrow_mut() = Some(event.into()));
         on_available.emit(());
     }) as Box<dyn FnMut(_)>);
@@ -170,6 +200,61 @@ pub async fn trigger_install() -> bool {
     true
 }
 
+fn install_copy(kind: InstallKind) -> (&'static str, &'static str, bool) {
+    match kind {
+        InstallKind::NativePrompt => (
+            "Install Dreamwell",
+            "Add Dreamwell to your home screen for quick access.",
+            true,
+        ),
+        InstallKind::IosManual => (
+            "Add Dreamwell to Home Screen",
+            "Open Safari's Share menu, then tap \"Add to Home Screen\".",
+            false,
+        ),
+        InstallKind::AndroidManual => (
+            "Install Dreamwell",
+            "Open Chrome's menu and choose \"Install app\" or \"Add to Home screen\".",
+            false,
+        ),
+        InstallKind::DesktopManual => (
+            "Install Dreamwell",
+            "Use the install icon in the address bar, or open the browser menu and choose \"Install Dreamwell\".",
+            false,
+        ),
+        InstallKind::Unavailable => ("", "", false),
+    }
+}
+
+fn manual_steps(kind: InstallKind) -> Html {
+    match kind {
+        InstallKind::IosManual => html! {
+            <ol class="install-steps">
+                <li>{"Open this page in Safari if you are using another browser."}</li>
+                <li>{"Tap the Share button at the bottom of the screen."}</li>
+                <li>{"Scroll down and tap \"Add to Home Screen\"."}</li>
+                <li>{"Tap \"Add\" to confirm."}</li>
+            </ol>
+        },
+        InstallKind::AndroidManual => html! {
+            <ol class="install-steps">
+                <li>{"Open this page in Chrome if you are using another browser."}</li>
+                <li>{"Tap the menu button (three dots) in the top-right corner."}</li>
+                <li>{"Choose \"Install app\" or \"Add to Home screen\"."}</li>
+                <li>{"Confirm the install when prompted."}</li>
+            </ol>
+        },
+        InstallKind::DesktopManual => html! {
+            <ol class="install-steps">
+                <li>{"Look for the install icon in Chrome's address bar."}</li>
+                <li>{"If it is not there, open the browser menu (three dots)."}</li>
+                <li>{"Choose \"Install Dreamwell\" or \"Save and share\" → \"Install page as app\"."}</li>
+            </ol>
+        },
+        InstallKind::NativePrompt | InstallKind::Unavailable => html! {},
+    }
+}
+
 #[derive(Properties, PartialEq)]
 pub struct InstallBannerProps {
     pub kind: InstallKind,
@@ -200,19 +285,10 @@ pub fn install_banner(props: &InstallBannerProps) -> Html {
         })
     };
 
-    let (title, body, show_install) = match props.kind {
-        InstallKind::NativePrompt => (
-            "Install Dreamwell",
-            "Add Dreamwell to your home screen for quick access.",
-            true,
-        ),
-        InstallKind::IosHint => (
-            "Add Dreamwell to Home Screen",
-            "Tap Share, then \"Add to Home Screen\".",
-            false,
-        ),
-        InstallKind::Unavailable => return html! {},
-    };
+    let (title, body, show_install) = install_copy(props.kind);
+    if matches!(props.kind, InstallKind::Unavailable) {
+        return html! {};
+    }
 
     html! {
         <div class="install-banner" role="region" aria-label="Install Dreamwell">
@@ -241,9 +317,24 @@ pub fn install_banner(props: &InstallBannerProps) -> Html {
     }
 }
 
+#[derive(Properties, PartialEq)]
+pub struct InstallSettingsProps {
+    pub kind: InstallKind,
+    pub dismissed: bool,
+    pub on_change: Callback<()>,
+}
+
 #[function_component(InstallSettings)]
-pub fn install_settings() -> Html {
-    let kind = install_kind();
+pub fn install_settings(props: &InstallSettingsProps) -> Html {
+    let kind = props.kind;
+
+    let restore = {
+        let on_change = props.on_change.clone();
+        Callback::from(move |_| {
+            restore_hint();
+            on_change.emit(());
+        })
+    };
 
     html! {
         <div class="settings-group">
@@ -254,20 +345,44 @@ pub fn install_settings() -> Html {
                 </p>
             } else if matches!(kind, InstallKind::NativePrompt) {
                 <p class="muted" style="margin:0.35rem 0 0.5rem;">
-                    {"Install Dreamwell on this device for quick access from your home screen."}
+                    {"Chrome should offer to install Dreamwell automatically. If you dismissed that prompt, use the button below or Chrome's menu → \"Install Dreamwell\"."}
                 </p>
-                <InstallActions kind={InstallKind::NativePrompt} />
-            } else if matches!(kind, InstallKind::IosHint) {
-                <p class="muted" style="margin:0.35rem 0 0.5rem;">
-                    {"On iPhone or iPad, use Safari's Share menu and choose \"Add to Home Screen\"."}
-                </p>
+                <InstallActions kind={InstallKind::NativePrompt} on_change={props.on_change.clone()} />
             } else {
-                <p class="muted" style="margin:0.35rem 0 0;">
-                    {"Install is available on supported mobile browsers after you have used the site for a little while."}
+                <p class="muted" style="margin:0.35rem 0 0.5rem;">
+                    { manual_intro(kind) }
                 </p>
+                { manual_steps(kind) }
+            }
+            if props.dismissed && !is_installed() {
+                <p class="muted" style="margin:0.75rem 0 0;">
+                    {"The install banner is hidden on this device."}
+                </p>
+                <button class="btn secondary btn-compact" style="margin-top:0.5rem;" onclick={restore}>
+                    {"Show install banner again"}
+                </button>
             }
         </div>
     }
+}
+
+fn manual_intro(kind: InstallKind) -> &'static str {
+    match kind {
+        InstallKind::IosManual => {
+            "iPhone and iPad do not show an automatic install button. Add Dreamwell manually:"
+        }
+        InstallKind::AndroidManual => {
+            "If Chrome does not show an install offer at the top of the page, add Dreamwell manually:"
+        }
+        InstallKind::DesktopManual => "Install Dreamwell as a desktop app from Chrome or Edge:",
+        InstallKind::NativePrompt | InstallKind::Unavailable => "",
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct InstallActionsProps {
+    kind: InstallKind,
+    on_change: Callback<()>,
 }
 
 #[function_component(InstallActions)]
@@ -276,14 +391,17 @@ fn install_actions(props: &InstallActionsProps) -> Html {
 
     let on_install = {
         let busy = busy.clone();
+        let on_change = props.on_change.clone();
         Callback::from(move |_| {
             if *busy {
                 return;
             }
             busy.set(true);
             let busy = busy.clone();
+            let on_change = on_change.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let _ = trigger_install().await;
+                on_change.emit(());
                 busy.set(false);
             });
         })
@@ -300,7 +418,37 @@ fn install_actions(props: &InstallActionsProps) -> Html {
     }
 }
 
-#[derive(Properties, PartialEq)]
-struct InstallActionsProps {
-    kind: InstallKind,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_ios_devices_including_chrome() {
+        assert!(matches!(
+            platform_from_user_agent(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0.0.0 Mobile/15E148 Safari/604.1"
+            ),
+            Platform::Ios
+        ));
+    }
+
+    #[test]
+    fn detects_ipad_desktop_ua() {
+        assert!(matches!(
+            platform_from_user_agent(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            ),
+            Platform::Ios
+        ));
+    }
+
+    #[test]
+    fn detects_android_devices() {
+        assert!(matches!(
+            platform_from_user_agent(
+                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            ),
+            Platform::Android
+        ));
+    }
 }
