@@ -220,6 +220,28 @@ fn publish_chats(chats: &UseStateHandle<Vec<Chat>>, next: Vec<Chat>) {
     }
 }
 
+/// Merge one chat into the sidebar list without re-sorting.
+///
+/// Stream updates touch `updated_at` frequently; re-sorting on every payload
+/// makes the list jump even when the visible order should stay put.
+fn update_chat_in_list(chats: &UseStateHandle<Vec<Chat>>, updated: Chat) {
+    let current = (**chats).clone();
+    let next: Vec<Chat> = current
+        .iter()
+        .map(|chat| {
+            if chat.id == updated.id {
+                updated.clone()
+            } else {
+                chat.clone()
+            }
+        })
+        .collect();
+    if current != next {
+        cache_chat_list(CHATS_LIST_CACHE_KEY, &sort_chats(next.clone()));
+        chats.set(next);
+    }
+}
+
 fn publish_archived_chats(archived_chats: &UseStateHandle<Vec<Chat>>, next: Vec<Chat>) {
     let next = sort_archived_chats(next);
     if **archived_chats != next {
@@ -425,20 +447,7 @@ fn app() -> Html {
                         }
                         messages.set(payload.messages.clone());
                         messages_loading.set(false);
-                        let current = (*chats).clone();
-                        publish_chats(
-                            &chats,
-                            current
-                                .into_iter()
-                                .map(|c| {
-                                    if c.id == payload.chat.id {
-                                        payload.chat.clone()
-                                    } else {
-                                        c
-                                    }
-                                })
-                                .collect(),
-                        );
+                        update_chat_in_list(&chats, payload.chat.clone());
                     });
                     *chat_stream_nudge.borrow_mut() = Some(stream.nudge());
                     stream_holder = Some(stream);
@@ -1641,11 +1650,18 @@ fn default_chat_title(character_name: &str, character_id: i64, chats: &[Chat]) -
     }
 }
 
+fn chat_title_cmp(a: &Chat, b: &Chat) -> std::cmp::Ordering {
+    a.title
+        .to_lowercase()
+        .cmp(&b.title.to_lowercase())
+        .then_with(|| a.id.cmp(&b.id))
+}
+
 fn sort_chats(mut chats: Vec<Chat>) -> Vec<Chat> {
     chats.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
-            .then_with(|| b.id.cmp(&a.id))
+            .then_with(|| chat_title_cmp(a, b))
     });
     chats
 }
@@ -1654,7 +1670,7 @@ fn sort_archived_chats(mut chats: Vec<Chat>) -> Vec<Chat> {
     chats.sort_by(|a, b| {
         b.archived_at
             .cmp(&a.archived_at)
-            .then_with(|| b.id.cmp(&a.id))
+            .then_with(|| chat_title_cmp(a, b))
     });
     chats
 }
@@ -4057,6 +4073,83 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
             _ => {}
         });
     })
+}
+
+#[cfg(test)]
+mod chat_sort_tests {
+    use super::*;
+
+    fn sample_chat(id: i64, title: &str, updated_at: &str) -> Chat {
+        let mut chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": title,
+            "character_id": 1,
+            "character_name": "Test",
+            "summary": "",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": updated_at,
+            "queued_jobs": 0,
+        }))
+        .expect("sample chat");
+        chat.active_job = None;
+        chat
+    }
+
+    fn archived_chat(id: i64, title: &str, archived_at: &str) -> Chat {
+        let mut chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": title,
+            "character_id": 1,
+            "character_name": "Test",
+            "summary": "",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "archived_at": archived_at,
+            "queued_jobs": 0,
+        }))
+        .expect("archived chat");
+        chat.active_job = None;
+        chat
+    }
+
+    #[test]
+    fn sort_chats_orders_by_updated_at_then_title() {
+        let chats = sort_chats(vec![
+            sample_chat(1, "Bravo", "2026-01-02T00:00:00Z"),
+            sample_chat(2, "Alpha", "2026-01-03T00:00:00Z"),
+            sample_chat(3, "Charlie", "2026-01-02T00:00:00Z"),
+        ]);
+        assert_eq!(
+            chats.iter().map(|chat| chat.id).collect::<Vec<_>>(),
+            vec![2, 1, 3]
+        );
+    }
+
+    #[test]
+    fn sort_chats_uses_case_insensitive_title_tiebreaker() {
+        let chats = sort_chats(vec![
+            sample_chat(1, "bravo", "2026-01-02T00:00:00Z"),
+            sample_chat(2, "Alpha", "2026-01-02T00:00:00Z"),
+            sample_chat(3, "ALPHA", "2026-01-02T00:00:00Z"),
+        ]);
+        assert_eq!(
+            chats.iter().map(|chat| chat.id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
+    }
+
+    #[test]
+    fn sort_archived_chats_orders_by_archived_at_then_title() {
+        let chats = sort_archived_chats(vec![
+            archived_chat(1, "Bravo", "2026-01-02T00:00:00Z"),
+            archived_chat(2, "Alpha", "2026-01-03T00:00:00Z"),
+            archived_chat(3, "Charlie", "2026-01-02T00:00:00Z"),
+        ]);
+        assert_eq!(
+            chats.iter().map(|chat| chat.id).collect::<Vec<_>>(),
+            vec![2, 1, 3]
+        );
+    }
 }
 
 #[cfg(test)]
