@@ -373,22 +373,17 @@ pub async fn get_variables(chat_id: i64) -> Result<Vec<ChatVariable>, String> {
     .await
 }
 
-pub async fn upsert_variable(chat_id: i64, key: &str, value: &str) -> Result<ChatVariable, String> {
-    json_body(
-        "PUT",
-        &format!("/api/chats/{chat_id}/variables"),
-        &serde_json::json!({ "key": key, "value": value }),
-    )
-    .await
+pub async fn upsert_variable(
+    chat_id: i64,
+    payload: &ChatVariableUpdate,
+) -> Result<ChatVariable, String> {
+    json_body("PUT", &format!("/api/chats/{chat_id}/variables"), payload).await
 }
 
-pub async fn delete_variable(chat_id: i64, key: &str) -> Result<(), String> {
+pub async fn delete_variable(chat_id: i64, variable_id: i64) -> Result<(), String> {
     api_request(
         "DELETE",
-        &format!(
-            "/api/chats/{chat_id}/variables/{}",
-            js_sys::encode_uri_component(key)
-        ),
+        &format!("/api/chats/{chat_id}/variables/{variable_id}"),
     )
     .send()
     .await
@@ -690,11 +685,10 @@ pub async fn upsert_story_variable(
     .await
 }
 
-pub async fn delete_story_variable(story_id: i64, key: &str) -> Result<(), String> {
-    let encoded = js_sys::encode_uri_component(key);
+pub async fn delete_story_variable(story_id: i64, variable_id: i64) -> Result<(), String> {
     api_request(
         "DELETE",
-        &format!("/api/stories/{story_id}/variables/{encoded}"),
+        &format!("/api/stories/{story_id}/variables/{variable_id}"),
     )
     .send()
     .await

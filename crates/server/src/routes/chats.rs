@@ -51,7 +51,7 @@ pub fn router() -> Router<AppState> {
             post(recheck_message_variables),
         )
         .route("/:id/variables", get(list_variables).put(upsert_variable))
-        .route("/:id/variables/:key", delete(delete_variable))
+        .route("/:id/variables/:variable_id", delete(delete_variable))
         .route("/:id/summarize", post(summarize_chat))
         .route("/:id/summary", delete(delete_chat_summary))
         .route("/:id/summary/regenerate", post(regenerate_chat_summary))
@@ -230,7 +230,7 @@ async fn regenerate_message(
         rewind_after_message(&state, id, message_id).await?;
     }
 
-    revert_message_variable_updates(&state.pool, id, &variable_updates).await?;
+    revert_message_variable_updates(&state.pool, id, message_id, &variable_updates).await?;
 
     for job in db::list_active_jobs_for_message(&state.pool, message_id).await? {
         state.queue.cancel_job(&state.pool, job.id).await?;
@@ -273,15 +273,18 @@ async fn upsert_variable(
     Json(payload): Json<ChatVariableUpdate>,
 ) -> AppResult<Json<ChatVariable>> {
     Ok(Json(
-        db::upsert_variable(&state.pool, id, payload.key, payload.value).await?,
+        db::upsert_variable_manual(&state.pool, id, payload).await?,
     ))
 }
 
 async fn delete_variable(
     State(state): State<AppState>,
-    Path((id, key)): Path<(i64, String)>,
+    Path((id, variable_id)): Path<(i64, i64)>,
 ) -> AppResult<Json<OkResponse>> {
-    db::delete_variable(&state.pool, id, &key).await?;
+    let key = db::get_chat_variable(&state.pool, id, variable_id)
+        .await?
+        .key;
+    db::delete_variable(&state.pool, id, variable_id).await?;
     strip_variable_key_from_chat_messages(&state.pool, id, &key).await?;
     db::touch_chat(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))

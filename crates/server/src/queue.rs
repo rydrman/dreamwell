@@ -771,8 +771,9 @@ async fn run_chat_generation_attempt(
     }
 
     let variable_updates = if settings.variables_enabled && !updates.is_empty() {
-        let updates_for_message = build_message_variable_updates(pool, chat_id, &updates).await?;
-        apply_variable_updates(pool, chat_id, &updates).await?;
+        let updates_for_message =
+            build_message_variable_updates(pool, chat_id, message_id, &updates).await?;
+        apply_variable_updates(pool, chat_id, message_id, &updates).await?;
         updates_for_message
     } else {
         Vec::new()
@@ -1299,10 +1300,26 @@ async fn run_beat_prose_generation_attempt(
 
     if settings.variables_enabled {
         let parsed = crate::variables::parse_variable_updates(&accumulated);
-        let current = db::list_story_variables(pool, story_id).await?;
+        let detail = db::get_story_detail(pool, story_id).await?;
+        let current = crate::story_variables::variables_for_beat_generation(
+            pool,
+            &detail.chapters,
+            story_id,
+            chapter_order,
+            beat_order,
+        )
+        .await?;
         let meaningful = crate::story_variables::filter_meaningful_story_updates(&parsed, &current);
         if !meaningful.is_empty() {
-            let beat_updates = db::build_beat_variable_updates(pool, story_id, &meaningful).await?;
+            let beat_updates = db::build_beat_variable_updates(
+                pool,
+                &detail.chapters,
+                story_id,
+                chapter_order,
+                beat_order,
+                &meaningful,
+            )
+            .await?;
             db::apply_story_variable_updates(
                 pool,
                 story_id,

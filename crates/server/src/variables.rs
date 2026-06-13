@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use dreamwell_types::{ChatVariable, Message, MessageVariableUpdate};
+use dreamwell_types::{Message, MessageVariableUpdate};
 use regex::Regex;
 use sqlx::SqlitePool;
 use std::sync::OnceLock;
@@ -235,15 +235,16 @@ fn collapse_spaces(text: &str) -> String {
 pub async fn apply_variable_updates(
     pool: &SqlitePool,
     chat_id: i64,
+    message_id: i64,
     updates: &[VariableUpdate],
 ) -> AppResult<()> {
     for update in updates {
         match update {
             VariableUpdate::Set { key, value } => {
-                db::upsert_variable(pool, chat_id, key.clone(), value.clone()).await?;
+                db::upsert_variable(pool, chat_id, key.clone(), value.clone(), message_id).await?;
             }
             VariableUpdate::Delete { key } => {
-                let _ = db::delete_variable(pool, chat_id, key).await;
+                let _ = db::delete_variable_scoped(pool, chat_id, key, message_id).await;
             }
         }
     }
@@ -253,13 +254,17 @@ pub async fn apply_variable_updates(
 pub async fn build_message_variable_updates(
     pool: &SqlitePool,
     chat_id: i64,
+    message_id: i64,
     updates: &[VariableUpdate],
 ) -> AppResult<Vec<MessageVariableUpdate>> {
+    let messages = db::list_messages(pool, chat_id).await?;
+    let panel = db::list_variables(pool, chat_id).await?;
+    let state = crate::variable_state::chat_state_at(&messages, &panel, message_id);
     let mut result = Vec::with_capacity(updates.len());
     for update in updates {
         match update {
             VariableUpdate::Set { key, value } => {
-                let previous_value = db::get_variable_value(pool, chat_id, key).await?;
+                let previous_value = state.get(key).cloned();
                 result.push(MessageVariableUpdate {
                     key: key.clone(),
                     value: value.clone(),
@@ -268,7 +273,7 @@ pub async fn build_message_variable_updates(
                 });
             }
             VariableUpdate::Delete { key } => {
-                let previous_value = db::get_variable_value(pool, chat_id, key).await?;
+                let previous_value = state.get(key).cloned();
                 result.push(MessageVariableUpdate {
                     key: key.clone(),
                     value: String::new(),
@@ -284,16 +289,23 @@ pub async fn build_message_variable_updates(
 pub async fn revert_message_variable_updates(
     pool: &SqlitePool,
     chat_id: i64,
+    message_id: i64,
     updates: &[MessageVariableUpdate],
 ) -> AppResult<()> {
     for update in updates.iter().rev() {
-        match &update.previous_value {
-            Some(previous) => {
-                db::upsert_variable(pool, chat_id, update.key.clone(), previous.clone()).await?;
+        if update.deleted {
+            if let Some(previous) = &update.previous_value {
+                db::upsert_variable(
+                    pool,
+                    chat_id,
+                    update.key.clone(),
+                    previous.clone(),
+                    message_id,
+                )
+                .await?;
             }
-            None => {
-                let _ = db::delete_variable(pool, chat_id, &update.key).await;
-            }
+        } else {
+            let _ = db::delete_variable_scoped(pool, chat_id, &update.key, message_id).await;
         }
     }
     Ok(())
@@ -381,31 +393,14 @@ pub fn merge_variable_tags_into_message(content: &str, updates: &[VariableUpdate
 }
 
 /// Keeps only updates that would change current chat variable state.
-pub fn filter_meaningful_updates(
-    updates: &[VariableUpdate],
-    current_variables: &[ChatVariable],
-) -> Vec<VariableUpdate> {
-    updates
-        .iter()
-        .filter(|update| match update {
-            VariableUpdate::Set { key, value } => current_variables
-                .iter()
-                .find(|v| v.key == *key)
-                .map(|v| v.value != *value)
-                .unwrap_or(true),
-            VariableUpdate::Delete { key } => current_variables.iter().any(|v| v.key == *key),
-        })
-        .cloned()
-        .collect()
-}
-
 pub async fn revert_variable_updates_from_messages(
     pool: &SqlitePool,
     chat_id: i64,
     messages: &[Message],
 ) -> AppResult<()> {
     for message in messages.iter().rev() {
-        revert_message_variable_updates(pool, chat_id, &message.variable_updates).await?;
+        revert_message_variable_updates(pool, chat_id, message.id, &message.variable_updates)
+            .await?;
     }
     Ok(())
 }
@@ -630,13 +625,7 @@ mod tests {
 
     #[test]
     fn filter_meaningful_updates_skips_unchanged_values() {
-        let current = vec![ChatVariable {
-            id: 1,
-            chat_id: 1,
-            key: "hp".into(),
-            value: "80".into(),
-            updated_at: chrono::Utc::now(),
-        }];
+        let current = vec![("hp".to_string(), "80".to_string())];
         let updates = vec![
             VariableUpdate::Set {
                 key: "hp".into(),
@@ -647,7 +636,7 @@ mod tests {
                 value: "5".into(),
             },
         ];
-        let filtered = filter_meaningful_updates(&updates, &current);
+        let filtered = crate::story_variables::filter_meaningful_story_updates(&updates, &current);
         assert_eq!(filtered.len(), 1);
         assert_eq!(
             filtered[0],
@@ -699,9 +688,25 @@ mod tests {
             .expect("connect");
         let chat = test_chat(&pool).await;
 
-        db::upsert_variable(&pool, chat.id, "location".into(), "forest".into())
-            .await
-            .expect("seed variable");
+        db::upsert_variable(
+            &pool,
+            chat.id,
+            "location".into(),
+            "forest".into(),
+            crate::variable_state::MANUAL_MESSAGE_SOURCE,
+        )
+        .await
+        .expect("seed variable");
+
+        let message = db::insert_message(
+            &pool,
+            chat.id,
+            dreamwell_types::MessageRole::Assistant,
+            "reply".into(),
+            false,
+        )
+        .await
+        .expect("message");
 
         let updates = vec![
             MessageVariableUpdate {
@@ -720,6 +725,7 @@ mod tests {
         apply_variable_updates(
             &pool,
             chat.id,
+            message.id,
             &[
                 VariableUpdate::Set {
                     key: "location".into(),
@@ -733,7 +739,7 @@ mod tests {
         .await
         .expect("apply");
 
-        revert_message_variable_updates(&pool, chat.id, &updates)
+        revert_message_variable_updates(&pool, chat.id, message.id, &updates)
             .await
             .expect("revert");
 
@@ -788,10 +794,16 @@ mod tests {
         .await
         .expect("finalize");
 
-        db::upsert_variable(&pool, chat.id, "location".into(), "tavern".into())
-            .await
-            .expect("seed variable");
-        db::delete_variable(&pool, chat.id, "location")
+        let variable = db::upsert_variable(
+            &pool,
+            chat.id,
+            "location".into(),
+            "tavern".into(),
+            crate::variable_state::MANUAL_MESSAGE_SOURCE,
+        )
+        .await
+        .expect("seed variable");
+        db::delete_variable(&pool, chat.id, variable.id)
             .await
             .expect("delete");
         strip_variable_key_from_chat_messages(&pool, chat.id, "location")
@@ -862,6 +874,7 @@ mod tests {
         apply_variable_updates(
             &pool,
             chat.id,
+            first.id,
             &[VariableUpdate::Set {
                 key: "hp".into(),
                 value: "80".into(),
@@ -872,6 +885,7 @@ mod tests {
         apply_variable_updates(
             &pool,
             chat.id,
+            second.id,
             &[VariableUpdate::Set {
                 key: "hp".into(),
                 value: "50".into(),
