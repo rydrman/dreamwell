@@ -1567,6 +1567,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     };
     let title = use_state(|| beat.title.clone());
     let synopsis = use_state(|| beat.synopsis.clone());
+    let mechanical = use_state(|| beat.mechanical.clone());
     let content = use_state(|| beat.content.clone());
     let user_edited_prose = use_state(|| false);
     let save_phase = use_state(|| AutoSavePhase::Synced);
@@ -1576,12 +1577,14 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     {
         let title = title.clone();
         let synopsis = synopsis.clone();
+        let mechanical = mechanical.clone();
         let content = content.clone();
         let user_edited_prose = user_edited_prose.clone();
         let beat = beat.clone();
         use_effect_with(beat.id, move |_| {
             title.set(beat.title.clone());
             synopsis.set(beat.synopsis.clone());
+            mechanical.set(beat.mechanical.clone());
             content.set(beat.content.clone());
             user_edited_prose.set(false);
             || ()
@@ -1603,8 +1606,30 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         );
     }
 
+    {
+        let mechanical = mechanical.clone();
+        let server_mechanical = beat.mechanical.clone();
+        use_effect_with(
+            (beat.id, server_mechanical.clone()),
+            move |(_, server_mechanical)| {
+                mechanical.set(server_mechanical.clone());
+                || ()
+            },
+        );
+    }
+
     let prose_generating = props.active_job.as_ref().is_some_and(|job| {
         job.job_type == JobType::StoryBeatProse
+            && job.beat_id == Some(beat.id)
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
+    let mechanical_generating = props.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryBeatMechanical
+            && job.beat_id == Some(beat.id)
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
+    let aligning_prose = props.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryBeatProseRecheck
             && job.beat_id == Some(beat.id)
             && matches!(job.status, JobStatus::Queued | JobStatus::Running)
     });
@@ -1617,6 +1642,8 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let queued = matches!(beat.job_status, Some(JobStatus::Queued));
     let streaming = matches!(beat.job_status, Some(JobStatus::Running));
     let generation_active = queued || streaming;
+    let beat_job_active =
+        generation_active || mechanical_generating || aligning_prose || rechecking_variables;
     let generation_error = generation_error_from_content(&beat.content);
     let prose_failure_only = generation_error.is_some();
     let story_id = props.story_id;
@@ -1627,12 +1654,14 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let schedule_save = {
         let title = title.clone();
         let synopsis = synopsis.clone();
+        let mechanical = mechanical.clone();
         let content = content.clone();
         let on_detail = props.on_detail.clone();
         let save_controller = save_controller.clone();
         Callback::from(move |include_content: bool| {
             let title = (*title).clone();
             let synopsis = (*synopsis).clone();
+            let mechanical = (*mechanical).clone();
             let content = (*content).clone();
             let on_detail = on_detail.clone();
             let controller = save_controller.clone();
@@ -1645,6 +1674,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     let mut update = StoryBeatUpdate {
                         title: Some(title),
                         synopsis: Some(synopsis),
+                        mechanical: Some(mechanical),
                         content: None,
                         sort_order: None,
                     };
@@ -1680,6 +1710,9 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     };
 
     let show_recheck = props.variables_enabled && !(*content).trim().is_empty();
+    let show_align_prose = !(*mechanical).trim().is_empty() && !(*content).trim().is_empty();
+    let synopsis_ready = !(*synopsis).trim().is_empty();
+    let mechanical_ready = !(*mechanical).trim().is_empty();
     let variable_update_count = beat.variable_updates.len();
     let show_variable_updates = props.variables_enabled && variable_update_count > 0;
 
@@ -1703,6 +1736,49 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     Callback::from(move |e: InputEvent| {
                         let input: HtmlInputElement = e.target_unchecked_into();
                         synopsis.set(input.value());
+                        schedule_save.emit(false);
+                    })
+                }} />
+            </label>
+            <div class="story-actions">
+                <button class="btn secondary" disabled={!synopsis_ready || beat_job_active} onclick={{
+                    let on_detail = props.on_detail.clone();
+                    let bump_stream = props.bump_stream.clone();
+                    let guidance = props.guidance.clone();
+                    let on_stale_error = on_stale_error.clone();
+                    Callback::from(move |_| {
+                        let on_detail = on_detail.clone();
+                        let bump_stream = bump_stream.clone();
+                        let notes = guidance.clone();
+                        let on_stale_error = on_stale_error.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match api::generate_mechanical(story_id, chapter_id, beat_id, &notes).await {
+                                Ok(d) => {
+                                    on_detail.emit(d);
+                                    bump_stream.emit(());
+                                }
+                                Err(err) => alert_story_action_error(
+                                    "generate mechanical plan",
+                                    err,
+                                    Some(on_stale_error.clone()),
+                                ),
+                            }
+                        });
+                    })
+                }}>{ if mechanical_generating { "Generating mechanical…" } else { "Generate mechanical" } }</button>
+            </div>
+            <label class="field"><span class="muted">{"Mechanical plan"}</span>
+                <textarea
+                    value={(*mechanical).clone()}
+                    rows="6"
+                    placeholder="Bullet list of what happens in this beat…"
+                    readonly={mechanical_generating}
+                    oninput={{
+                    let mechanical = mechanical.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        mechanical.set(input.value());
                         schedule_save.emit(false);
                     })
                 }} />
@@ -1758,7 +1834,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                 />
             </label>
             <div class="story-actions">
-                <button class="btn" disabled={generation_active} onclick={{
+                <button class="btn" disabled={!mechanical_ready || beat_job_active} onclick={{
                     let on_detail = props.on_detail.clone();
                     let bump_stream = props.bump_stream.clone();
                     let guidance = props.guidance.clone();
@@ -1784,8 +1860,35 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                         });
                     })
                 }}>{"Generate prose"}</button>
+                if show_align_prose {
+                    <button class="btn secondary" disabled={beat_job_active} onclick={{
+                        let on_detail = props.on_detail.clone();
+                        let bump_stream = props.bump_stream.clone();
+                        let guidance = props.guidance.clone();
+                        Callback::from(move |_| {
+                            let on_detail = on_detail.clone();
+                            let bump_stream = bump_stream.clone();
+                            let notes = guidance.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                match api::align_beat_prose(story_id, chapter_id, beat_id, &notes).await
+                                {
+                                    Ok(_) => {
+                                        bump_stream.emit(());
+                                        match api::get_story(story_id).await {
+                                            Ok(d) => on_detail.emit(d),
+                                            Err(err) => {
+                                                alert_story_action_error("refresh story", err, None)
+                                            }
+                                        }
+                                    }
+                                    Err(err) => alert_story_action_error("align prose", err, None),
+                                }
+                            });
+                        })
+                    }}>{ if aligning_prose { "Aligning prose…" } else { "Align prose to mechanical" } }</button>
+                }
                 if show_recheck {
-                    <button class="btn secondary" disabled={rechecking_variables || generation_active} onclick={{
+                    <button class="btn secondary" disabled={rechecking_variables || beat_job_active} onclick={{
                         let on_detail = props.on_detail.clone();
                         let bump_stream = props.bump_stream.clone();
                         let guidance = props.guidance.clone();

@@ -130,6 +130,7 @@ mod tests {
             chapter_id: 1,
             title: format!("Beat {}", order + 1),
             synopsis: String::new(),
+            mechanical: String::new(),
             content: String::new(),
             variable_updates: updates,
             sort_order: order,
