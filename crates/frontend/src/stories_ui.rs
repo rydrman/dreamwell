@@ -11,7 +11,7 @@ use crate::api;
 use crate::generation_ui::{
     beat_block_status, chapter_block_status, chapter_has_substantial_prose, chapter_summary_stale,
     generation_error_from_content, is_stale_summary_error, stale_chapters_in_story, story_notice,
-    BlockGenerationStatus, GenerationStatusBar, StaleChapterItem,
+    BlockGenerationStatus, GenerationButtonGroup, GenerationStatusBar, StaleChapterItem,
 };
 use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::story_save::{
@@ -608,7 +608,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                                 props.guidance.clone(),
                                 props.on_detail.clone(),
                                 props.bump_stream.clone(),
-                            )}
+                            ).reform(|_: MouseEvent| ())}
                         >
                             { if proposing_chapters { "Proposing…" } else { "Propose chapters" } }
                         </button>
@@ -740,42 +740,31 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                         story={props.detail.story.clone()}
                         on_detail={props.on_detail.clone()}
                     />
-                    <label class="field" style="margin-top:1rem;">
-                        <span class="muted">{"Guidance for proposal"}</span>
-                        <textarea
-                            placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
-                            value={props.guidance.clone()}
-                            rows="3"
-                            oninput={guidance_input(props.on_guidance.clone())}
-                        />
-                    </label>
                     <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
                         {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
                     </p>
-                    <div class="story-actions" style="margin-top:0.75rem;">
-                        <button
-                            class="btn"
-                            disabled={props.detail.story.active_job.as_ref().is_some_and(|job| {
-                                job.job_type == JobType::StoryProposeChapters
-                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                            })}
-                            onclick={propose_chapters_action(
-                                story_id,
-                                props.guidance.clone(),
-                                props.on_detail.clone(),
-                                props.bump_stream.clone(),
-                            )}
-                        >
-                            { if props.detail.story.active_job.as_ref().is_some_and(|job| {
-                                job.job_type == JobType::StoryProposeChapters
-                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                            }) {
-                                "Proposing chapters…"
-                            } else {
-                                "Propose chapters"
-                            } }
-                        </button>
-                    </div>
+                    <GenerationButtonGroup
+                        label="Propose chapters"
+                        loading_label="Proposing chapters…"
+                        disabled={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                            job.job_type == JobType::StoryProposeChapters
+                                && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                        })}
+                        busy={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                            job.job_type == JobType::StoryProposeChapters
+                                && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                        })}
+                        guidance={props.guidance.clone()}
+                        guidance_title="Guidance for proposal"
+                        guidance_placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
+                        on_guidance={props.on_guidance.clone()}
+                        on_generate={propose_chapters_action(
+                            story_id,
+                            props.guidance.clone(),
+                            props.on_detail.clone(),
+                            props.bump_stream.clone(),
+                        )}
+                    />
                 </div>
             }
 
@@ -946,7 +935,7 @@ fn propose_chapters_action(
     guidance: String,
     on_detail: Callback<StoryDetail>,
     bump_stream: Callback<()>,
-) -> Callback<MouseEvent> {
+) -> Callback<()> {
     Callback::from(move |_| {
         let on_detail = on_detail.clone();
         let bump_stream = bump_stream.clone();
@@ -958,6 +947,91 @@ fn propose_chapters_action(
                     bump_stream.emit(());
                 }
                 Err(err) => alert_story_action_error("propose chapters", err, None),
+            }
+        });
+    })
+}
+
+fn propose_beats_action(
+    story_id: i64,
+    chapter_id: i64,
+    guidance: String,
+    on_detail: Callback<StoryDetail>,
+    bump_stream: Callback<()>,
+    on_stale_error: Callback<String>,
+) -> Callback<()> {
+    Callback::from(move |_| {
+        let on_detail = on_detail.clone();
+        let bump_stream = bump_stream.clone();
+        let notes = guidance.clone();
+        let on_stale_error = on_stale_error.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::propose_beats(story_id, chapter_id, &notes).await {
+                Ok(d) => {
+                    on_detail.emit(d);
+                    bump_stream.emit(());
+                }
+                Err(err) => {
+                    alert_story_action_error("propose beats", err, Some(on_stale_error.clone()))
+                }
+            }
+        });
+    })
+}
+
+fn generate_mechanical_action(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance: String,
+    on_detail: Callback<StoryDetail>,
+    bump_stream: Callback<()>,
+    on_stale_error: Callback<String>,
+) -> Callback<()> {
+    Callback::from(move |_| {
+        let on_detail = on_detail.clone();
+        let bump_stream = bump_stream.clone();
+        let notes = guidance.clone();
+        let on_stale_error = on_stale_error.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::generate_mechanical(story_id, chapter_id, beat_id, &notes).await {
+                Ok(d) => {
+                    on_detail.emit(d);
+                    bump_stream.emit(());
+                }
+                Err(err) => alert_story_action_error(
+                    "generate mechanical plan",
+                    err,
+                    Some(on_stale_error.clone()),
+                ),
+            }
+        });
+    })
+}
+
+fn generate_prose_action(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance: String,
+    on_detail: Callback<StoryDetail>,
+    bump_stream: Callback<()>,
+    on_stale_error: Callback<String>,
+) -> Callback<()> {
+    Callback::from(move |_| {
+        let on_detail = on_detail.clone();
+        let bump_stream = bump_stream.clone();
+        let notes = guidance.clone();
+        let on_stale_error = on_stale_error.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::generate_prose(story_id, chapter_id, beat_id, &notes).await {
+                Ok(d) => {
+                    on_detail.emit(d);
+                    bump_stream.emit(());
+                }
+                Err(err) => {
+                    alert_story_action_error("generate prose", err, Some(on_stale_error.clone()))
+                }
             }
         });
     })
@@ -982,13 +1056,6 @@ fn add_chapter_action(
                 Err(err) => alert_story_action_error("add chapter", err, None),
             }
         });
-    })
-}
-
-fn guidance_input(on_guidance: Callback<String>) -> Callback<InputEvent> {
-    Callback::from(move |e: InputEvent| {
-        let input: HtmlInputElement = e.target_unchecked_into();
-        on_guidance.emit(input.value());
     })
 }
 
@@ -1469,41 +1536,28 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     })
                 }}>{ if summarizing_chapter { "Summarizing…" } else { "Summarize from prose" } }</button>
             </div>
-            <label class="field" style="margin-top:1rem;">
-                <span class="muted">{"Guidance for proposal"}</span>
-                <textarea
-                    placeholder="Optional notes — e.g. split the confrontation into two beats…"
-                    value={props.guidance.clone()}
-                    rows="3"
-                    oninput={guidance_input(props.on_guidance.clone())}
-                />
-            </label>
+            <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
+                {"Propose beats reviews this chapter and returns a full beat list — it may add, remove, reorder, or rewrite beats. Existing prose is noted but may be replaced."}
+            </p>
+            <GenerationButtonGroup
+                label="Propose beats"
+                loading_label="Proposing beats…"
+                disabled={proposing_beats}
+                busy={proposing_beats}
+                guidance={props.guidance.clone()}
+                guidance_title="Guidance for proposal"
+                guidance_placeholder="Optional notes — e.g. split the confrontation into two beats…"
+                on_guidance={props.on_guidance.clone()}
+                on_generate={propose_beats_action(
+                    story_id,
+                    chapter_id,
+                    props.guidance.clone(),
+                    props.on_detail.clone(),
+                    props.bump_stream.clone(),
+                    on_stale_error.clone(),
+                )}
+            />
             <div class="story-actions">
-                <button class="btn" disabled={proposing_beats} onclick={{
-                    let on_detail = props.on_detail.clone();
-                    let bump_stream = props.bump_stream.clone();
-                    let guidance = props.guidance.clone();
-                    let on_stale_error = on_stale_error.clone();
-                    Callback::from(move |_| {
-                        let on_detail = on_detail.clone();
-                        let bump_stream = bump_stream.clone();
-                        let notes = guidance.clone();
-                        let on_stale_error = on_stale_error.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match api::propose_beats(story_id, chapter_id, &notes).await {
-                                Ok(d) => {
-                                    on_detail.emit(d);
-                                    bump_stream.emit(());
-                                }
-                                Err(err) => alert_story_action_error(
-                                    "propose beats",
-                                    err,
-                                    Some(on_stale_error.clone()),
-                                ),
-                            }
-                        });
-                    })
-                }}>{ if proposing_beats { "Proposing beats…" } else { "Propose beats" } }</button>
                 <button class="btn secondary" onclick={{
                     let on_detail = props.on_detail.clone();
                     Callback::from(move |_| {
@@ -1531,9 +1585,6 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     })
                 }}>{"Delete chapter"}</button>
             </div>
-            <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
-                {"Propose beats reviews this chapter and returns a full beat list — it may add, remove, reorder, or rewrite beats. Existing prose is noted but may be replaced."}
-            </p>
         </div>
     }
 }
@@ -1851,33 +1902,26 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     }} />
                 </AutoSaveField>
             </label>
-            <div class="story-actions">
-                <button class="btn secondary" disabled={!synopsis_ready || beat_job_active} onclick={{
-                    let on_detail = props.on_detail.clone();
-                    let bump_stream = props.bump_stream.clone();
-                    let guidance = props.guidance.clone();
-                    let on_stale_error = on_stale_error.clone();
-                    Callback::from(move |_| {
-                        let on_detail = on_detail.clone();
-                        let bump_stream = bump_stream.clone();
-                        let notes = guidance.clone();
-                        let on_stale_error = on_stale_error.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match api::generate_mechanical(story_id, chapter_id, beat_id, &notes).await {
-                                Ok(d) => {
-                                    on_detail.emit(d);
-                                    bump_stream.emit(());
-                                }
-                                Err(err) => alert_story_action_error(
-                                    "generate mechanical plan",
-                                    err,
-                                    Some(on_stale_error.clone()),
-                                ),
-                            }
-                        });
-                    })
-                }}>{ if mechanical_generating { "Generating mechanical…" } else { "Generate mechanical" } }</button>
-            </div>
+            <GenerationButtonGroup
+                label="Generate mechanical"
+                loading_label="Generating mechanical…"
+                secondary={true}
+                disabled={!synopsis_ready || beat_job_active}
+                busy={mechanical_generating}
+                guidance={props.guidance.clone()}
+                guidance_title="Guidance for generation"
+                guidance_placeholder="Optional notes for the AI…"
+                on_guidance={props.on_guidance.clone()}
+                on_generate={generate_mechanical_action(
+                    story_id,
+                    chapter_id,
+                    beat_id,
+                    props.guidance.clone(),
+                    props.on_detail.clone(),
+                    props.bump_stream.clone(),
+                    on_stale_error.clone(),
+                )}
+            />
             <label class="field"><span class="muted">{"Mechanical plan"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                     <textarea
@@ -1898,6 +1942,25 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     }} />
                 </AutoSaveField>
             </label>
+            <GenerationButtonGroup
+                label="Generate prose"
+                loading_label="Generating prose…"
+                disabled={!mechanical_ready || beat_job_active}
+                busy={prose_generating}
+                guidance={props.guidance.clone()}
+                guidance_title="Guidance for generation"
+                guidance_placeholder="Optional notes for the AI…"
+                on_guidance={props.on_guidance.clone()}
+                on_generate={generate_prose_action(
+                    story_id,
+                    chapter_id,
+                    beat_id,
+                    props.guidance.clone(),
+                    props.on_detail.clone(),
+                    props.bump_stream.clone(),
+                    on_stale_error.clone(),
+                )}
+            />
             <label class="field"><span class="muted">{"Prose"}</span>
                 <div class="prose-editor-wrap">
                     <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
@@ -1940,42 +2003,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     </div>
                 }
             </label>
-            <label class="field">
-                <span class="muted">{"Guidance for generation"}</span>
-                <textarea
-                    placeholder="Optional notes for the AI…"
-                    value={props.guidance.clone()}
-                    rows="3"
-                    oninput={guidance_input(props.on_guidance.clone())}
-                />
-            </label>
             <div class="story-actions">
-                <button class="btn" disabled={!mechanical_ready || beat_job_active} onclick={{
-                    let on_detail = props.on_detail.clone();
-                    let bump_stream = props.bump_stream.clone();
-                    let guidance = props.guidance.clone();
-                    let on_stale_error = on_stale_error.clone();
-                    Callback::from(move |_| {
-                        let on_detail = on_detail.clone();
-                        let bump_stream = bump_stream.clone();
-                        let notes = guidance.clone();
-                        let on_stale_error = on_stale_error.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match api::generate_prose(story_id, chapter_id, beat_id, &notes).await
-                            {
-                                Ok(d) => {
-                                    on_detail.emit(d);
-                                    bump_stream.emit(());
-                                }
-                                Err(err) => alert_story_action_error(
-                                    "generate prose",
-                                    err,
-                                    Some(on_stale_error.clone()),
-                                ),
-                            }
-                        });
-                    })
-                }}>{"Generate prose"}</button>
                 if show_align_prose {
                     <button class="btn secondary" disabled={beat_job_active} onclick={{
                         let on_detail = props.on_detail.clone();

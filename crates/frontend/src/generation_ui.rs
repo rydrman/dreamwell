@@ -310,6 +310,188 @@ pub fn generation_status_bar(props: &GenerationStatusBarProps) -> Html {
     }
 }
 
+fn generation_down_arrow() -> Html {
+    html! {
+        <svg
+            class="generation-btn-arrow"
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            aria-hidden="true"
+        >
+            <path
+                d="M7 2.5v7M7 9.5l-3-3M7 9.5l3-3"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+            />
+        </svg>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct GuidanceModalProps {
+    pub title: &'static str,
+    pub placeholder: &'static str,
+    pub guidance: String,
+    pub generate_label: &'static str,
+    pub loading_label: &'static str,
+    pub disabled: bool,
+    pub busy: bool,
+    pub on_close: Callback<()>,
+    pub on_guidance: Callback<String>,
+    pub on_generate: Callback<()>,
+}
+
+#[function_component(GuidanceModal)]
+pub fn guidance_modal(props: &GuidanceModalProps) -> Html {
+    let draft = use_state(|| props.guidance.clone());
+    {
+        let draft = draft.clone();
+        let guidance = props.guidance.clone();
+        use_effect_with(guidance, move |guidance| {
+            draft.set(guidance.clone());
+            || ()
+        });
+    }
+
+    let on_input = {
+        let draft = draft.clone();
+        Callback::from(move |e: InputEvent| {
+            let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+            draft.set(input.value());
+        })
+    };
+
+    let on_generate = {
+        let draft = draft.clone();
+        let on_guidance = props.on_guidance.clone();
+        let on_generate = props.on_generate.clone();
+        let on_close = props.on_close.clone();
+        Callback::from(move |_| {
+            on_guidance.emit((*draft).clone());
+            on_generate.emit(());
+            on_close.emit(());
+        })
+    };
+
+    html! {
+        <>
+            <div class="modal-backdrop" onclick={props.on_close.reform(|_| ())} />
+            <div class="modal guidance-modal" role="dialog" aria-labelledby="guidance-modal-title">
+                <h2 id="guidance-modal-title">{ props.title }</h2>
+                <label class="field">
+                    <span class="muted">{"Optional notes for the AI"}</span>
+                    <textarea
+                        placeholder={props.placeholder}
+                        value={(*draft).clone()}
+                        rows="4"
+                        oninput={on_input}
+                    />
+                </label>
+                <div class="modal-actions">
+                    <button
+                        class="btn"
+                        disabled={props.disabled || props.busy}
+                        onclick={on_generate}
+                    >
+                        { if props.busy { props.loading_label } else { props.generate_label } }
+                    </button>
+                    <button class="btn secondary" onclick={props.on_close.reform(|_| ())}>
+                        {"Cancel"}
+                    </button>
+                </div>
+            </div>
+        </>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct GenerationButtonGroupProps {
+    pub label: &'static str,
+    pub loading_label: &'static str,
+    #[prop_or(false)]
+    pub secondary: bool,
+    #[prop_or(true)]
+    pub show_arrow: bool,
+    pub disabled: bool,
+    pub busy: bool,
+    pub guidance: String,
+    pub guidance_title: &'static str,
+    pub guidance_placeholder: &'static str,
+    pub on_guidance: Callback<String>,
+    pub on_generate: Callback<()>,
+}
+
+#[function_component(GenerationButtonGroup)]
+pub fn generation_button_group(props: &GenerationButtonGroupProps) -> Html {
+    let modal_open = use_state(|| false);
+    let has_guidance = !props.guidance.trim().is_empty();
+
+    let open_modal = {
+        let modal_open = modal_open.clone();
+        Callback::from(move |_| modal_open.set(true))
+    };
+    let close_modal = {
+        let modal_open = modal_open.clone();
+        Callback::from(move |_| modal_open.set(false))
+    };
+
+    let btn_class = if props.secondary {
+        classes!("btn", "secondary", "generation-btn")
+    } else {
+        classes!("btn", "generation-btn")
+    };
+
+    html! {
+        <>
+            <div class="generation-btn-group">
+                <button
+                    class={btn_class}
+                    disabled={props.disabled || props.busy}
+                    onclick={props.on_generate.reform(|_| ())}
+                >
+                    if props.show_arrow {
+                        { generation_down_arrow() }
+                    }
+                    <span>{ if props.busy { props.loading_label } else { props.label } }</span>
+                </button>
+                <button
+                    class={classes!(
+                        "btn",
+                        "secondary",
+                        "btn-compact",
+                        "generation-btn-guidance",
+                        has_guidance.then_some("generation-btn-guidance--has-notes"),
+                    )}
+                    disabled={props.disabled || props.busy}
+                    title="Add guidance"
+                    aria-label="Add guidance"
+                    onclick={open_modal}
+                >
+                    {"✎"}
+                </button>
+            </div>
+            if *modal_open {
+                <GuidanceModal
+                    title={props.guidance_title}
+                    placeholder={props.guidance_placeholder}
+                    guidance={props.guidance.clone()}
+                    generate_label={props.label}
+                    loading_label={props.loading_label}
+                    disabled={props.disabled}
+                    busy={props.busy}
+                    on_close={close_modal}
+                    on_guidance={props.on_guidance.clone()}
+                    on_generate={props.on_generate.clone()}
+                />
+            }
+        </>
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
