@@ -12,20 +12,59 @@ pub enum AutoSavePhase {
     Failed,
 }
 
-pub fn auto_save_status_html(phase: AutoSavePhase, error: Option<&str>) -> Html {
+/// Icon overlay for the bottom-right corner of an auto-saved text field.
+pub fn auto_save_field_icon(phase: AutoSavePhase, error: Option<&str>) -> Html {
     match phase {
-        AutoSavePhase::Synced => {
-            html! { <span class="muted" style="font-size:0.85rem;">{"Saved"}</span> }
-        }
-        AutoSavePhase::Debouncing => {
-            html! { <span class="muted" style="font-size:0.85rem;">{"Saving…"}</span> }
-        }
-        AutoSavePhase::Saving => {
-            html! { <span class="muted" style="font-size:0.85rem;">{"Saving…"}</span> }
-        }
-        AutoSavePhase::Failed => html! {
-            <span class="message-error" style="font-size:0.85rem;">{ error.unwrap_or("Save failed") }</span>
+        AutoSavePhase::Synced => html! {
+            <span class="field-autosave-icon field-autosave-icon--saved" title="Saved" aria-label="Saved">
+                <span class="field-autosave-glyph" aria-hidden="true">{"✓"}</span>
+            </span>
         },
+        AutoSavePhase::Debouncing => html! {
+            <span
+                class="field-autosave-icon field-autosave-icon--pending"
+                title="Unsaved changes"
+                aria-label="Unsaved changes"
+            >
+                <span class="field-autosave-glyph" aria-hidden="true">{"●"}</span>
+            </span>
+        },
+        AutoSavePhase::Saving => html! {
+            <span class="field-autosave-icon field-autosave-icon--saving" title="Saving…" aria-label="Saving">
+                <span class="field-autosave-spinner" aria-hidden="true"></span>
+            </span>
+        },
+        AutoSavePhase::Failed => {
+            let message = error.unwrap_or("Save failed");
+            html! {
+                <span
+                    class="field-autosave-icon field-autosave-icon--error"
+                    title={message.to_string()}
+                    aria-label="Save failed"
+                >
+                    <span class="field-autosave-glyph" aria-hidden="true">{"✕"}</span>
+                </span>
+            }
+        }
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct AutoSaveFieldProps {
+    pub phase: AutoSavePhase,
+    #[prop_or_default]
+    pub error: Option<String>,
+    pub children: Children,
+}
+
+/// Wraps a text input or textarea with a save-status icon pinned to the bottom-right.
+#[function_component(AutoSaveField)]
+pub fn auto_save_field(props: &AutoSaveFieldProps) -> Html {
+    html! {
+        <span class="field-autosave-wrap">
+            { for props.children.iter() }
+            { auto_save_field_icon(props.phase, props.error.as_deref()) }
+        </span>
     }
 }
 
@@ -82,12 +121,65 @@ impl AutoSaveController {
             save();
         }));
     }
+}
 
-    /// Mark the save complete. When `apply` is true, the caller should also push the
-    /// server response into parent state. When false, the user kept editing after the
-    /// request was sent — skip the parent refresh to avoid clobbering local draft.
-    pub fn complete(&self, apply: bool) -> bool {
-        self.mark_saved();
-        apply
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AutoSaveOutcome {
+    /// Draft matches the sent snapshot and last_saved was updated.
+    Synced,
+    /// The user kept editing after the request was sent.
+    Stale,
+}
+
+/// Whether the draft differs from the last successful save.
+pub fn draft_is_dirty<T: PartialEq>(draft: &T, last_saved: &T) -> bool {
+    draft != last_saved
+}
+
+/// Handle a completed auto-save without refreshing parent props.
+///
+/// Parent/detail refresh on every field save is the main cause of controlled
+/// inputs reloading and interrupting edits. Callers should only update local
+/// `last_saved` here; reserve parent callbacks for structural actions.
+pub fn finish_auto_save<T: Clone + PartialEq>(
+    controller: &AutoSaveController,
+    current: &T,
+    snapshot: &T,
+    last_saved: &UseStateHandle<T>,
+) -> AutoSaveOutcome {
+    controller.mark_saved();
+    if current == snapshot {
+        last_saved.set(snapshot.clone());
+        AutoSaveOutcome::Synced
+    } else {
+        AutoSaveOutcome::Stale
+    }
+}
+
+/// Record a failed save. Only surfaces the error when the draft still matches
+/// the snapshot that was sent.
+pub fn fail_auto_save<T: PartialEq>(
+    controller: &AutoSaveController,
+    current: &T,
+    snapshot: &T,
+    message: String,
+) -> AutoSaveOutcome {
+    if current == snapshot {
+        controller.mark_failed(message);
+        AutoSaveOutcome::Synced
+    } else {
+        controller.mark_saved();
+        AutoSaveOutcome::Stale
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_is_dirty_compares_snapshots() {
+        assert!(!draft_is_dirty(&"same", &"same"));
+        assert!(draft_is_dirty(&"new", &"old"));
     }
 }
