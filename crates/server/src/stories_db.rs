@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
-    GenerateRequest, Job, JobType, LengthPreset, Story, StoryBeat, StoryBeatCreate,
-    StoryBeatUpdate, StoryChapter, StoryChapterCreate, StoryChapterUpdate, StoryCreate,
-    StoryDetail, StoryUpdate,
+    BeatVariableUpdate, GenerateRequest, Job, JobType, LengthPreset, Story, StoryBeat,
+    StoryBeatCreate, StoryBeatUpdate, StoryChapter, StoryChapterCreate, StoryChapterUpdate,
+    StoryCreate, StoryDetail, StoryUpdate, StoryVariable, StoryVariableUpdate,
 };
 use sqlx::SqlitePool;
 
@@ -265,7 +265,7 @@ pub async fn delete_chapter(pool: &SqlitePool, story_id: i64, chapter_id: i64) -
 
 async fn list_beats_for_chapter(pool: &SqlitePool, chapter_id: i64) -> AppResult<Vec<StoryBeat>> {
     let rows = sqlx::query_as::<_, BeatRow>(
-        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.content, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.chapter_id = ?1 ORDER BY b.sort_order ASC, b.id ASC",
+        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.content, b.variable_updates, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.chapter_id = ?1 ORDER BY b.sort_order ASC, b.id ASC",
     )
     .bind(chapter_id)
     .fetch_all(pool)
@@ -280,6 +280,7 @@ fn beat_from_row(row: BeatRow) -> StoryBeat {
         title: row.title,
         synopsis: row.synopsis,
         content: row.content,
+        variable_updates: parse_beat_variable_updates(&row.variable_updates),
         sort_order: row.sort_order,
         created_at: DateTime::parse_from_rfc3339(&row.created_at)
             .map(|dt| dt.with_timezone(&Utc))
@@ -291,6 +292,10 @@ fn beat_from_row(row: BeatRow) -> StoryBeat {
     }
 }
 
+fn parse_beat_variable_updates(raw: &str) -> Vec<BeatVariableUpdate> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
 pub async fn get_beat(
     pool: &SqlitePool,
     story_id: i64,
@@ -299,7 +304,7 @@ pub async fn get_beat(
 ) -> AppResult<StoryBeat> {
     let _ = get_chapter(pool, story_id, chapter_id).await?;
     let row = sqlx::query_as::<_, BeatRow>(
-        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.content, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.id = ?1 AND b.chapter_id = ?2",
+        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.content, b.variable_updates, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.id = ?1 AND b.chapter_id = ?2",
     )
     .bind(beat_id)
     .bind(chapter_id)
@@ -626,7 +631,11 @@ pub async fn prepare_generate_prose(
     beat_id: i64,
     payload: &GenerateRequest,
 ) -> AppResult<Job> {
-    let _ = get_beat(pool, story_id, chapter_id, beat_id).await?;
+    let beat = get_beat(pool, story_id, chapter_id, beat_id).await?;
+    if !beat.variable_updates.is_empty() {
+        revert_beat_variable_updates(pool, story_id, &beat.variable_updates).await?;
+        clear_beat_variable_updates(pool, beat_id).await?;
+    }
     update_beat_content(pool, beat_id, "").await?;
     enqueue_story_job(
         pool,
@@ -637,6 +646,216 @@ pub async fn prepare_generate_prose(
         payload.guidance_notes.clone(),
     )
     .await
+}
+
+pub async fn list_story_variables(
+    pool: &SqlitePool,
+    story_id: i64,
+) -> AppResult<Vec<StoryVariable>> {
+    let rows = sqlx::query_as::<_, StoryVariableRow>(
+        "SELECT id, story_id, key, value, source_chapter_order, source_beat_order, updated_at FROM story_variables WHERE story_id = ?1 ORDER BY key ASC",
+    )
+    .bind(story_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+pub async fn get_story_variable_value(
+    pool: &SqlitePool,
+    story_id: i64,
+    key: &str,
+) -> AppResult<Option<String>> {
+    let value = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM story_variables WHERE story_id = ?1 AND key = ?2",
+    )
+    .bind(story_id)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(value)
+}
+
+pub async fn upsert_story_variable(
+    pool: &SqlitePool,
+    story_id: i64,
+    key: String,
+    value: String,
+    source_chapter_order: i64,
+    source_beat_order: i64,
+) -> AppResult<StoryVariable> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO story_variables (story_id, key, value, source_chapter_order, source_beat_order, updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(story_id, key) DO UPDATE SET value=excluded.value, source_chapter_order=excluded.source_chapter_order, source_beat_order=excluded.source_beat_order, updated_at=excluded.updated_at",
+    )
+    .bind(story_id)
+    .bind(&key)
+    .bind(&value)
+    .bind(source_chapter_order)
+    .bind(source_beat_order)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    let row = sqlx::query_as::<_, StoryVariableRow>(
+        "SELECT id, story_id, key, value, source_chapter_order, source_beat_order, updated_at FROM story_variables WHERE story_id = ?1 AND key = ?2",
+    )
+    .bind(story_id)
+    .bind(&key)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.into())
+}
+
+pub async fn upsert_story_variable_manual(
+    pool: &SqlitePool,
+    story_id: i64,
+    payload: StoryVariableUpdate,
+) -> AppResult<StoryVariable> {
+    upsert_story_variable(
+        pool,
+        story_id,
+        payload.key,
+        payload.value,
+        crate::story_variables::MANUAL_VARIABLE_SOURCE,
+        crate::story_variables::MANUAL_VARIABLE_SOURCE,
+    )
+    .await
+}
+
+pub async fn delete_story_variable(pool: &SqlitePool, story_id: i64, key: &str) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM story_variables WHERE story_id = ?1 AND key = ?2")
+        .bind(story_id)
+        .bind(key)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::not_found("Variable not found"));
+    }
+    Ok(())
+}
+
+pub async fn apply_story_variable_updates(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_order: i64,
+    beat_order: i64,
+    updates: &[crate::variables::VariableUpdate],
+) -> AppResult<()> {
+    for update in updates {
+        match update {
+            crate::variables::VariableUpdate::Set { key, value } => {
+                upsert_story_variable(
+                    pool,
+                    story_id,
+                    key.clone(),
+                    value.clone(),
+                    chapter_order,
+                    beat_order,
+                )
+                .await?;
+            }
+            crate::variables::VariableUpdate::Delete { key } => {
+                let _ = delete_story_variable(pool, story_id, key).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn build_beat_variable_updates(
+    pool: &SqlitePool,
+    story_id: i64,
+    updates: &[crate::variables::VariableUpdate],
+) -> AppResult<Vec<BeatVariableUpdate>> {
+    let mut result = Vec::with_capacity(updates.len());
+    for update in updates {
+        match update {
+            crate::variables::VariableUpdate::Set { key, value } => {
+                let previous_value = get_story_variable_value(pool, story_id, key).await?;
+                result.push(BeatVariableUpdate {
+                    key: key.clone(),
+                    value: value.clone(),
+                    previous_value,
+                    deleted: false,
+                });
+            }
+            crate::variables::VariableUpdate::Delete { key } => {
+                let previous_value = get_story_variable_value(pool, story_id, key).await?;
+                result.push(BeatVariableUpdate {
+                    key: key.clone(),
+                    value: String::new(),
+                    previous_value,
+                    deleted: true,
+                });
+            }
+        }
+    }
+    Ok(result)
+}
+
+pub async fn revert_beat_variable_updates(
+    pool: &SqlitePool,
+    story_id: i64,
+    updates: &[BeatVariableUpdate],
+) -> AppResult<()> {
+    for update in updates.iter().rev() {
+        match &update.previous_value {
+            Some(previous) => {
+                restore_story_variable_value(pool, story_id, &update.key, previous).await?;
+            }
+            None => {
+                let _ = delete_story_variable(pool, story_id, &update.key).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn restore_story_variable_value(
+    pool: &SqlitePool,
+    story_id: i64,
+    key: &str,
+    value: &str,
+) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE story_variables SET value=?1, updated_at=?2 WHERE story_id=?3 AND key=?4")
+        .bind(value)
+        .bind(&now)
+        .bind(story_id)
+        .bind(key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn finalize_beat_prose(
+    pool: &SqlitePool,
+    beat_id: i64,
+    content: &str,
+    variable_updates: &[BeatVariableUpdate],
+) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    let updates_json = serde_json::to_string(variable_updates).unwrap_or_else(|_| "[]".to_string());
+    sqlx::query(
+        "UPDATE story_beats SET content=?1, variable_updates=?2, updated_at=?3 WHERE id=?4",
+    )
+    .bind(content)
+    .bind(updates_json)
+    .bind(&now)
+    .bind(beat_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn clear_beat_variable_updates(pool: &SqlitePool, beat_id: i64) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE story_beats SET variable_updates='[]', updated_at=?1 WHERE id=?2")
+        .bind(&now)
+        .bind(beat_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]
@@ -671,8 +890,36 @@ struct BeatRow {
     title: String,
     synopsis: String,
     content: String,
+    variable_updates: String,
     sort_order: i64,
     created_at: String,
     updated_at: String,
     job_status: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct StoryVariableRow {
+    id: i64,
+    story_id: i64,
+    key: String,
+    value: String,
+    source_chapter_order: i64,
+    source_beat_order: i64,
+    updated_at: String,
+}
+
+impl From<StoryVariableRow> for StoryVariable {
+    fn from(row: StoryVariableRow) -> Self {
+        Self {
+            id: row.id,
+            story_id: row.story_id,
+            key: row.key,
+            value: row.value,
+            source_chapter_order: row.source_chapter_order,
+            source_beat_order: row.source_beat_order,
+            updated_at: DateTime::parse_from_rfc3339(&row.updated_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+        }
+    }
 }

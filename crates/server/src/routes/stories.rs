@@ -13,7 +13,8 @@ use axum::{
 };
 use dreamwell_types::{
     GenerateRequest, OkResponse, Story, StoryBeatCreate, StoryBeatUpdate, StoryChapterCreate,
-    StoryChapterUpdate, StoryCreate, StoryDetail, StoryStreamPayload, StoryUpdate,
+    StoryChapterUpdate, StoryCreate, StoryDetail, StoryStreamPayload, StoryUpdate, StoryVariable,
+    StoryVariableUpdate,
 };
 
 use crate::db;
@@ -52,6 +53,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/:id/chapters/:chapter_id/beats/:beat_id/generate-prose",
             post(generate_prose),
+        )
+        .route(
+            "/:id/variables",
+            get(list_story_variables).put(upsert_story_variable),
+        )
+        .route(
+            "/:id/variables/:key",
+            axum::routing::delete(delete_story_variable),
         )
 }
 
@@ -191,6 +200,34 @@ async fn generate_prose(
     let job = db::prepare_generate_prose(&state.pool, id, chapter_id, beat_id, &payload).await?;
     enqueue_story_generation(&state.queue, job).await?;
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
+}
+
+async fn list_story_variables(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Vec<StoryVariable>>> {
+    let _ = db::get_story(&state.pool, id).await?;
+    Ok(Json(db::list_story_variables(&state.pool, id).await?))
+}
+
+async fn upsert_story_variable(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(payload): Json<StoryVariableUpdate>,
+) -> AppResult<Json<StoryVariable>> {
+    let _ = db::get_story(&state.pool, id).await?;
+    Ok(Json(
+        db::upsert_story_variable_manual(&state.pool, id, payload).await?,
+    ))
+}
+
+async fn delete_story_variable(
+    State(state): State<AppState>,
+    Path((id, key)): Path<(i64, String)>,
+) -> AppResult<Json<OkResponse>> {
+    let _ = db::get_story(&state.pool, id).await?;
+    db::delete_story_variable(&state.pool, id, &key).await?;
+    Ok(Json(OkResponse { ok: true }))
 }
 
 async fn stream_story(

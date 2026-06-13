@@ -11,8 +11,9 @@ use crate::generation_ui::{
     beat_block_status, chapter_block_status, generation_error_from_content, story_notice,
     BlockGenerationStatus, GenerationStatusBar,
 };
-use crate::router::{AppRoute, StoryNav};
+use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
+use crate::variables;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum StorySelection {
@@ -78,6 +79,7 @@ fn story_nav_from_route(route: &AppRoute) -> StoryNav {
 pub struct StoriesShellProps {
     pub route: AppRoute,
     pub on_navigate: Callback<(AppRoute, bool)>,
+    pub variables_enabled: bool,
 }
 
 #[function_component(StoriesShell)]
@@ -324,7 +326,15 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
             detail_loading={*detail_loading}
             selection={selection}
             guidance={(*guidance).clone()}
+            variables_enabled={props.variables_enabled}
             bump_stream={bump_stream.clone()}
+            on_open_variables={Callback::from({
+                let on_navigate = props.on_navigate.clone();
+                let route = props.route.clone();
+                move |_| {
+                    on_navigate.emit((route.clone().with_overlay(Overlay::Variables), true));
+                }
+            })}
             on_guidance={Callback::from({
                 let guidance = guidance.clone();
                 move |v| guidance.set(v)
@@ -371,7 +381,9 @@ struct StoryEditorProps {
     detail_loading: bool,
     selection: StorySelection,
     guidance: String,
+    variables_enabled: bool,
     bump_stream: Callback<()>,
+    on_open_variables: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
@@ -441,6 +453,15 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                         })}
                     />
                     <div class="header-actions">
+                        if props.variables_enabled {
+                            <button
+                                class="btn secondary btn-compact header-icon-btn"
+                                title="Story variables"
+                                onclick={props.on_open_variables.reform(|_| ())}
+                            >
+                                {"Variables"}
+                            </button>
+                        }
                         <button
                             class="btn secondary btn-compact header-icon-btn"
                             title="Propose chapters from story basics"
@@ -1055,8 +1076,10 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
 
     let prose_display = if prose_failure_only || ((*content).is_empty() && queued) {
         String::new()
+    } else if streaming {
+        variables::strip_variables_for_display(&content, true)
     } else {
-        (*content).clone()
+        variables::strip_variables_for_display(&content, false)
     };
 
     let prose_placeholder = if queued && (*content).is_empty() {
@@ -1181,4 +1204,143 @@ fn string_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
         let input: HtmlInputElement = e.target_unchecked_into();
         state.set(input.value());
     })
+}
+
+fn format_variable_source(chapter_order: i64, beat_order: i64) -> String {
+    if chapter_order < 0 {
+        "Manual".to_string()
+    } else {
+        format!("Ch {} · Beat {}", chapter_order + 1, beat_order + 1)
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct StoryVariablesOverlayProps {
+    pub story_id: Option<i64>,
+    pub on_close: Callback<()>,
+}
+
+#[function_component(StoryVariablesOverlay)]
+pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
+    let variables = use_state(Vec::<StoryVariable>::new);
+    let key = use_state(String::new);
+    let value = use_state(String::new);
+    let editing_key = use_state(|| None::<String>);
+
+    {
+        let variables = variables.clone();
+        use_effect_with(props.story_id, move |story_id| {
+            if let Some(story_id) = *story_id {
+                let variables = variables.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(list) = api::get_story_variables(story_id).await {
+                        variables.set(list);
+                    }
+                });
+            } else {
+                variables.set(vec![]);
+            }
+            || ()
+        });
+    }
+
+    let Some(story_id) = props.story_id else {
+        return html! {
+            <div class="settings-popover panel-overlay">
+                <div class="settings-header">
+                    <h2>{"Variables"}</h2>
+                    <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
+                </div>
+                <p class="muted">{"Select a story to view variables."}</p>
+            </div>
+        };
+    };
+
+    html! {
+        <div class="settings-popover panel-overlay">
+            <div class="settings-header">
+                <h2>{"Variables"}</h2>
+                <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
+            </div>
+            <div class="panel-overlay-body">
+                <p class="muted">{"Story variables are injected when generating beat prose. Only facts from prior beats (plus manual entries) are visible to each generation — not future beats."}</p>
+                { for variables.iter().map(|v| {
+                    let variable_key = v.key.clone();
+                    let variable_value = v.value.clone();
+                    let source = format_variable_source(v.source_chapter_order, v.source_beat_order);
+                    html! {
+                        <div class="variable-card">
+                            <div class="variable-card-header">
+                                <strong>{ &v.key }</strong>
+                                <span class="muted">{ source }</span>
+                                <div class="variable-card-actions">
+                                    <button class="btn secondary btn-compact" onclick={{
+                                        let key = key.clone();
+                                        let value = value.clone();
+                                        let editing_key = editing_key.clone();
+                                        let variable_key = variable_key.clone();
+                                        let variable_value = variable_value.clone();
+                                        Callback::from(move |_| {
+                                            key.set(variable_key.clone());
+                                            value.set(variable_value.clone());
+                                            editing_key.set(Some(variable_key.clone()));
+                                        })
+                                    }}>{"edit"}</button>
+                                    <button class="btn secondary btn-compact" onclick={{
+                                        let variables = variables.clone();
+                                        let variable_key = variable_key.clone();
+                                        Callback::from(move |_| {
+                                            let variables = variables.clone();
+                                            let variable_key = variable_key.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                let _ = api::delete_story_variable(story_id, &variable_key).await;
+                                                if let Ok(list) = api::get_story_variables(story_id).await {
+                                                    variables.set(list);
+                                                }
+                                            });
+                                        })
+                                    }}>{"delete"}</button>
+                                </div>
+                            </div>
+                            <div>{ &v.value }</div>
+                        </div>
+                    }
+                }) }
+                <div class="variable-form">
+                    <input type="text" placeholder="Key" value={(*key).clone()} oninput={string_input(key.clone())} />
+                    <textarea placeholder="Value" value={(*value).clone()} rows="3" oninput={string_input(value.clone())} />
+                    <button class="btn" onclick={{
+                        let key = key.clone();
+                        let value = value.clone();
+                        let editing_key = editing_key.clone();
+                        let variables = variables.clone();
+                        Callback::from(move |_| {
+                            if (*key).trim().is_empty() {
+                                return;
+                            }
+                            let variables = variables.clone();
+                            let payload = StoryVariableUpdate {
+                                key: (*key).trim().to_string(),
+                                value: (*value).clone(),
+                            };
+                            let editing = (*editing_key).clone();
+                            let key = key.clone();
+                            let value = value.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if api::upsert_story_variable(story_id, &payload).await.is_ok() {
+                                    if let Ok(list) = api::get_story_variables(story_id).await {
+                                        variables.set(list);
+                                    }
+                                    if editing.is_none() {
+                                        key.set(String::new());
+                                        value.set(String::new());
+                                    }
+                                }
+                            });
+                        })
+                    }}>{ if (*editing_key).is_some() { "Save" } else { "Add variable" } }</button>
+                </div>
+            </div>
+        </div>
+    }
 }
