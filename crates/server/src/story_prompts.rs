@@ -53,6 +53,15 @@ pub fn prior_beat_synopses(beats: &[StoryBeat], before_order: i64) -> String {
         .join("\n")
 }
 
+pub fn subsequent_beat_synopses(beats: &[StoryBeat], after_order: i64) -> String {
+    beats
+        .iter()
+        .filter(|b| b.sort_order > after_order)
+        .map(|b| format!("Beat {} — {}: {}", b.sort_order + 1, b.title, b.synopsis))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Maximum characters of prior prose to include when generating a beat.
 const PRIOR_PROSE_CHAR_LIMIT: usize = 16_000;
 
@@ -198,10 +207,15 @@ pub fn build_beat_mechanical_messages(
 ) -> Vec<Value> {
     let prior_chapters = prior_chapter_synopses(chapters, chapter.sort_order);
     let prior_beats = prior_beat_synopses(&chapter.beats, beat.sort_order);
+    let later_beats = subsequent_beat_synopses(&chapter.beats, beat.sort_order);
     let mut user = format!(
-        "Expand beat {} (\"{}\") into an exhaustive mechanical beat plan.\n\n\
-         Beat synopsis (source — expand this, do not replace with different plot):\n{}\n\n\
-         Chapter synopsis:\n{}",
+        "Expand beat {} (\"{}\") into a mechanical beat plan — concrete staging of THIS beat only.\n\n\
+         Scope: Cover only what the beat synopsis describes. \
+         Add staging detail (who, where, what happens step by step) but do not invent new plot events, characters, resolutions, or consequences beyond what the synopsis implies. \
+         Do not borrow events from the chapter synopsis that belong to later beats. \
+         Stop at this beat's natural endpoint — do not advance into later beats or resolve plot points reserved for them.\n\n\
+         Beat synopsis (source of truth — elaborate this, do not replace or expand the plot):\n{}\n\n\
+         Chapter synopsis (background for tone and chapter arc only — not a checklist; may describe later beats):\n{}",
         beat.sort_order + 1,
         beat.title,
         beat.synopsis.trim(),
@@ -215,13 +229,20 @@ pub fn build_beat_mechanical_messages(
         user.push_str("\n\nPrior beats in this chapter:\n");
         user.push_str(&prior_beats);
     }
+    if !later_beats.is_empty() {
+        user.push_str(
+            "\n\nLater beats in this chapter (reserved — do NOT include these events in this mechanical plan):\n",
+        );
+        user.push_str(&later_beats);
+    }
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the author:\n");
         user.push_str(guidance.trim());
     }
     user.push_str(
-        "\n\nOutput only the mechanical plan: short bullet lines or terse clauses, one per event or beat of action. \
-         Include character names, objects, locations, and cause/effect. \
+        "\n\nOutput only the mechanical plan: short bullet lines or terse clauses, one per event or action within THIS beat. \
+         Include character names, objects, locations, and cause/effect for events in the synopsis. \
+         Do not plan events from later beats. \
          No scene narration, dialogue, or literary prose. No headings or meta commentary.",
     );
 
@@ -229,7 +250,9 @@ pub fn build_beat_mechanical_messages(
         serde_json::json!({
             "role": "system",
             "content": format!(
-                "You are a story structure assistant. Produce a dense mechanical plan from a beat synopsis.\n\n{}",
+                "You are a story structure assistant. Produce a bounded mechanical plan from a beat synopsis. \
+                 Stay faithful to the synopsis — add staging detail, not new plot. \
+                 Do not extrapolate beyond what the beat synopsis implies or include events planned for later beats.\n\n{}",
                 story_basics(story)
             ),
         }),
@@ -600,6 +623,55 @@ mod tests {
             sample_chapter(1, vec![sample_beat(0, "Next", "Continue.", "")]),
         ];
         assert_eq!(prior_chapter_closing_prose(&chapters, 1), "Closing line.");
+    }
+
+    #[test]
+    fn subsequent_beat_synopses_excludes_current_and_prior() {
+        let beats = vec![
+            sample_beat(0, "Arrival", "They arrive.", ""),
+            sample_beat(1, "Market", "They shop.", ""),
+            sample_beat(2, "Fight", "A brawl.", ""),
+        ];
+        let later = subsequent_beat_synopses(&beats, 0);
+        assert!(later.contains("Market"));
+        assert!(later.contains("Fight"));
+        assert!(!later.contains("Arrival"));
+
+        let later_from_middle = subsequent_beat_synopses(&beats, 1);
+        assert!(later_from_middle.contains("Fight"));
+        assert!(!later_from_middle.contains("Market"));
+        assert!(!later_from_middle.contains("Arrival"));
+    }
+
+    #[test]
+    fn beat_mechanical_prompt_includes_scope_guard_and_later_beats() {
+        let chapter = sample_chapter(
+            0,
+            vec![
+                sample_beat(0, "Arrival", "They arrive at the inn.", ""),
+                sample_beat(1, "Market", "She haggles for bread.", ""),
+                sample_beat(2, "Fight", "A brawl breaks out.", ""),
+            ],
+        );
+        let beat = chapter.beats[0].clone();
+        let messages = build_beat_mechanical_messages(
+            &sample_story(),
+            &[chapter.clone()],
+            &chapter,
+            &beat,
+            "",
+        );
+        let user = messages[1]["content"].as_str().unwrap();
+        let system = messages[0]["content"].as_str().unwrap();
+
+        assert!(user.contains("THIS beat only"));
+        assert!(user.contains("do not invent new plot events"));
+        assert!(user.contains("do not advance into later beats"));
+        assert!(user.contains("Later beats in this chapter (reserved"));
+        assert!(user.contains("She haggles for bread"));
+        assert!(user.contains("A brawl breaks out"));
+        assert!(user.contains("not a checklist"));
+        assert!(system.contains("Do not extrapolate beyond what the beat synopsis implies"));
     }
 
     #[test]
