@@ -610,6 +610,31 @@ pub async fn generate_prose(
     .await
 }
 
+pub async fn summarize_chapter_prose(
+    story_id: i64,
+    chapter_id: i64,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/summarize-prose"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn recheck_beat_variables(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+) -> Result<Job, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}/variables/recheck"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
 pub async fn get_story_variables(story_id: i64) -> Result<Vec<StoryVariable>, String> {
     json(api_request(
         "GET",

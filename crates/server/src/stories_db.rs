@@ -152,7 +152,7 @@ pub async fn touch_story(pool: &SqlitePool, story_id: i64) -> AppResult<()> {
 
 async fn list_chapters_for_story(pool: &SqlitePool, story_id: i64) -> AppResult<Vec<StoryChapter>> {
     let rows = sqlx::query_as::<_, ChapterRow>(
-        "SELECT id, story_id, title, synopsis, sort_order, created_at, updated_at FROM story_chapters WHERE story_id = ?1 ORDER BY sort_order ASC, id ASC",
+        "SELECT id, story_id, title, synopsis, prose_summary, prose_summary_valid, prose_summary_at, sort_order, created_at, updated_at FROM story_chapters WHERE story_id = ?1 ORDER BY sort_order ASC, id ASC",
     )
     .bind(story_id)
     .fetch_all(pool)
@@ -171,6 +171,9 @@ async fn chapter_from_row(pool: &SqlitePool, row: ChapterRow) -> AppResult<Story
         story_id: row.story_id,
         title: row.title,
         synopsis: row.synopsis,
+        prose_summary: row.prose_summary,
+        prose_summary_valid: row.prose_summary_valid != 0,
+        prose_summary_at: row.prose_summary_at.as_deref().map(parse_dt).transpose()?,
         sort_order: row.sort_order,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
@@ -184,7 +187,7 @@ pub async fn get_chapter(
     chapter_id: i64,
 ) -> AppResult<StoryChapter> {
     let row = sqlx::query_as::<_, ChapterRow>(
-        "SELECT id, story_id, title, synopsis, sort_order, created_at, updated_at FROM story_chapters WHERE id = ?1 AND story_id = ?2",
+        "SELECT id, story_id, title, synopsis, prose_summary, prose_summary_valid, prose_summary_at, sort_order, created_at, updated_at FROM story_chapters WHERE id = ?1 AND story_id = ?2",
     )
     .bind(chapter_id)
     .bind(story_id)
@@ -354,9 +357,14 @@ pub async fn update_beat(
     beat_id: i64,
     payload: StoryBeatUpdate,
 ) -> AppResult<StoryBeat> {
+    let chapter = get_chapter(pool, story_id, chapter_id).await?;
     let existing = get_beat(pool, story_id, chapter_id, beat_id).await?;
     let title = payload.title.unwrap_or(existing.title);
     let synopsis = payload.synopsis.unwrap_or(existing.synopsis);
+    let content_changed = payload
+        .content
+        .as_ref()
+        .is_some_and(|content| content != &existing.content);
     let content = payload.content.unwrap_or(existing.content);
     let sort_order = payload.sort_order.unwrap_or(existing.sort_order);
     let now = Utc::now().to_rfc3339();
@@ -371,6 +379,9 @@ pub async fn update_beat(
     .bind(beat_id)
     .execute(pool)
     .await?;
+    if content_changed {
+        invalidate_prose_summaries_from(pool, story_id, chapter.sort_order).await?;
+    }
     touch_story(pool, story_id).await?;
     get_beat(pool, story_id, chapter_id, beat_id).await
 }
@@ -437,6 +448,196 @@ pub async fn update_beat_content(pool: &SqlitePool, beat_id: i64, content: &str)
         .execute(pool)
         .await?;
     Ok(())
+}
+
+pub fn chapter_has_substantial_prose(chapter: &StoryChapter) -> bool {
+    chapter
+        .beats
+        .iter()
+        .any(|beat| beat.content.chars().count() > 80)
+}
+
+pub async fn invalidate_prose_summaries_from(
+    pool: &SqlitePool,
+    story_id: i64,
+    from_sort_order: i64,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE story_chapters SET prose_summary_valid = 0 WHERE story_id = ?1 AND sort_order >= ?2",
+    )
+    .bind(story_id)
+    .bind(from_sort_order)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn ensure_beat_generation_allowed(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+) -> AppResult<()> {
+    let detail = get_story_detail(pool, story_id).await?;
+    let chapter = detail
+        .chapters
+        .iter()
+        .find(|c| c.id == chapter_id)
+        .ok_or_else(|| AppError::not_found("Chapter not found"))?;
+    for prior in detail
+        .chapters
+        .iter()
+        .filter(|c| c.sort_order < chapter.sort_order)
+    {
+        if chapter_has_substantial_prose(prior) && !prior.prose_summary_valid {
+            return Err(AppError::bad_request(format!(
+                "Chapter {} prose summary is stale — summarize it before working on later chapters",
+                prior.sort_order + 1
+            )));
+        }
+    }
+    let beat = chapter
+        .beats
+        .iter()
+        .find(|b| b.id == beat_id)
+        .ok_or_else(|| AppError::not_found("Beat not found"))?;
+    let prior_beats_have_prose = chapter
+        .beats
+        .iter()
+        .any(|b| b.sort_order < beat.sort_order && b.content.chars().count() > 80);
+    if chapter_has_substantial_prose(chapter)
+        && prior_beats_have_prose
+        && !chapter.prose_summary_valid
+    {
+        return Err(AppError::bad_request(
+            "This chapter's prose summary is stale — summarize it before generating later beats",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn ensure_chapter_beats_allowed(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+) -> AppResult<()> {
+    let detail = get_story_detail(pool, story_id).await?;
+    let chapter = detail
+        .chapters
+        .iter()
+        .find(|c| c.id == chapter_id)
+        .ok_or_else(|| AppError::not_found("Chapter not found"))?;
+    for prior in detail
+        .chapters
+        .iter()
+        .filter(|c| c.sort_order < chapter.sort_order)
+    {
+        if chapter_has_substantial_prose(prior) && !prior.prose_summary_valid {
+            return Err(AppError::bad_request(format!(
+                "Chapter {} prose summary is stale — summarize it before proposing beats here",
+                prior.sort_order + 1
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub async fn set_chapter_prose_summary(
+    pool: &SqlitePool,
+    chapter_id: i64,
+    summary: &str,
+) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE story_chapters SET prose_summary=?1, prose_summary_valid=1, prose_summary_at=?2, updated_at=?3 WHERE id=?4",
+    )
+    .bind(summary)
+    .bind(&now)
+    .bind(&now)
+    .bind(chapter_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn prepare_summarize_chapter(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+) -> AppResult<Job> {
+    let chapter = get_chapter(pool, story_id, chapter_id).await?;
+    if !chapter_has_substantial_prose(&chapter) {
+        return Err(AppError::bad_request(
+            "Chapter has no substantial prose to summarize",
+        ));
+    }
+    if has_active_chapter_summarize_job(pool, chapter_id).await? {
+        return Err(AppError::bad_request(
+            "A chapter summarize job is already in progress",
+        ));
+    }
+    enqueue_story_job(
+        pool,
+        JobType::StoryChapterSummarize,
+        story_id,
+        Some(chapter_id),
+        None,
+        String::new(),
+    )
+    .await
+}
+
+pub async fn has_active_chapter_summarize_job(
+    pool: &SqlitePool,
+    chapter_id: i64,
+) -> AppResult<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM generation_jobs WHERE chapter_id = ?1 AND job_type = 'story_chapter_summarize' AND status IN ('queued','running')",
+    )
+    .bind(chapter_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn has_active_beat_prose_job(pool: &SqlitePool, beat_id: i64) -> AppResult<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM generation_jobs WHERE beat_id = ?1 AND job_type = 'story_beat_prose' AND status IN ('queued','running')",
+    )
+    .bind(beat_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn has_active_beat_variable_recheck_job(
+    pool: &SqlitePool,
+    beat_id: i64,
+) -> AppResult<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM generation_jobs WHERE beat_id = ?1 AND job_type = 'story_beat_variable_recheck' AND status IN ('queued','running')",
+    )
+    .bind(beat_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
+pub async fn enqueue_beat_variable_recheck_job(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+) -> AppResult<Job> {
+    enqueue_story_job(
+        pool,
+        JobType::StoryBeatVariableRecheck,
+        story_id,
+        Some(chapter_id),
+        Some(beat_id),
+        String::new(),
+    )
+    .await
 }
 
 pub async fn get_active_story_job(pool: &SqlitePool, story_id: i64) -> AppResult<Option<Job>> {
@@ -526,6 +727,7 @@ pub async fn prepare_propose_beats(
     chapter_id: i64,
     payload: &GenerateRequest,
 ) -> AppResult<Job> {
+    ensure_chapter_beats_allowed(pool, story_id, chapter_id).await?;
     let _ = get_chapter(pool, story_id, chapter_id).await?;
     enqueue_story_job(
         pool,
@@ -600,6 +802,7 @@ pub async fn prepare_generate_beat(
     chapter_id: i64,
     payload: &GenerateRequest,
 ) -> AppResult<(StoryBeat, Job)> {
+    ensure_chapter_beats_allowed(pool, story_id, chapter_id).await?;
     let beat = create_beat(
         pool,
         story_id,
@@ -631,6 +834,7 @@ pub async fn prepare_generate_prose(
     beat_id: i64,
     payload: &GenerateRequest,
 ) -> AppResult<Job> {
+    ensure_beat_generation_allowed(pool, story_id, chapter_id, beat_id).await?;
     let beat = get_beat(pool, story_id, chapter_id, beat_id).await?;
     if !beat.variable_updates.is_empty() {
         revert_beat_variable_updates(pool, story_id, &beat.variable_updates).await?;
@@ -711,13 +915,23 @@ pub async fn upsert_story_variable_manual(
     story_id: i64,
     payload: StoryVariableUpdate,
 ) -> AppResult<StoryVariable> {
+    let chapter_order = payload
+        .source_chapter_order
+        .unwrap_or(crate::story_variables::MANUAL_VARIABLE_SOURCE);
+    let beat_order = payload.source_beat_order.unwrap_or(
+        if chapter_order == crate::story_variables::MANUAL_VARIABLE_SOURCE {
+            crate::story_variables::MANUAL_VARIABLE_SOURCE
+        } else {
+            0
+        },
+    );
     upsert_story_variable(
         pool,
         story_id,
         payload.key,
         payload.value,
-        crate::story_variables::MANUAL_VARIABLE_SOURCE,
-        crate::story_variables::MANUAL_VARIABLE_SOURCE,
+        chapter_order,
+        beat_order,
     )
     .await
 }
@@ -830,6 +1044,8 @@ async fn restore_story_variable_value(
 
 pub async fn finalize_beat_prose(
     pool: &SqlitePool,
+    story_id: i64,
+    chapter_order: i64,
     beat_id: i64,
     content: &str,
     variable_updates: &[BeatVariableUpdate],
@@ -845,6 +1061,7 @@ pub async fn finalize_beat_prose(
     .bind(beat_id)
     .execute(pool)
     .await?;
+    invalidate_prose_summaries_from(pool, story_id, chapter_order).await?;
     Ok(())
 }
 
@@ -878,6 +1095,9 @@ struct ChapterRow {
     story_id: i64,
     title: String,
     synopsis: String,
+    prose_summary: String,
+    prose_summary_valid: i64,
+    prose_summary_at: Option<String>,
     sort_order: i64,
     created_at: String,
     updated_at: String,

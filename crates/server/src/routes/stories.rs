@@ -12,7 +12,7 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    GenerateRequest, OkResponse, Story, StoryBeatCreate, StoryBeatUpdate, StoryChapterCreate,
+    GenerateRequest, Job, OkResponse, Story, StoryBeatCreate, StoryBeatUpdate, StoryChapterCreate,
     StoryChapterUpdate, StoryCreate, StoryDetail, StoryStreamPayload, StoryUpdate, StoryVariable,
     StoryVariableUpdate,
 };
@@ -53,6 +53,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/:id/chapters/:chapter_id/beats/:beat_id/generate-prose",
             post(generate_prose),
+        )
+        .route(
+            "/:id/chapters/:chapter_id/summarize-prose",
+            post(summarize_chapter_prose),
+        )
+        .route(
+            "/:id/chapters/:chapter_id/beats/:beat_id/variables/recheck",
+            post(recheck_beat_variables),
         )
         .route(
             "/:id/variables",
@@ -228,6 +236,28 @@ async fn delete_story_variable(
     let _ = db::get_story(&state.pool, id).await?;
     db::delete_story_variable(&state.pool, id, &key).await?;
     Ok(Json(OkResponse { ok: true }))
+}
+
+async fn summarize_chapter_prose(
+    State(state): State<AppState>,
+    Path((id, chapter_id)): Path<(i64, i64)>,
+) -> AppResult<Json<StoryDetail>> {
+    let job = db::prepare_summarize_chapter(&state.pool, id, chapter_id).await?;
+    enqueue_story_generation(&state.queue, job).await?;
+    Ok(Json(db::get_story_detail(&state.pool, id).await?))
+}
+
+async fn recheck_beat_variables(
+    State(state): State<AppState>,
+    Path((id, chapter_id, beat_id)): Path<(i64, i64, i64)>,
+) -> AppResult<Json<Job>> {
+    let settings = db::get_settings(&state.pool).await?;
+    let job = state
+        .queue
+        .enqueue_story_beat_variable_recheck(&state.pool, id, chapter_id, beat_id, &settings)
+        .await?;
+    db::touch_story(&state.pool, id).await?;
+    Ok(Json(job))
 }
 
 async fn stream_story(

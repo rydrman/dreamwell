@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use dreamwell_types::*;
@@ -12,15 +13,20 @@ use crate::generation_ui::{
     BlockGenerationStatus, GenerationStatusBar,
 };
 use crate::router::{AppRoute, Overlay, StoryNav};
+use crate::story_save::{auto_save_status_html, AutoSaveController, AutoSavePhase};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
 use crate::variables;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Default)]
 pub enum StorySelection {
+    #[default]
     Closed,
     Basics,
     Chapter(i64),
-    Beat { chapter_id: i64, beat_id: i64 },
+    Beat {
+        chapter_id: i64,
+        beat_id: i64,
+    },
 }
 
 fn toggle_selection(current: StorySelection, target: StorySelection) -> StorySelection {
@@ -148,9 +154,16 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     detail_loading_for_fetch.set(false);
                 });
                 let detail_loading_for_stream = detail_loading.clone();
+                let detail_for_stream = detail.clone();
+                let had_active_job = Rc::new(RefCell::new(false));
                 let stream = api::StoryStream::new(story_id, move |payload| {
                     detail_loading_for_stream.set(false);
-                    detail.set(Some(payload.detail.clone()));
+                    let was_active = *had_active_job.borrow();
+                    let now_active = payload.active_job.is_some();
+                    if now_active {
+                        *had_active_job.borrow_mut() = true;
+                    }
+                    detail_for_stream.set(Some(payload.detail.clone()));
                     let current = (*stories).clone();
                     stories.set(
                         current
@@ -164,6 +177,15 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                             })
                             .collect(),
                     );
+                    if was_active && !now_active {
+                        let detail_ref = detail_for_stream.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(d) = api::get_story(story_id).await {
+                                detail_ref.set(Some(d));
+                            }
+                        });
+                        *had_active_job.borrow_mut() = false;
+                    }
                 });
                 *story_stream_nudge.borrow_mut() = Some(stream.nudge());
                 stream_holder = Some(stream);
@@ -321,7 +343,22 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     };
 
     html! {
-        <StoryEditor
+        <>
+            if props.route.overlay() == Some(Overlay::Variables) {
+                <StoryVariablesOverlay
+                    story_id={selected_story_id}
+                    detail={(*detail).clone()}
+                    selection={selection}
+                    on_close={Callback::from({
+                        let on_navigate = props.on_navigate.clone();
+                        let route = props.route.clone();
+                        move |_| {
+                            on_navigate.emit((route.clone().without_overlay(), true));
+                        }
+                    })}
+                />
+            }
+            <StoryEditor
             detail={(*detail).clone()}
             detail_loading={*detail_loading}
             selection={selection}
@@ -372,6 +409,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 }
             })}
         />
+        </>
     }
 }
 
@@ -473,7 +511,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                                 props.bump_stream.clone(),
                             )}
                         >
-                            { if proposing_chapters { "Proposing…" } else { "Chapters" } }
+                            { if proposing_chapters { "Proposing…" } else { "Propose chapters" } }
                         </button>
                         <button
                             class="btn secondary btn-compact header-icon-btn"
@@ -504,6 +542,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                     detail={detail}
                     selection={props.selection}
                     guidance={props.guidance.clone()}
+                    variables_enabled={props.variables_enabled}
                     bump_stream={props.bump_stream.clone()}
                     on_guidance={props.on_guidance.clone()}
                     on_detail={props.on_detail.clone()}
@@ -519,6 +558,7 @@ struct StoryBlockListProps {
     detail: StoryDetail,
     selection: StorySelection,
     guidance: String,
+    variables_enabled: bool,
     bump_stream: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
@@ -545,25 +585,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                 <div class="story-block-body">
                     <StoryBasicsForm
                         story={props.detail.story.clone()}
-                        on_save={Callback::from({
-                            let on_detail = props.on_detail.clone();
-                            move |updated: StoryBasics| {
-                                let on_detail = on_detail.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(d) = api::update_story(updated.id, &StoryUpdate {
-                                        title: Some(updated.title),
-                                        premise: Some(updated.premise),
-                                        tone: Some(updated.tone),
-                                        genre: Some(updated.genre),
-                                        pov: Some(updated.pov),
-                                        length_preset: Some(updated.length_preset),
-                                        notes: Some(updated.notes),
-                                    }).await {
-                                        on_detail.emit(d);
-                                    }
-                                });
-                            }
-                        })}
+                        on_detail={props.on_detail.clone()}
                     />
                     <label class="field" style="margin-top:1rem;">
                         <span class="muted">{"Guidance for proposal"}</span>
@@ -632,6 +654,11 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                             && job.chapter_id == Some(ch_id)
                                             && matches!(job.status, JobStatus::Queued | JobStatus::Running)
                                     })}
+                                    summarizing_chapter={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                        job.job_type == JobType::StoryChapterSummarize
+                                            && job.chapter_id == Some(ch_id)
+                                            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                                    })}
                                     guidance={props.guidance.clone()}
                                     bump_stream={props.bump_stream.clone()}
                                     on_guidance={props.on_guidance.clone()}
@@ -668,6 +695,8 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                                 story_id={story_id}
                                                 chapter_id={ch_id}
                                                 beat={Some(beat.clone())}
+                                                variables_enabled={props.variables_enabled}
+                                                active_job={props.detail.story.active_job.clone()}
                                                 guidance={props.guidance.clone()}
                                                 bump_stream={props.bump_stream.clone()}
                                                 on_guidance={props.on_guidance.clone()}
@@ -794,12 +823,15 @@ impl From<Story> for StoryBasics {
 #[derive(Properties, PartialEq)]
 struct StoryBasicsFormProps {
     story: Story,
-    on_save: Callback<StoryBasics>,
+    on_detail: Callback<StoryDetail>,
 }
 
 #[function_component(StoryBasicsForm)]
 fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
     let draft = use_state(|| StoryBasics::from(props.story.clone()));
+    let save_phase = use_state(|| AutoSavePhase::Synced);
+    let save_error = use_state(|| None::<String>);
+    let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
 
     {
         let draft = draft.clone();
@@ -810,27 +842,132 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
         });
     }
 
+    let schedule_save = {
+        let draft = draft.clone();
+        let on_detail = props.on_detail.clone();
+        let save_controller = save_controller.clone();
+        Callback::from(move |_| {
+            let draft = (*draft).clone();
+            let on_detail = on_detail.clone();
+            let controller = save_controller.clone();
+            let controller_for_save = controller.clone();
+            controller.schedule(move || {
+                let on_detail = on_detail.clone();
+                let controller = controller_for_save.clone();
+                let draft = draft.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api::update_story(
+                        draft.id,
+                        &StoryUpdate {
+                            title: Some(draft.title),
+                            premise: Some(draft.premise),
+                            tone: Some(draft.tone),
+                            genre: Some(draft.genre),
+                            pov: Some(draft.pov),
+                            length_preset: Some(draft.length_preset),
+                            notes: Some(draft.notes),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(d) => {
+                            controller.mark_saved();
+                            on_detail.emit(d);
+                        }
+                        Err(err) => controller.mark_failed(err),
+                    }
+                });
+            });
+        })
+    };
+
     html! {
         <div class="story-form">
             <label class="field"><span class="muted">{"Title"}</span>
-                <input type="text" value={draft.title.clone()} oninput={basics_input(draft.clone(), "title")} />
+                <input type="text" value={draft.title.clone()} oninput={{
+                    let draft = draft.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        let mut next = (*draft).clone();
+                        next.title = input.value();
+                        draft.set(next);
+                        schedule_save.emit(());
+                    })
+                }} />
             </label>
             <label class="field"><span class="muted">{"Premise"}</span>
-                <textarea value={draft.premise.clone()} rows="3" oninput={basics_input(draft.clone(), "premise")} />
+                <textarea value={draft.premise.clone()} rows="3" oninput={{
+                    let draft = draft.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        let mut next = (*draft).clone();
+                        next.premise = input.value();
+                        draft.set(next);
+                        schedule_save.emit(());
+                    })
+                }} />
             </label>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
                 <label class="field"><span class="muted">{"Tone"}</span>
-                    <input type="text" value={draft.tone.clone()} oninput={basics_input(draft.clone(), "tone")} />
+                    <input type="text" value={draft.tone.clone()} oninput={{
+                        let draft = draft.clone();
+                        let schedule_save = schedule_save.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            let mut next = (*draft).clone();
+                            next.tone = input.value();
+                            draft.set(next);
+                            schedule_save.emit(());
+                        })
+                    }} />
                 </label>
                 <label class="field"><span class="muted">{"Genre"}</span>
-                    <input type="text" value={draft.genre.clone()} oninput={basics_input(draft.clone(), "genre")} />
+                    <input type="text" value={draft.genre.clone()} oninput={{
+                        let draft = draft.clone();
+                        let schedule_save = schedule_save.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            let mut next = (*draft).clone();
+                            next.genre = input.value();
+                            draft.set(next);
+                            schedule_save.emit(());
+                        })
+                    }} />
                 </label>
             </div>
             <label class="field"><span class="muted">{"POV"}</span>
-                <input type="text" value={draft.pov.clone()} placeholder="e.g. third person limited" oninput={basics_input(draft.clone(), "pov")} />
+                <input type="text" value={draft.pov.clone()} placeholder="e.g. third person limited" oninput={{
+                    let draft = draft.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        let mut next = (*draft).clone();
+                        next.pov = input.value();
+                        draft.set(next);
+                        schedule_save.emit(());
+                    })
+                }} />
             </label>
             <label class="field"><span class="muted">{"Length"}</span>
-                <select onchange={preset_select(draft.clone())}>
+                <select onchange={{
+                    let draft = draft.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: Event| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        let preset = match input.value().as_str() {
+                            "flash" => LengthPreset::Flash,
+                            "novella" => LengthPreset::Novella,
+                            "novel" => LengthPreset::Novel,
+                            _ => LengthPreset::Short,
+                        };
+                        let mut next = (*draft).clone();
+                        next.length_preset = preset;
+                        draft.set(next);
+                        schedule_save.emit(());
+                    })
+                }}>
                     { for [LengthPreset::Flash, LengthPreset::Short, LengthPreset::Novella, LengthPreset::Novel].iter().map(|p| {
                         let selected = draft.length_preset == *p;
                         html! { <option value={preset_value(*p)} selected={selected}>{ p.label() }</option> }
@@ -838,13 +975,19 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                 </select>
             </label>
             <label class="field"><span class="muted">{"Notes"}</span>
-                <textarea value={draft.notes.clone()} rows="2" oninput={basics_input(draft.clone(), "notes")} />
+                <textarea value={draft.notes.clone()} rows="2" oninput={{
+                    let draft = draft.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        let mut next = (*draft).clone();
+                        next.notes = input.value();
+                        draft.set(next);
+                        schedule_save.emit(());
+                    })
+                }} />
             </label>
-            <button class="btn" onclick={{
-                let draft = draft.clone();
-                let on_save = props.on_save.clone();
-                Callback::from(move |_| on_save.emit((*draft).clone()))
-            }}>{"Save basics"}</button>
+            { auto_save_status_html(*save_phase, (*save_error).as_deref()) }
         </div>
     }
 }
@@ -858,35 +1001,96 @@ fn preset_value(p: LengthPreset) -> &'static str {
     }
 }
 
-fn preset_select(draft: UseStateHandle<StoryBasics>) -> Callback<Event> {
-    Callback::from(move |e: Event| {
-        let input: HtmlInputElement = e.target_unchecked_into();
-        let preset = match input.value().as_str() {
-            "flash" => LengthPreset::Flash,
-            "novella" => LengthPreset::Novella,
-            "novel" => LengthPreset::Novel,
-            _ => LengthPreset::Short,
-        };
-        let mut next = (*draft).clone();
-        next.length_preset = preset;
-        draft.set(next);
-    })
+fn chapter_has_substantial_prose(chapter: &StoryChapter) -> bool {
+    chapter
+        .beats
+        .iter()
+        .any(|beat| beat.content.chars().count() > 80)
 }
 
-fn basics_input(draft: UseStateHandle<StoryBasics>, field: &'static str) -> Callback<InputEvent> {
-    Callback::from(move |e: InputEvent| {
-        let input: HtmlInputElement = e.target_unchecked_into();
-        let mut next = (*draft).clone();
-        match field {
-            "title" => next.title = input.value(),
-            "premise" => next.premise = input.value(),
-            "tone" => next.tone = input.value(),
-            "genre" => next.genre = input.value(),
-            "pov" => next.pov = input.value(),
-            "notes" => next.notes = input.value(),
-            _ => {}
+const MANUAL_VARIABLE_SOURCE: i64 = -1;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VariableWhen {
+    Manual,
+    Beat { chapter_order: i64, beat_order: i64 },
+}
+
+fn variable_when_from_selection(detail: &StoryDetail, selection: StorySelection) -> VariableWhen {
+    match selection {
+        StorySelection::Beat {
+            chapter_id,
+            beat_id,
+        } => detail
+            .chapters
+            .iter()
+            .find(|ch| ch.id == chapter_id)
+            .and_then(|ch| {
+                ch.beats
+                    .iter()
+                    .find(|beat| beat.id == beat_id)
+                    .map(|beat| VariableWhen::Beat {
+                        chapter_order: ch.sort_order,
+                        beat_order: beat.sort_order,
+                    })
+            })
+            .unwrap_or(VariableWhen::Manual),
+        _ => VariableWhen::Manual,
+    }
+}
+
+fn variable_when_label(when: VariableWhen, detail: &StoryDetail) -> String {
+    match when {
+        VariableWhen::Manual => "Story-wide (manual)".to_string(),
+        VariableWhen::Beat {
+            chapter_order,
+            beat_order,
+        } => {
+            let chapter_num = chapter_order + 1;
+            let beat_num = beat_order + 1;
+            if let Some(ch) = detail
+                .chapters
+                .iter()
+                .find(|ch| ch.sort_order == chapter_order)
+            {
+                let beat_title = ch
+                    .beats
+                    .iter()
+                    .find(|beat| beat.sort_order == beat_order)
+                    .map(|beat| {
+                        if beat.title.is_empty() {
+                            format!("Beat {beat_num}")
+                        } else {
+                            beat.title.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| format!("Beat {beat_num}"));
+                format!("Ch {chapter_num} · {beat_title}")
+            } else {
+                format!("Ch {chapter_num} · Beat {beat_num}")
+            }
         }
-        draft.set(next);
+    }
+}
+
+fn variable_when_option_value(when: VariableWhen) -> String {
+    match when {
+        VariableWhen::Manual => "manual".to_string(),
+        VariableWhen::Beat {
+            chapter_order,
+            beat_order,
+        } => format!("{chapter_order}:{beat_order}"),
+    }
+}
+
+fn variable_when_from_option(value: &str) -> Option<VariableWhen> {
+    if value == "manual" {
+        return Some(VariableWhen::Manual);
+    }
+    let (chapter_order, beat_order) = value.split_once(':')?;
+    Some(VariableWhen::Beat {
+        chapter_order: chapter_order.parse().ok()?,
+        beat_order: beat_order.parse().ok()?,
     })
 }
 
@@ -896,6 +1100,8 @@ struct ChapterEditorProps {
     chapter: Option<StoryChapter>,
     #[prop_or(false)]
     proposing_beats: bool,
+    #[prop_or(false)]
+    summarizing_chapter: bool,
     guidance: String,
     bump_stream: Callback<()>,
     on_guidance: Callback<String>,
@@ -909,6 +1115,9 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
     };
     let title = use_state(|| chapter.title.clone());
     let synopsis = use_state(|| chapter.synopsis.clone());
+    let save_phase = use_state(|| AutoSavePhase::Synced);
+    let save_error = use_state(|| None::<String>);
+    let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
 
     {
         let title = title.clone();
@@ -921,19 +1130,108 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
         });
     }
 
+    let schedule_save = {
+        let title = title.clone();
+        let synopsis = synopsis.clone();
+        let on_detail = props.on_detail.clone();
+        let save_controller = save_controller.clone();
+        let story_id = props.story_id;
+        let chapter_id = chapter.id;
+        Callback::from(move |_| {
+            let title = (*title).clone();
+            let synopsis = (*synopsis).clone();
+            let on_detail = on_detail.clone();
+            let controller = save_controller.clone();
+            let controller_for_save = controller.clone();
+            controller.schedule(move || {
+                let on_detail = on_detail.clone();
+                let controller = controller_for_save.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api::update_chapter(
+                        story_id,
+                        chapter_id,
+                        &StoryChapterUpdate {
+                            title: Some(title),
+                            synopsis: Some(synopsis),
+                            sort_order: None,
+                        },
+                    )
+                    .await
+                    {
+                        Ok(d) => {
+                            controller.mark_saved();
+                            on_detail.emit(d);
+                        }
+                        Err(err) => controller.mark_failed(err),
+                    }
+                });
+            });
+        })
+    };
+
     let story_id = props.story_id;
     let chapter_id = chapter.id;
     let proposing_beats = props.proposing_beats;
+    let summarizing_chapter = props.summarizing_chapter;
+    let summary_stale = chapter_has_substantial_prose(&chapter) && !chapter.prose_summary_valid;
 
     html! {
         <div class="story-form">
             <label class="field"><span class="muted">{"Title"}</span>
-                <input type="text" value={(*title).clone()} oninput={string_input(title.clone())} />
+                <input type="text" value={(*title).clone()} oninput={{
+                    let title = title.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        title.set(input.value());
+                        schedule_save.emit(());
+                    })
+                }} />
             </label>
             <label class="field"><span class="muted">{"Synopsis"}</span>
-                <textarea value={(*synopsis).clone()} rows="5" oninput={string_input(synopsis.clone())} />
+                <textarea value={(*synopsis).clone()} rows="5" oninput={{
+                    let synopsis = synopsis.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        synopsis.set(input.value());
+                        schedule_save.emit(());
+                    })
+                }} />
             </label>
-            <label class="field">
+            { auto_save_status_html(*save_phase, (*save_error).as_deref()) }
+            if summary_stale {
+                <p class="message-error" style="font-size:0.85rem;margin-top:0.75rem;" role="alert">
+                    {"Prose summary is out of date — summarize from prose to refresh context for later chapters."}
+                </p>
+            }
+            if chapter.prose_summary_valid {
+                <label class="field" style="margin-top:0.75rem;">
+                    <span class="muted">{"Prose summary"}</span>
+                    <textarea
+                        value={chapter.prose_summary.clone()}
+                        rows="6"
+                        readonly={true}
+                    />
+                </label>
+            }
+            <div class="story-actions" style="margin-top:0.75rem;">
+                <button class="btn secondary" disabled={summarizing_chapter || !chapter_has_substantial_prose(&chapter)} onclick={{
+                    let on_detail = props.on_detail.clone();
+                    let bump_stream = props.bump_stream.clone();
+                    Callback::from(move |_| {
+                        let on_detail = on_detail.clone();
+                        let bump_stream = bump_stream.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(d) = api::summarize_chapter_prose(story_id, chapter_id).await {
+                                on_detail.emit(d);
+                                bump_stream.emit(());
+                            }
+                        });
+                    })
+                }}>{ if summarizing_chapter { "Summarizing…" } else { "Summarize from prose" } }</button>
+            </div>
+            <label class="field" style="margin-top:1rem;">
                 <span class="muted">{"Guidance for proposal"}</span>
                 <textarea
                     placeholder="Optional notes — e.g. split the confrontation into two beats…"
@@ -943,25 +1241,6 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                 />
             </label>
             <div class="story-actions">
-                <button class="btn secondary" onclick={{
-                    let on_detail = props.on_detail.clone();
-                    let title = title.clone();
-                    let synopsis = synopsis.clone();
-                    Callback::from(move |_| {
-                        let on_detail = on_detail.clone();
-                        let title = (*title).clone();
-                        let synopsis = (*synopsis).clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::update_chapter(story_id, chapter_id, &StoryChapterUpdate {
-                                title: Some(title),
-                                synopsis: Some(synopsis),
-                                sort_order: None,
-                            }).await {
-                                on_detail.emit(d);
-                            }
-                        });
-                    })
-                }}>{"Save chapter"}</button>
                 <button class="btn" disabled={proposing_beats} onclick={{
                     let on_detail = props.on_detail.clone();
                     let bump_stream = props.bump_stream.clone();
@@ -1014,6 +1293,10 @@ struct BeatEditorProps {
     story_id: i64,
     chapter_id: i64,
     beat: Option<StoryBeat>,
+    #[prop_or(false)]
+    variables_enabled: bool,
+    #[prop_or_default]
+    active_job: Option<Job>,
     guidance: String,
     bump_stream: Callback<()>,
     on_guidance: Callback<String>,
@@ -1029,6 +1312,9 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let synopsis = use_state(|| beat.synopsis.clone());
     let content = use_state(|| beat.content.clone());
     let user_edited_prose = use_state(|| false);
+    let save_phase = use_state(|| AutoSavePhase::Synced);
+    let save_error = use_state(|| None::<String>);
+    let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
 
     {
         let title = title.clone();
@@ -1049,21 +1335,27 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         let content = content.clone();
         let user_edited_prose = user_edited_prose.clone();
         let server_content = beat.content.clone();
-        let job_status = beat.job_status;
         use_effect_with(
-            (beat.id, server_content, job_status),
-            move |(_, server_content, job_status)| {
-                let generation_active = matches!(
-                    job_status,
-                    Some(JobStatus::Running) | Some(JobStatus::Queued)
-                );
-                if generation_active && !*user_edited_prose {
+            (beat.id, server_content.clone()),
+            move |(_, server_content)| {
+                if !*user_edited_prose {
                     content.set(server_content.clone());
                 }
                 || ()
             },
         );
     }
+
+    let prose_generating = props.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryBeatProse
+            && job.beat_id == Some(beat.id)
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
+    let rechecking_variables = props.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryBeatVariableRecheck
+            && job.beat_id == Some(beat.id)
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
 
     let queued = matches!(beat.job_status, Some(JobStatus::Queued));
     let streaming = matches!(beat.job_status, Some(JobStatus::Running));
@@ -1073,6 +1365,45 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let story_id = props.story_id;
     let chapter_id = props.chapter_id;
     let beat_id = beat.id;
+
+    let schedule_save = {
+        let title = title.clone();
+        let synopsis = synopsis.clone();
+        let content = content.clone();
+        let on_detail = props.on_detail.clone();
+        let save_controller = save_controller.clone();
+        Callback::from(move |include_content: bool| {
+            let title = (*title).clone();
+            let synopsis = (*synopsis).clone();
+            let content = (*content).clone();
+            let on_detail = on_detail.clone();
+            let controller = save_controller.clone();
+            let save_content = include_content && !prose_generating;
+            let controller_for_save = controller.clone();
+            controller.schedule(move || {
+                let on_detail = on_detail.clone();
+                let controller = controller_for_save.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let mut update = StoryBeatUpdate {
+                        title: Some(title),
+                        synopsis: Some(synopsis),
+                        content: None,
+                        sort_order: None,
+                    };
+                    if save_content {
+                        update.content = Some(content);
+                    }
+                    match api::update_beat(story_id, chapter_id, beat_id, &update).await {
+                        Ok(d) => {
+                            controller.mark_saved();
+                            on_detail.emit(d);
+                        }
+                        Err(err) => controller.mark_failed(err),
+                    }
+                });
+            });
+        })
+    };
 
     let prose_display = if prose_failure_only || ((*content).is_empty() && queued) {
         String::new()
@@ -1090,13 +1421,32 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         ""
     };
 
+    let show_recheck = props.variables_enabled && !(*content).trim().is_empty();
+    let variable_update_count = beat.variable_updates.len();
+
     html! {
         <div class="story-form">
             <label class="field"><span class="muted">{"Title"}</span>
-                <input type="text" value={(*title).clone()} oninput={string_input(title.clone())} />
+                <input type="text" value={(*title).clone()} oninput={{
+                    let title = title.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        title.set(input.value());
+                        schedule_save.emit(false);
+                    })
+                }} />
             </label>
             <label class="field"><span class="muted">{"Synopsis"}</span>
-                <textarea value={(*synopsis).clone()} rows="3" oninput={string_input(synopsis.clone())} />
+                <textarea value={(*synopsis).clone()} rows="3" oninput={{
+                    let synopsis = synopsis.clone();
+                    let schedule_save = schedule_save.clone();
+                    Callback::from(move |e: InputEvent| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        synopsis.set(input.value());
+                        schedule_save.emit(false);
+                    })
+                }} />
             </label>
             <label class="field"><span class="muted">{"Prose"}</span>
                 <textarea
@@ -1108,7 +1458,17 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     placeholder={prose_placeholder}
                     rows="12"
                     readonly={generation_active && !*user_edited_prose}
-                    oninput={prose_input(content.clone(), user_edited_prose.clone())}
+                    oninput={{
+                        let content = content.clone();
+                        let user_edited_prose = user_edited_prose.clone();
+                        let schedule_save = schedule_save.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            user_edited_prose.set(true);
+                            content.set(input.value());
+                            schedule_save.emit(true);
+                        })
+                    }}
                 />
                 if queued && (*content).is_empty() && !prose_failure_only {
                     <span class="muted" style="font-size:0.85rem;">{"Waiting in queue…"}</span>
@@ -1123,6 +1483,12 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     </div>
                 }
             </label>
+            if variable_update_count > 0 {
+                <p class="muted" style="font-size:0.85rem;">
+                    { format!("Updated variables ({variable_update_count})") }
+                </p>
+            }
+            { auto_save_status_html(*save_phase, (*save_error).as_deref()) }
             <label class="field">
                 <span class="muted">{"Guidance for generation"}</span>
                 <textarea
@@ -1133,28 +1499,6 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                 />
             </label>
             <div class="story-actions">
-                <button class="btn secondary" onclick={{
-                    let on_detail = props.on_detail.clone();
-                    let title = title.clone();
-                    let synopsis = synopsis.clone();
-                    let content = content.clone();
-                    Callback::from(move |_| {
-                        let on_detail = on_detail.clone();
-                        let title = (*title).clone();
-                        let synopsis = (*synopsis).clone();
-                        let content = (*content).clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::update_beat(story_id, chapter_id, beat_id, &StoryBeatUpdate {
-                                title: Some(title),
-                                synopsis: Some(synopsis),
-                                content: Some(content),
-                                sort_order: None,
-                            }).await {
-                                on_detail.emit(d);
-                            }
-                        });
-                    })
-                }} disabled={generation_active}>{"Save beat"}</button>
                 <button class="btn" disabled={generation_active} onclick={{
                     let on_detail = props.on_detail.clone();
                     let bump_stream = props.bump_stream.clone();
@@ -1171,6 +1515,24 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                         });
                     })
                 }}>{"Generate prose"}</button>
+                if show_recheck {
+                    <button class="btn secondary" disabled={rechecking_variables || generation_active} onclick={{
+                        let on_detail = props.on_detail.clone();
+                        let bump_stream = props.bump_stream.clone();
+                        Callback::from(move |_| {
+                            let on_detail = on_detail.clone();
+                            let bump_stream = bump_stream.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if api::recheck_beat_variables(story_id, chapter_id, beat_id).await.is_ok() {
+                                    bump_stream.emit(());
+                                    if let Ok(d) = api::get_story(story_id).await {
+                                        on_detail.emit(d);
+                                    }
+                                }
+                            });
+                        })
+                    }}>{ if rechecking_variables { "Rechecking…" } else { "Recheck variables" } }</button>
+                }
                 <button class="btn secondary text-danger btn-compact" onclick={{
                     let on_detail = props.on_detail.clone();
                     Callback::from(move |_| {
@@ -1186,17 +1548,6 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
             </div>
         </div>
     }
-}
-
-fn prose_input(
-    state: UseStateHandle<String>,
-    user_edited: UseStateHandle<bool>,
-) -> Callback<InputEvent> {
-    Callback::from(move |e: InputEvent| {
-        let input: HtmlInputElement = e.target_unchecked_into();
-        user_edited.set(true);
-        state.set(input.value());
-    })
 }
 
 fn string_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
@@ -1217,6 +1568,10 @@ fn format_variable_source(chapter_order: i64, beat_order: i64) -> String {
 #[derive(Properties, PartialEq)]
 pub struct StoryVariablesOverlayProps {
     pub story_id: Option<i64>,
+    #[prop_or_default]
+    pub detail: Option<StoryDetail>,
+    #[prop_or_default]
+    pub selection: StorySelection,
     pub on_close: Callback<()>,
 }
 
@@ -1226,6 +1581,27 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
     let key = use_state(String::new);
     let value = use_state(String::new);
     let editing_key = use_state(|| None::<String>);
+    let when = use_state(|| {
+        props
+            .detail
+            .as_ref()
+            .map(|detail| variable_when_from_selection(detail, props.selection))
+            .unwrap_or(VariableWhen::Manual)
+    });
+
+    {
+        let when = when.clone();
+        let detail = props.detail.clone();
+        let selection = props.selection;
+        use_effect_with((detail.clone(), selection), move |(detail, selection)| {
+            if let Some(detail) = detail.as_ref() {
+                when.set(variable_when_from_selection(detail, *selection));
+            } else {
+                when.set(VariableWhen::Manual);
+            }
+            || ()
+        });
+    }
 
     {
         let variables = variables.clone();
@@ -1256,6 +1632,22 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
         };
     };
 
+    let detail = props.detail.as_ref();
+    let when_options: Vec<VariableWhen> = {
+        let mut options = vec![VariableWhen::Manual];
+        if let Some(detail) = detail {
+            for chapter in &detail.chapters {
+                for beat in &chapter.beats {
+                    options.push(VariableWhen::Beat {
+                        chapter_order: chapter.sort_order,
+                        beat_order: beat.sort_order,
+                    });
+                }
+            }
+        }
+        options
+    };
+
     html! {
         <div class="settings-popover panel-overlay">
             <div class="settings-header">
@@ -1278,12 +1670,23 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                                         let key = key.clone();
                                         let value = value.clone();
                                         let editing_key = editing_key.clone();
+                                        let when = when.clone();
                                         let variable_key = variable_key.clone();
                                         let variable_value = variable_value.clone();
+                                        let source_chapter_order = v.source_chapter_order;
+                                        let source_beat_order = v.source_beat_order;
                                         Callback::from(move |_| {
                                             key.set(variable_key.clone());
                                             value.set(variable_value.clone());
                                             editing_key.set(Some(variable_key.clone()));
+                                            if source_chapter_order == MANUAL_VARIABLE_SOURCE {
+                                                when.set(VariableWhen::Manual);
+                                            } else {
+                                                when.set(VariableWhen::Beat {
+                                                    chapter_order: source_chapter_order,
+                                                    beat_order: source_beat_order,
+                                                });
+                                            }
                                         })
                                     }}>{"edit"}</button>
                                     <button class="btn secondary btn-compact" onclick={{
@@ -1307,6 +1710,33 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                     }
                 }) }
                 <div class="variable-form">
+                    <label class="field">
+                        <span class="muted">{"When"}</span>
+                        <select onchange={{
+                            let when = when.clone();
+                            Callback::from(move |e: Event| {
+                                let input: HtmlInputElement = e.target_unchecked_into();
+                                if let Some(next) = variable_when_from_option(&input.value()) {
+                                    when.set(next);
+                                }
+                            })
+                        }}>
+                            { for when_options.iter().map(|option| {
+                                let selected = *option == *when;
+                                let label = detail
+                                    .map(|detail| variable_when_label(*option, detail))
+                                    .unwrap_or_else(|| "Story-wide (manual)".to_string());
+                                html! {
+                                    <option
+                                        value={variable_when_option_value(*option)}
+                                        selected={selected}
+                                    >
+                                        { label }
+                                    </option>
+                                }
+                            }) }
+                        </select>
+                    </label>
                     <input type="text" placeholder="Key" value={(*key).clone()} oninput={string_input(key.clone())} />
                     <textarea placeholder="Value" value={(*value).clone()} rows="3" oninput={string_input(value.clone())} />
                     <button class="btn" onclick={{
@@ -1314,14 +1744,27 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                         let value = value.clone();
                         let editing_key = editing_key.clone();
                         let variables = variables.clone();
+                        let when = *when;
                         Callback::from(move |_| {
                             if (*key).trim().is_empty() {
                                 return;
                             }
                             let variables = variables.clone();
+                            let (source_chapter_order, source_beat_order) = match when {
+                                VariableWhen::Manual => (
+                                    Some(MANUAL_VARIABLE_SOURCE),
+                                    Some(MANUAL_VARIABLE_SOURCE),
+                                ),
+                                VariableWhen::Beat {
+                                    chapter_order,
+                                    beat_order,
+                                } => (Some(chapter_order), Some(beat_order)),
+                            };
                             let payload = StoryVariableUpdate {
                                 key: (*key).trim().to_string(),
                                 value: (*value).clone(),
+                                source_chapter_order,
+                                source_beat_order,
                             };
                             let editing = (*editing_key).clone();
                             let key = key.clone();

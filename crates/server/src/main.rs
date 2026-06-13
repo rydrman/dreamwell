@@ -8,6 +8,8 @@ mod prompts;
 mod queue;
 mod routes;
 mod story_prompts;
+mod story_summarize;
+mod story_variable_recheck;
 mod story_variables;
 mod summarize;
 mod thoughts;

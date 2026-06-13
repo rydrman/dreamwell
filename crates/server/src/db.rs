@@ -82,6 +82,8 @@ pub(crate) fn parse_job_type(s: &str) -> JobType {
         "story_beat_outline" => JobType::StoryBeatOutline,
         "story_propose_beats" => JobType::StoryProposeBeats,
         "story_beat_prose" => JobType::StoryBeatProse,
+        "story_chapter_summarize" => JobType::StoryChapterSummarize,
+        "story_beat_variable_recheck" => JobType::StoryBeatVariableRecheck,
         "chat_summarize" => JobType::ChatSummarize,
         "chat_variable_recheck" => JobType::ChatVariableRecheck,
         _ => JobType::ChatMessage,
@@ -98,6 +100,8 @@ pub(crate) fn job_type_str(job_type: JobType) -> &'static str {
         JobType::StoryBeatOutline => "story_beat_outline",
         JobType::StoryProposeBeats => "story_propose_beats",
         JobType::StoryBeatProse => "story_beat_prose",
+        JobType::StoryChapterSummarize => "story_chapter_summarize",
+        JobType::StoryBeatVariableRecheck => "story_beat_variable_recheck",
     }
 }
 
