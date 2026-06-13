@@ -8,6 +8,8 @@ mod message_followups;
 mod prompts;
 mod queue;
 mod routes;
+mod story_beat_mechanical;
+mod story_beat_prose_recheck;
 mod story_prompts;
 mod story_summarize;
 mod story_variable_recheck;

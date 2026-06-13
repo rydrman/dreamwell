@@ -26,6 +26,8 @@ pub enum JobType {
     StoryBeatOutline,
     StoryProposeBeats,
     StoryBeatProse,
+    StoryBeatMechanical,
+    StoryBeatProseRecheck,
     StoryChapterSummarize,
     StoryBeatVariableRecheck,
 }
@@ -294,6 +296,8 @@ pub struct StoryBeat {
     pub chapter_id: i64,
     pub title: String,
     pub synopsis: String,
+    #[serde(default)]
+    pub mechanical: String,
     pub content: String,
     #[serde(default)]
     pub variable_updates: Vec<BeatVariableUpdate>,
@@ -390,6 +394,8 @@ pub struct StoryBeatCreate {
     #[serde(default)]
     pub synopsis: String,
     #[serde(default)]
+    pub mechanical: String,
+    #[serde(default)]
     pub content: String,
     pub sort_order: Option<i64>,
 }
@@ -398,6 +404,7 @@ pub struct StoryBeatCreate {
 pub struct StoryBeatUpdate {
     pub title: Option<String>,
     pub synopsis: Option<String>,
+    pub mechanical: Option<String>,
     pub content: Option<String>,
     pub sort_order: Option<i64>,
 }
