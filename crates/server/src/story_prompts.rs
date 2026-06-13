@@ -34,6 +34,70 @@ pub fn prior_beat_synopses(beats: &[StoryBeat], before_order: i64) -> String {
         .join("\n")
 }
 
+/// Maximum characters of prior prose to include when generating a beat.
+const PRIOR_PROSE_CHAR_LIMIT: usize = 16_000;
+
+pub fn prior_beat_prose(beats: &[StoryBeat], before_order: i64) -> String {
+    let sections: Vec<String> = beats
+        .iter()
+        .filter(|b| b.sort_order < before_order && !b.content.trim().is_empty())
+        .map(|b| {
+            format!(
+                "Beat {} — {}\n{}",
+                b.sort_order + 1,
+                b.title,
+                b.content.trim()
+            )
+        })
+        .collect();
+    cap_prior_prose(sections, PRIOR_PROSE_CHAR_LIMIT)
+}
+
+pub fn prior_chapter_closing_prose(chapters: &[StoryChapter], chapter_order: i64) -> String {
+    let Some(prior_chapter) = chapters
+        .iter()
+        .filter(|c| c.sort_order < chapter_order)
+        .max_by_key(|c| c.sort_order)
+    else {
+        return String::new();
+    };
+    prior_chapter
+        .beats
+        .iter()
+        .max_by_key(|b| b.sort_order)
+        .map(|b| b.content.trim())
+        .filter(|content| !content.is_empty())
+        .map(str::to_string)
+        .unwrap_or_default()
+}
+
+fn cap_prior_prose(mut sections: Vec<String>, max_chars: usize) -> String {
+    if sections.is_empty() {
+        return String::new();
+    }
+    let mut combined = sections.join("\n\n");
+    while combined.chars().count() > max_chars && sections.len() > 1 {
+        sections.remove(0);
+        combined = sections.join("\n\n");
+    }
+    if combined.chars().count() <= max_chars {
+        return combined;
+    }
+    truncate_prose_from_start(&combined, max_chars)
+}
+
+fn truncate_prose_from_start(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let skip = char_count - max_chars;
+    format!(
+        "[…earlier prose truncated…]\n\n{}",
+        text.chars().skip(skip).collect::<String>()
+    )
+}
+
 pub fn build_chapter_outline_messages(
     story: &Story,
     chapters: &[StoryChapter],
@@ -112,19 +176,48 @@ pub fn build_beat_prose_messages(
     chapter: &StoryChapter,
     beat: &StoryBeat,
     guidance: &str,
+    variables: &[(String, String)],
+    variables_enabled: bool,
 ) -> Vec<Value> {
     let prior_chapters = prior_chapter_synopses(chapters, chapter.sort_order);
     let prior_beats = prior_beat_synopses(&chapter.beats, beat.sort_order);
+    let prior_prose = prior_beat_prose(&chapter.beats, beat.sort_order);
+    let chapter_opening = if beat.sort_order == 0 {
+        prior_chapter_closing_prose(chapters, chapter.sort_order)
+    } else {
+        String::new()
+    };
     let mut user = format!(
-        "Write the prose for this beat.\n\nBeat title: {}\nBeat synopsis: {}\n\nChapter synopsis: {}",
-        beat.title, beat.synopsis, chapter.synopsis
+        "Write the prose for beat {} only.\n\n\
+         Beat title: {}\n\
+         Beat synopsis: {}\n\n\
+         Scope: Cover ONLY what this beat's synopsis describes. \
+         Stop when this beat ends — do not advance into later beats or resolve plot points reserved for them. \
+         The chapter synopsis below describes the whole chapter arc; use it for tone and direction only, not as a checklist for this beat.\n\n\
+         Chapter synopsis (background — may describe later beats): {}",
+        beat.sort_order + 1,
+        beat.title,
+        beat.synopsis,
+        chapter.synopsis
     );
+    if !chapter_opening.is_empty() {
+        user.push_str("\n\nEnd of previous chapter (continue from here):\n");
+        user.push_str(&chapter_opening);
+    }
+    if !prior_prose.is_empty() {
+        user.push_str(
+            "\n\nPrior beats in this chapter (written prose — canonical; match names, facts, and events):\n",
+        );
+        user.push_str(&prior_prose);
+    }
     if !prior_chapters.is_empty() {
         user.push_str("\n\nPrior chapters (synopses only):\n");
         user.push_str(&prior_chapters);
     }
     if !prior_beats.is_empty() {
-        user.push_str("\n\nPrior beats in this chapter (synopses only):\n");
+        user.push_str(
+            "\n\nPrior beats in this chapter (synopses — written prose above takes precedence):\n",
+        );
         user.push_str(&prior_beats);
     }
     if !guidance.trim().is_empty() {
@@ -132,13 +225,26 @@ pub fn build_beat_prose_messages(
         user.push_str(guidance.trim());
     }
     user.push_str("\n\nWrite only the narrative prose for this beat. No headings, labels, or meta commentary.");
+
+    let variables_text = crate::story_variables::format_story_variables(variables);
+    let mut system = format!(
+        "You are a fiction writer. Match the story tone and POV. \
+         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
+        story_basics(story)
+    );
+    if !variables_text.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&variables_text);
+    }
+    if variables_enabled {
+        system.push_str("\n\n");
+        system.push_str(crate::story_variables::story_variables_instruction());
+    }
+
     vec![
         serde_json::json!({
             "role": "system",
-            "content": format!(
-                "You are a fiction writer. Match the story tone and POV.\n\n{}",
-                story_basics(story)
-            ),
+            "content": system,
         }),
         serde_json::json!({ "role": "user", "content": user }),
     ]
@@ -342,4 +448,118 @@ pub fn parse_outline_json(text: &str) -> Option<(String, String)> {
         return None;
     }
     Some((title, synopsis))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use dreamwell_types::LengthPreset;
+
+    fn sample_story() -> Story {
+        Story {
+            id: 1,
+            title: "Test Story".to_string(),
+            premise: "A hero finds a map.".to_string(),
+            tone: "Adventurous".to_string(),
+            genre: "Fantasy".to_string(),
+            pov: "Third person".to_string(),
+            length_preset: LengthPreset::Short,
+            notes: String::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            active_job: None,
+            queued_jobs: 0,
+        }
+    }
+
+    fn sample_beat(order: i64, title: &str, synopsis: &str, content: &str) -> StoryBeat {
+        StoryBeat {
+            id: order + 1,
+            chapter_id: 1,
+            title: title.to_string(),
+            synopsis: synopsis.to_string(),
+            content: content.to_string(),
+            variable_updates: Vec::new(),
+            sort_order: order,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            job_status: None,
+        }
+    }
+
+    fn sample_chapter(order: i64, beats: Vec<StoryBeat>) -> StoryChapter {
+        StoryChapter {
+            id: order + 1,
+            story_id: 1,
+            title: format!("Chapter {}", order + 1),
+            synopsis: format!("Chapter {} synopsis", order + 1),
+            sort_order: order,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            beats,
+        }
+    }
+
+    #[test]
+    fn prior_beat_prose_includes_only_earlier_beats() {
+        let beats = vec![
+            sample_beat(0, "Arrival", "They arrive.", "The wagon rolled in."),
+            sample_beat(1, "Market", "They shop.", "She bought bread."),
+            sample_beat(2, "Fight", "A brawl.", ""),
+        ];
+        let prose = prior_beat_prose(&beats, 2);
+        assert!(prose.contains("The wagon rolled in."));
+        assert!(prose.contains("She bought bread."));
+        assert!(!prose.contains("brawl"));
+    }
+
+    #[test]
+    fn prior_chapter_closing_prose_uses_last_beat() {
+        let chapters = vec![
+            sample_chapter(
+                0,
+                vec![
+                    sample_beat(0, "Start", "Begin.", "Opening line."),
+                    sample_beat(1, "End", "Finish.", "Closing line."),
+                ],
+            ),
+            sample_chapter(1, vec![sample_beat(0, "Next", "Continue.", "")]),
+        ];
+        assert_eq!(prior_chapter_closing_prose(&chapters, 1), "Closing line.");
+    }
+
+    #[test]
+    fn beat_prose_prompt_includes_prior_prose_and_scope_guard() {
+        let chapter = sample_chapter(
+            0,
+            vec![
+                sample_beat(
+                    0,
+                    "Arrival",
+                    "They arrive at the inn.",
+                    "The wagon rolled to a stop.",
+                ),
+                sample_beat(1, "Market", "She haggles for bread.", ""),
+            ],
+        );
+        let beat = chapter.beats[1].clone();
+        let messages = build_beat_prose_messages(
+            &sample_story(),
+            &[chapter.clone()],
+            &chapter,
+            &beat,
+            "",
+            &[],
+            false,
+        );
+        let user = messages[1]["content"].as_str().unwrap();
+        let system = messages[0]["content"].as_str().unwrap();
+
+        assert!(user.contains("Write the prose for beat 2 only"));
+        assert!(user.contains("do not advance into later beats"));
+        assert!(user.contains("The wagon rolled to a stop."));
+        assert!(user.contains("written prose — canonical"));
+        assert!(system.contains("Respect established details in prior prose"));
+    }
 }

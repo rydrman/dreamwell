@@ -610,6 +610,38 @@ pub async fn generate_prose(
     .await
 }
 
+pub async fn get_story_variables(story_id: i64) -> Result<Vec<StoryVariable>, String> {
+    json(api_request(
+        "GET",
+        &format!("/api/stories/{story_id}/variables"),
+    ))
+    .await
+}
+
+pub async fn upsert_story_variable(
+    story_id: i64,
+    payload: &StoryVariableUpdate,
+) -> Result<StoryVariable, String> {
+    json_body(
+        "PUT",
+        &format!("/api/stories/{story_id}/variables"),
+        payload,
+    )
+    .await
+}
+
+pub async fn delete_story_variable(story_id: i64, key: &str) -> Result<(), String> {
+    let encoded = js_sys::encode_uri_component(key);
+    api_request(
+        "DELETE",
+        &format!("/api/stories/{story_id}/variables/{encoded}"),
+    )
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub struct StoryStream {
     inner: Rc<ReconnectingEventSource>,
 }

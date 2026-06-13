@@ -32,6 +32,11 @@ pub(crate) fn visible_text_without_variables(text: &str) -> String {
     strip_variable_markup(text, false)
 }
 
+/// Strips variable tags for display or storage (e.g. story beat prose).
+pub fn strip_variables_for_display(text: &str, hold_incomplete: bool) -> String {
+    strip_variable_markup(text, hold_incomplete)
+}
+
 fn strip_variable_markup(text: &str, hold_incomplete: bool) -> String {
     let mut working = text.to_string();
     working = strip_delete_tags(&working);
