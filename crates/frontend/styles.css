@@ -124,9 +124,10 @@ button {
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  top: var(--app-topbar-height);
+  top: var(--sidebar-inset-top, var(--app-topbar-height));
   z-index: 15;
   background: var(--overlay);
+  transition: top 0.2s ease;
 }
 
 .modal {
@@ -358,12 +359,12 @@ button {
   display: flex;
   flex-direction: column;
   position: fixed;
-  top: var(--app-topbar-height);
+  top: var(--sidebar-inset-top, var(--app-topbar-height));
   bottom: 0;
   left: 0;
   z-index: 19;
   transform: translateX(-110%);
-  transition: transform 0.2s ease;
+  transition: transform 0.2s ease, top 0.2s ease;
 }
 
 .app-shell.pane-sidebar .sidebar {
