@@ -1,0 +1,1 @@
+ALTER TABLE story_beats ADD COLUMN mechanical TEXT NOT NULL DEFAULT '';

@@ -105,6 +105,8 @@ pub fn job_running_label(job_type: JobType) -> &'static str {
         JobType::StoryProposeChapters => "proposing chapters…",
         JobType::StoryProposeBeats => "proposing beats…",
         JobType::StoryBeatProse => "writing prose…",
+        JobType::StoryBeatMechanical => "building mechanical plan…",
+        JobType::StoryBeatProseRecheck => "aligning prose…",
         JobType::StoryChapterOutline => "outlining chapter…",
         JobType::StoryBeatOutline => "outlining beats…",
         JobType::StoryChapterSummarize => "summarizing chapter…",

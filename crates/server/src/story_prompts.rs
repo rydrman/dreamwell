@@ -189,6 +189,54 @@ pub fn build_beat_outline_messages(
     ]
 }
 
+pub fn build_beat_mechanical_messages(
+    story: &Story,
+    chapters: &[StoryChapter],
+    chapter: &StoryChapter,
+    beat: &StoryBeat,
+    guidance: &str,
+) -> Vec<Value> {
+    let prior_chapters = prior_chapter_synopses(chapters, chapter.sort_order);
+    let prior_beats = prior_beat_synopses(&chapter.beats, beat.sort_order);
+    let mut user = format!(
+        "Expand beat {} (\"{}\") into an exhaustive mechanical beat plan.\n\n\
+         Beat synopsis (source — expand this, do not replace with different plot):\n{}\n\n\
+         Chapter synopsis:\n{}",
+        beat.sort_order + 1,
+        beat.title,
+        beat.synopsis.trim(),
+        chapter.synopsis,
+    );
+    if !prior_chapters.is_empty() {
+        user.push_str("\n\nPrior chapters (synopses only):\n");
+        user.push_str(&prior_chapters);
+    }
+    if !prior_beats.is_empty() {
+        user.push_str("\n\nPrior beats in this chapter:\n");
+        user.push_str(&prior_beats);
+    }
+    if !guidance.trim().is_empty() {
+        user.push_str("\n\nGuidance from the author:\n");
+        user.push_str(guidance.trim());
+    }
+    user.push_str(
+        "\n\nOutput only the mechanical plan: short bullet lines or terse clauses, one per event or beat of action. \
+         Include character names, objects, locations, and cause/effect. \
+         No scene narration, dialogue, or literary prose. No headings or meta commentary.",
+    );
+
+    vec![
+        serde_json::json!({
+            "role": "system",
+            "content": format!(
+                "You are a story structure assistant. Produce a dense mechanical plan from a beat synopsis.\n\n{}",
+                story_basics(story)
+            ),
+        }),
+        serde_json::json!({ "role": "user", "content": user }),
+    ]
+}
+
 pub fn build_beat_prose_messages(
     story: &Story,
     chapters: &[StoryChapter],
@@ -209,13 +257,15 @@ pub fn build_beat_prose_messages(
     let mut user = format!(
         "Write the prose for beat {} only.\n\n\
          Beat title: {}\n\
-         Beat synopsis: {}\n\n\
-         Scope: Cover ONLY what this beat's synopsis describes. \
+         Mechanical beat plan:\n{}\n\n\
+         Scope: Cover ONLY what the mechanical plan lists, in order. \
          Stop when this beat ends — do not advance into later beats or resolve plot points reserved for them. \
-         The chapter synopsis below describes the whole chapter arc; use it for tone and direction only, not as a checklist for this beat.\n\n\
+         The beat synopsis and chapter synopsis below are background context for tone and direction only — not a checklist.\n\n\
+         Beat synopsis (background): {}\n\
          Chapter synopsis (background — may describe later beats): {}",
         beat.sort_order + 1,
         beat.title,
+        beat.mechanical.trim(),
         beat.synopsis,
         chapter.synopsis
     );
@@ -498,6 +548,7 @@ mod tests {
             chapter_id: 1,
             title: title.to_string(),
             synopsis: synopsis.to_string(),
+            mechanical: String::new(),
             content: content.to_string(),
             variable_updates: Vec::new(),
             sort_order: order,
@@ -565,7 +616,10 @@ mod tests {
                 sample_beat(1, "Market", "She haggles for bread.", ""),
             ],
         );
-        let beat = chapter.beats[1].clone();
+        let mut beat = chapter.beats[1].clone();
+        beat.mechanical =
+            "- She enters the market.\n- She haggles for bread.\n- She leaves with a loaf."
+                .to_string();
         let messages = build_beat_prose_messages(
             &sample_story(),
             &[chapter.clone()],
@@ -579,6 +633,8 @@ mod tests {
         let system = messages[0]["content"].as_str().unwrap();
 
         assert!(user.contains("Write the prose for beat 2 only"));
+        assert!(user.contains("Mechanical beat plan:"));
+        assert!(user.contains("She haggles for bread"));
         assert!(user.contains("do not advance into later beats"));
         assert!(user.contains("The wagon rolled to a stop."));
         assert!(user.contains("written prose — canonical"));
