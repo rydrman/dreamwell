@@ -9,8 +9,9 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::generation_ui::{
-    beat_block_status, chapter_block_status, generation_error_from_content, story_notice,
-    BlockGenerationStatus, GenerationStatusBar,
+    beat_block_status, chapter_block_status, chapter_has_substantial_prose, chapter_summary_stale,
+    generation_error_from_content, is_stale_summary_error, stale_chapters_in_story, story_notice,
+    BlockGenerationStatus, GenerationStatusBar, StaleChapterItem,
 };
 use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::story_save::{auto_save_status_html, AutoSaveController, AutoSavePhase};
@@ -431,6 +432,9 @@ struct StoryEditorProps {
 
 #[function_component(StoryEditor)]
 fn story_editor(props: &StoryEditorProps) -> Html {
+    let stale_dialog_action = use_state(|| None::<String>);
+    let queueing_stale = use_state(|| false);
+
     if props.detail_loading {
         return html! {
             <>
@@ -461,6 +465,18 @@ fn story_editor(props: &StoryEditorProps) -> Html {
             && matches!(job.status, JobStatus::Queued | JobStatus::Running)
     });
     let generation_notice = story_notice(&detail);
+
+    let on_stale_error = {
+        let stale_dialog_action = stale_dialog_action.clone();
+        Callback::from(move |action: String| stale_dialog_action.set(Some(action)))
+    };
+
+    let close_stale_dialog = {
+        let stale_dialog_action = stale_dialog_action.clone();
+        Callback::from(move |_| stale_dialog_action.set(None))
+    };
+
+    let stale_chapters = stale_chapters_in_story(&detail);
 
     html! {
         <>
@@ -541,7 +557,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
             }
             <div class="story-editor">
                 <StoryBlockList
-                    detail={detail}
+                    detail={detail.clone()}
                     selection={props.selection}
                     guidance={props.guidance.clone()}
                     variables_enabled={props.variables_enabled}
@@ -549,8 +565,61 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                     on_guidance={props.on_guidance.clone()}
                     on_detail={props.on_detail.clone()}
                     on_selection={props.on_selection.clone()}
+                    on_stale_error={on_stale_error.clone()}
                 />
             </div>
+            if let Some(failed_action) = (*stale_dialog_action).clone() {
+                <StaleChaptersModal
+                    failed_action={failed_action}
+                    chapters={stale_chapters.clone()}
+                    queueing={*queueing_stale}
+                    on_close={close_stale_dialog.clone()}
+                    on_queue_all={Callback::from({
+                        let story_id = detail.story.id;
+                        let chapters = stale_chapters.clone();
+                        let on_detail = props.on_detail.clone();
+                        let bump_stream = props.bump_stream.clone();
+                        let queueing_stale = queueing_stale.clone();
+                        let stale_dialog_action = stale_dialog_action.clone();
+                        move |_| {
+                            if chapters.is_empty() || *queueing_stale {
+                                return;
+                            }
+                            queueing_stale.set(true);
+                            let on_detail = on_detail.clone();
+                            let bump_stream = bump_stream.clone();
+                            let queueing_stale = queueing_stale.clone();
+                            let stale_dialog_action = stale_dialog_action.clone();
+                            let chapter_ids = chapters.iter().map(|ch| ch.id).collect::<Vec<_>>();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let mut queued = 0usize;
+                                let mut errors = Vec::<String>::new();
+                                for chapter_id in chapter_ids {
+                                    match api::summarize_chapter_prose(story_id, chapter_id).await {
+                                        Ok(d) => {
+                                            on_detail.emit(d);
+                                            queued += 1;
+                                        }
+                                        Err(err) => errors.push(err),
+                                    }
+                                }
+                                queueing_stale.set(false);
+                                if queued > 0 {
+                                    bump_stream.emit(());
+                                    stale_dialog_action.set(None);
+                                }
+                                if !errors.is_empty() {
+                                    alert_story_action_error(
+                                        "queue stale chapter summaries",
+                                        errors.join("; "),
+                                        None,
+                                    );
+                                }
+                            });
+                        }
+                    })}
+                />
+            }
         </>
     }
 }
@@ -565,6 +634,7 @@ struct StoryBlockListProps {
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
+    on_stale_error: Callback<String>,
 }
 
 #[function_component(StoryBlockList)]
@@ -634,6 +704,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                 let ch_label = format!("Chapter {}", ch.sort_order + 1);
                 let ch_subtitle = if ch.title.is_empty() { "…".to_string() } else { ch.title.clone() };
                 let chapter_status = chapter_block_status(ch, active_job);
+                let summary_stale = chapter_summary_stale(ch);
                 let chapter_target = StorySelection::Chapter(ch_id);
                 html! {
                     <div key={ch_id} class="story-chapter-block">
@@ -642,6 +713,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                             subtitle={ch_subtitle}
                             open={ch_open}
                             status_badge={chapter_status}
+                            summary_stale={summary_stale}
                             on_toggle={props.on_selection.reform(move |_| {
                                 toggle_selection(current_selection, chapter_target)
                             })}
@@ -665,6 +737,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                     bump_stream={props.bump_stream.clone()}
                                     on_guidance={props.on_guidance.clone()}
                                     on_detail={props.on_detail.clone()}
+                                    on_stale_error={props.on_stale_error.clone()}
                                 />
                             </div>
                         }
@@ -703,6 +776,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                                 bump_stream={props.bump_stream.clone()}
                                                 on_guidance={props.on_guidance.clone()}
                                                 on_detail={props.on_detail.clone()}
+                                                on_stale_error={props.on_stale_error.clone()}
                                             />
                                         </div>
                                     }
@@ -716,7 +790,71 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
     }
 }
 
-fn alert_story_action_error(action: &str, err: String) {
+#[derive(Properties, PartialEq)]
+struct StaleChaptersModalProps {
+    failed_action: String,
+    chapters: Vec<StaleChapterItem>,
+    #[prop_or(false)]
+    queueing: bool,
+    on_close: Callback<()>,
+    on_queue_all: Callback<()>,
+}
+
+#[function_component(StaleChaptersModal)]
+fn stale_chapters_modal(props: &StaleChaptersModalProps) -> Html {
+    html! {
+        <>
+            <div class="modal-backdrop" onclick={props.on_close.reform(|_| ())} />
+            <div class="modal" role="alertdialog" aria-labelledby="stale-chapters-title">
+                <h2 id="stale-chapters-title">{"Prose summaries out of date"}</h2>
+                <p class="muted" style="margin:0 0 0.75rem;">
+                    { format!(
+                        "Could not {}. Summarize these chapters before working on later ones:",
+                        props.failed_action,
+                    ) }
+                </p>
+                if props.chapters.is_empty() {
+                    <p class="muted">{"No stale chapters found."}</p>
+                } else {
+                    <ul class="modal-list stale-chapter-list">
+                        { for props.chapters.iter().map(|ch| html! {
+                            <li class="modal-item stale-chapter-item">
+                                <span class="story-block-stale-warning" aria-hidden="true">{"⚠"}</span>
+                                <span>{ format!("Chapter {} — {}", ch.number, ch.title) }</span>
+                            </li>
+                        }) }
+                    </ul>
+                }
+                <div class="modal-actions">
+                    if !props.chapters.is_empty() {
+                        <button
+                            class="btn"
+                            disabled={props.queueing}
+                            onclick={props.on_queue_all.reform(|_| ())}
+                        >
+                            { if props.queueing {
+                                "Queueing…"
+                            } else {
+                                "Queue all summaries"
+                            } }
+                        </button>
+                    }
+                    <button class="btn secondary" onclick={props.on_close.reform(|_| ())}>
+                        {"Close"}
+                    </button>
+                </div>
+            </div>
+        </>
+    }
+}
+
+fn alert_story_action_error(action: &str, err: String, on_stale_error: Option<Callback<String>>) {
+    if is_stale_summary_error(&err) {
+        if let Some(cb) = on_stale_error {
+            cb.emit(action.to_string());
+            return;
+        }
+    }
     if let Some(window) = web_sys::window() {
         let _ = window.alert_with_message(&format!("Could not {action}: {err}"));
     }
@@ -738,7 +876,7 @@ fn propose_chapters_action(
                     on_detail.emit(d);
                     bump_stream.emit(());
                 }
-                Err(err) => alert_story_action_error("propose chapters", err),
+                Err(err) => alert_story_action_error("propose chapters", err, None),
             }
         });
     })
@@ -760,7 +898,7 @@ fn add_chapter_action(
                     }
                     on_detail.emit(d);
                 }
-                Err(err) => alert_story_action_error("add chapter", err),
+                Err(err) => alert_story_action_error("add chapter", err, None),
             }
         });
     })
@@ -782,6 +920,8 @@ struct StoryBlockHeaderProps {
     indent: bool,
     #[prop_or_default]
     status_badge: Option<BlockGenerationStatus>,
+    #[prop_or(false)]
+    summary_stale: bool,
     on_toggle: Callback<()>,
 }
 
@@ -800,6 +940,15 @@ fn story_block_header(props: &StoryBlockHeaderProps) -> Html {
             <span class="story-block-chevron">{ if props.open { "▾" } else { "▸" } }</span>
             <span class="story-block-label">{ &props.label }</span>
             <span class="story-block-subtitle muted">{ &props.subtitle }</span>
+            if props.summary_stale {
+                <span
+                    class="story-block-stale-warning"
+                    title="Prose summary is out of date — summarize from prose to refresh context for later chapters."
+                    aria-label="Prose summary is out of date"
+                >
+                    {"⚠"}
+                </span>
+            }
             if let Some(status) = props.status_badge {
                 <span class={classes!("badge", status.variant_class())}>{ status.label() }</span>
             }
@@ -1015,13 +1164,6 @@ fn preset_value(p: LengthPreset) -> &'static str {
     }
 }
 
-fn chapter_has_substantial_prose(chapter: &StoryChapter) -> bool {
-    chapter
-        .beats
-        .iter()
-        .any(|beat| beat.content.chars().count() > 80)
-}
-
 const MANUAL_VARIABLE_SOURCE: i64 = -1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1120,6 +1262,7 @@ struct ChapterEditorProps {
     bump_stream: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
+    on_stale_error: Callback<String>,
 }
 
 #[function_component(ChapterEditor)]
@@ -1187,7 +1330,8 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
     let chapter_id = chapter.id;
     let proposing_beats = props.proposing_beats;
     let summarizing_chapter = props.summarizing_chapter;
-    let summary_stale = chapter_has_substantial_prose(&chapter) && !chapter.prose_summary_valid;
+    let summary_stale = chapter_summary_stale(&chapter);
+    let on_stale_error = props.on_stale_error.clone();
 
     html! {
         <div class="story-form">
@@ -1233,16 +1377,22 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                 <button class="btn secondary" disabled={summarizing_chapter || !chapter_has_substantial_prose(&chapter)} onclick={{
                     let on_detail = props.on_detail.clone();
                     let bump_stream = props.bump_stream.clone();
+                    let on_stale_error = on_stale_error.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
                         let bump_stream = bump_stream.clone();
+                        let on_stale_error = on_stale_error.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             match api::summarize_chapter_prose(story_id, chapter_id).await {
                                 Ok(d) => {
                                     on_detail.emit(d);
                                     bump_stream.emit(());
                                 }
-                                Err(err) => alert_story_action_error("summarize chapter", err),
+                                Err(err) => alert_story_action_error(
+                                    "summarize chapter",
+                                    err,
+                                    Some(on_stale_error.clone()),
+                                ),
                             }
                         });
                     })
@@ -1262,17 +1412,23 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     let on_detail = props.on_detail.clone();
                     let bump_stream = props.bump_stream.clone();
                     let guidance = props.guidance.clone();
+                    let on_stale_error = on_stale_error.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
                         let bump_stream = bump_stream.clone();
                         let notes = guidance.clone();
+                        let on_stale_error = on_stale_error.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             match api::propose_beats(story_id, chapter_id, &notes).await {
                                 Ok(d) => {
                                     on_detail.emit(d);
                                     bump_stream.emit(());
                                 }
-                                Err(err) => alert_story_action_error("propose beats", err),
+                                Err(err) => alert_story_action_error(
+                                    "propose beats",
+                                    err,
+                                    Some(on_stale_error.clone()),
+                                ),
                             }
                         });
                     })
@@ -1286,7 +1442,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                                 .await
                             {
                                 Ok(d) => on_detail.emit(d),
-                                Err(err) => alert_story_action_error("add beat", err),
+                                Err(err) => alert_story_action_error("add beat", err, None),
                             }
                         });
                     })
@@ -1324,6 +1480,7 @@ struct BeatEditorProps {
     bump_stream: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
+    on_stale_error: Callback<String>,
 }
 
 #[function_component(BeatEditor)]
@@ -1388,6 +1545,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let story_id = props.story_id;
     let chapter_id = props.chapter_id;
     let beat_id = beat.id;
+    let on_stale_error = props.on_stale_error.clone();
 
     let schedule_save = {
         let title = title.clone();
@@ -1526,10 +1684,12 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     let on_detail = props.on_detail.clone();
                     let bump_stream = props.bump_stream.clone();
                     let guidance = props.guidance.clone();
+                    let on_stale_error = on_stale_error.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
                         let bump_stream = bump_stream.clone();
                         let notes = guidance.clone();
+                        let on_stale_error = on_stale_error.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             match api::generate_prose(story_id, chapter_id, beat_id, &notes).await
                             {
@@ -1537,7 +1697,11 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                                     on_detail.emit(d);
                                     bump_stream.emit(());
                                 }
-                                Err(err) => alert_story_action_error("generate prose", err),
+                                Err(err) => alert_story_action_error(
+                                    "generate prose",
+                                    err,
+                                    Some(on_stale_error.clone()),
+                                ),
                             }
                         });
                     })
@@ -1557,11 +1721,11 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                                         match api::get_story(story_id).await {
                                             Ok(d) => on_detail.emit(d),
                                             Err(err) => {
-                                                alert_story_action_error("refresh story", err)
+                                                alert_story_action_error("refresh story", err, None)
                                             }
                                         }
                                     }
-                                    Err(err) => alert_story_action_error("recheck variables", err),
+                                    Err(err) => alert_story_action_error("recheck variables", err, None),
                                 }
                             });
                         })

@@ -8,6 +8,7 @@
   --accent: #111111;
   --accent-fg: #ffffff;
   --danger: #8b0000;
+  --warning: #b8860b;
   --success: #1a6b3c;
   --overlay: rgba(0, 0, 0, 0.25);
   --app-topbar-height: calc(
@@ -167,6 +168,26 @@ button {
 }
 
 .modal-item:hover {
+  background: var(--surface);
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.stale-chapter-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.75rem;
+}
+
+.stale-chapter-item {
+  cursor: default;
+}
+
+.stale-chapter-item:hover {
   background: var(--surface);
 }
 
@@ -1381,6 +1402,13 @@ input.header-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.story-block-stale-warning {
+  flex-shrink: 0;
+  color: var(--warning);
+  font-size: 0.95rem;
+  line-height: 1;
 }
 
 .story-block-body {
