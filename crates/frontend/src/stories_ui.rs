@@ -95,7 +95,6 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
     let detail_loading = use_state(|| false);
-    let refresh_generation = use_state(|| 0u32);
     let story_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let selected_story_id = story_id_from_route(&props.route);
     let selection = selection_from_story_nav(story_nav_from_route(&props.route));
@@ -135,9 +134,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         let stories = stories.clone();
         let detail_loading = detail_loading.clone();
         let story_stream_nudge = story_stream_nudge.clone();
-        let refresh_generation = *refresh_generation;
         let route = props.route.clone();
-        use_effect_with((route.clone(), refresh_generation), move |(route, _)| {
+        use_effect_with(route.clone(), move |route| {
             let story_id = story_id_from_route(route);
             let mut stream_holder = None::<api::StoryStream>;
             *story_stream_nudge.borrow_mut() = None;
@@ -338,8 +336,12 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     };
 
     let bump_stream = {
-        let refresh_generation = refresh_generation.clone();
-        Callback::from(move |_| refresh_generation.set(*refresh_generation + 1))
+        let story_stream_nudge = story_stream_nudge.clone();
+        Callback::from(move |_| {
+            if let Some(nudge) = story_stream_nudge.borrow().clone() {
+                nudge.reconnect();
+            }
+        })
     };
 
     html! {
@@ -714,6 +716,12 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
     }
 }
 
+fn alert_story_action_error(action: &str, err: String) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.alert_with_message(&format!("Could not {action}: {err}"));
+    }
+}
+
 fn propose_chapters_action(
     story_id: i64,
     guidance: String,
@@ -725,9 +733,12 @@ fn propose_chapters_action(
         let bump_stream = bump_stream.clone();
         let notes = guidance.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(d) = api::propose_chapters(story_id, &notes).await {
-                on_detail.emit(d);
-                bump_stream.emit(());
+            match api::propose_chapters(story_id, &notes).await {
+                Ok(d) => {
+                    on_detail.emit(d);
+                    bump_stream.emit(());
+                }
+                Err(err) => alert_story_action_error("propose chapters", err),
             }
         });
     })
@@ -742,11 +753,14 @@ fn add_chapter_action(
         let on_detail = on_detail.clone();
         let on_selection = on_selection.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(d) = api::create_chapter(story_id, &StoryChapterCreate::default()).await {
-                if let Some(ch) = d.chapters.last() {
-                    on_selection.emit(StorySelection::Chapter(ch.id));
+            match api::create_chapter(story_id, &StoryChapterCreate::default()).await {
+                Ok(d) => {
+                    if let Some(ch) = d.chapters.last() {
+                        on_selection.emit(StorySelection::Chapter(ch.id));
+                    }
+                    on_detail.emit(d);
                 }
-                on_detail.emit(d);
+                Err(err) => alert_story_action_error("add chapter", err),
             }
         });
     })
@@ -1223,9 +1237,12 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                         let on_detail = on_detail.clone();
                         let bump_stream = bump_stream.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::summarize_chapter_prose(story_id, chapter_id).await {
-                                on_detail.emit(d);
-                                bump_stream.emit(());
+                            match api::summarize_chapter_prose(story_id, chapter_id).await {
+                                Ok(d) => {
+                                    on_detail.emit(d);
+                                    bump_stream.emit(());
+                                }
+                                Err(err) => alert_story_action_error("summarize chapter", err),
                             }
                         });
                     })
@@ -1250,9 +1267,12 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                         let bump_stream = bump_stream.clone();
                         let notes = guidance.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::propose_beats(story_id, chapter_id, &notes).await {
-                                on_detail.emit(d);
-                                bump_stream.emit(());
+                            match api::propose_beats(story_id, chapter_id, &notes).await {
+                                Ok(d) => {
+                                    on_detail.emit(d);
+                                    bump_stream.emit(());
+                                }
+                                Err(err) => alert_story_action_error("propose beats", err),
                             }
                         });
                     })
@@ -1262,8 +1282,11 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::create_beat(story_id, chapter_id, &StoryBeatCreate::default()).await {
-                                on_detail.emit(d);
+                            match api::create_beat(story_id, chapter_id, &StoryBeatCreate::default())
+                                .await
+                            {
+                                Ok(d) => on_detail.emit(d),
+                                Err(err) => alert_story_action_error("add beat", err),
                             }
                         });
                     })
@@ -1508,9 +1531,13 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                         let bump_stream = bump_stream.clone();
                         let notes = guidance.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::generate_prose(story_id, chapter_id, beat_id, &notes).await {
-                                on_detail.emit(d);
-                                bump_stream.emit(());
+                            match api::generate_prose(story_id, chapter_id, beat_id, &notes).await
+                            {
+                                Ok(d) => {
+                                    on_detail.emit(d);
+                                    bump_stream.emit(());
+                                }
+                                Err(err) => alert_story_action_error("generate prose", err),
                             }
                         });
                     })
@@ -1523,11 +1550,18 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             let on_detail = on_detail.clone();
                             let bump_stream = bump_stream.clone();
                             wasm_bindgen_futures::spawn_local(async move {
-                                if api::recheck_beat_variables(story_id, chapter_id, beat_id).await.is_ok() {
-                                    bump_stream.emit(());
-                                    if let Ok(d) = api::get_story(story_id).await {
-                                        on_detail.emit(d);
+                                match api::recheck_beat_variables(story_id, chapter_id, beat_id).await
+                                {
+                                    Ok(_) => {
+                                        bump_stream.emit(());
+                                        match api::get_story(story_id).await {
+                                            Ok(d) => on_detail.emit(d),
+                                            Err(err) => {
+                                                alert_story_action_error("refresh story", err)
+                                            }
+                                        }
                                     }
+                                    Err(err) => alert_story_action_error("recheck variables", err),
                                 }
                             });
                         })
