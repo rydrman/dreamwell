@@ -1037,6 +1037,33 @@ fn generate_prose_action(
     })
 }
 
+fn recheck_beat_variables_action(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance: String,
+    on_detail: Callback<StoryDetail>,
+    bump_stream: Callback<()>,
+) -> Callback<()> {
+    Callback::from(move |_| {
+        let on_detail = on_detail.clone();
+        let bump_stream = bump_stream.clone();
+        let notes = guidance.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::recheck_beat_variables(story_id, chapter_id, beat_id, &notes).await {
+                Ok(_) => {
+                    bump_stream.emit(());
+                    match api::get_story(story_id).await {
+                        Ok(d) => on_detail.emit(d),
+                        Err(err) => alert_story_action_error("refresh story", err, None),
+                    }
+                }
+                Err(err) => alert_story_action_error("recheck variables", err, None),
+            }
+        });
+    })
+}
+
 fn add_chapter_action(
     story_id: i64,
     on_detail: Callback<StoryDetail>,
@@ -1986,6 +2013,29 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             }}
                         />
                     </AutoSaveField>
+                    if show_recheck {
+                        <div class="prose-editor-generation">
+                            <GenerationButtonGroup
+                                label="Recheck variables"
+                                loading_label="Rechecking…"
+                                secondary={true}
+                                disabled={rechecking_variables || beat_job_active}
+                                busy={rechecking_variables}
+                                guidance={props.guidance.clone()}
+                                guidance_title="Guidance for generation"
+                                guidance_placeholder="Optional notes for the AI…"
+                                on_guidance={props.on_guidance.clone()}
+                                on_generate={recheck_beat_variables_action(
+                                    story_id,
+                                    chapter_id,
+                                    beat_id,
+                                    props.guidance.clone(),
+                                    props.on_detail.clone(),
+                                    props.bump_stream.clone(),
+                                )}
+                            />
+                        </div>
+                    }
                     if show_variable_updates {
                         <VariableUpdatesBlock updates={beat.variable_updates.clone()} />
                     }
@@ -2030,33 +2080,6 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             });
                         })
                     }}>{ if aligning_prose { "Aligning prose…" } else { "Align prose to mechanical" } }</button>
-                }
-                if show_recheck {
-                    <button class="btn secondary" disabled={rechecking_variables || beat_job_active} onclick={{
-                        let on_detail = props.on_detail.clone();
-                        let bump_stream = props.bump_stream.clone();
-                        let guidance = props.guidance.clone();
-                        Callback::from(move |_| {
-                            let on_detail = on_detail.clone();
-                            let bump_stream = bump_stream.clone();
-                            let notes = guidance.clone();
-                            wasm_bindgen_futures::spawn_local(async move {
-                                match api::recheck_beat_variables(story_id, chapter_id, beat_id, &notes).await
-                                {
-                                    Ok(_) => {
-                                        bump_stream.emit(());
-                                        match api::get_story(story_id).await {
-                                            Ok(d) => on_detail.emit(d),
-                                            Err(err) => {
-                                                alert_story_action_error("refresh story", err, None)
-                                            }
-                                        }
-                                    }
-                                    Err(err) => alert_story_action_error("recheck variables", err, None),
-                                }
-                            });
-                        })
-                    }}>{ if rechecking_variables { "Rechecking…" } else { "Recheck variables" } }</button>
                 }
                 <button class="btn secondary text-danger btn-compact" onclick={{
                     let on_detail = props.on_detail.clone();
