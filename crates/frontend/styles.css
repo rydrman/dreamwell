@@ -1675,6 +1675,15 @@ input.header-title {
   overflow: hidden;
 }
 
+.prose-editor-generation {
+  padding: 0.5rem 0.75rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.prose-editor-generation .generation-btn-group {
+  margin-bottom: 0.35rem;
+}
+
 .sidebar-section-tabs {
   display: flex;
   gap: 0.25rem;
