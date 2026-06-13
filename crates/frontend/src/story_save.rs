@@ -12,20 +12,59 @@ pub enum AutoSavePhase {
     Failed,
 }
 
-pub fn auto_save_status_html(phase: AutoSavePhase, error: Option<&str>) -> Html {
+/// Icon overlay for the bottom-right corner of an auto-saved text field.
+pub fn auto_save_field_icon(phase: AutoSavePhase, error: Option<&str>) -> Html {
     match phase {
-        AutoSavePhase::Synced => {
-            html! { <span class="muted" style="font-size:0.85rem;">{"Saved"}</span> }
-        }
-        AutoSavePhase::Debouncing => {
-            html! { <span class="muted" style="font-size:0.85rem;">{"Saving…"}</span> }
-        }
-        AutoSavePhase::Saving => {
-            html! { <span class="muted" style="font-size:0.85rem;">{"Saving…"}</span> }
-        }
-        AutoSavePhase::Failed => html! {
-            <span class="message-error" style="font-size:0.85rem;">{ error.unwrap_or("Save failed") }</span>
+        AutoSavePhase::Synced => html! {
+            <span class="field-autosave-icon field-autosave-icon--saved" title="Saved" aria-label="Saved">
+                <span class="field-autosave-glyph" aria-hidden="true">{"✓"}</span>
+            </span>
         },
+        AutoSavePhase::Debouncing => html! {
+            <span
+                class="field-autosave-icon field-autosave-icon--pending"
+                title="Unsaved changes"
+                aria-label="Unsaved changes"
+            >
+                <span class="field-autosave-glyph" aria-hidden="true">{"●"}</span>
+            </span>
+        },
+        AutoSavePhase::Saving => html! {
+            <span class="field-autosave-icon field-autosave-icon--saving" title="Saving…" aria-label="Saving">
+                <span class="field-autosave-spinner" aria-hidden="true"></span>
+            </span>
+        },
+        AutoSavePhase::Failed => {
+            let message = error.unwrap_or("Save failed");
+            html! {
+                <span
+                    class="field-autosave-icon field-autosave-icon--error"
+                    title={message.to_string()}
+                    aria-label="Save failed"
+                >
+                    <span class="field-autosave-glyph" aria-hidden="true">{"✕"}</span>
+                </span>
+            }
+        }
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct AutoSaveFieldProps {
+    pub phase: AutoSavePhase,
+    #[prop_or_default]
+    pub error: Option<String>,
+    pub children: Children,
+}
+
+/// Wraps a text input or textarea with a save-status icon pinned to the bottom-right.
+#[function_component(AutoSaveField)]
+pub fn auto_save_field(props: &AutoSaveFieldProps) -> Html {
+    html! {
+        <span class="field-autosave-wrap">
+            { for props.children.iter() }
+            { auto_save_field_icon(props.phase, props.error.as_deref()) }
+        </span>
     }
 }
 
