@@ -1609,6 +1609,45 @@ input.header-title {
   margin-top: 1rem;
 }
 
+.generation-btn-group {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+
+.generation-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.generation-btn-arrow {
+  flex-shrink: 0;
+}
+
+.generation-btn-guidance {
+  min-width: 2.75rem;
+  padding-left: 0.55rem;
+  padding-right: 0.55rem;
+  position: relative;
+}
+
+.generation-btn-guidance--has-notes::after {
+  content: "";
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.guidance-modal {
+  width: min(28rem, calc(100vw - 2rem));
+}
+
 .prose-editor {
   min-height: 16rem;
   line-height: 1.6;
