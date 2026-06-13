@@ -1140,6 +1140,7 @@ fn app() -> Html {
                             });
                         }
                     })}
+                    on_messages_changed={load_messages_for_chat.clone()}
                 />
             }
             if sidebar_open {
@@ -1683,6 +1684,7 @@ struct ChatPanelOverlayProps {
     on_chat_created: Callback<i64>,
     on_chats_changed: Callback<()>,
     on_characters_changed: Callback<()>,
+    on_messages_changed: Callback<i64>,
 }
 
 #[function_component(ChatPanelOverlay)]
@@ -1711,7 +1713,11 @@ fn chat_panel_overlay(props: &ChatPanelOverlayProps) -> Html {
                         chat_id={props.chat_id}
                     />
                 } else if props.overlay == Overlay::Variables {
-                    <VariablesPanel chat_id={props.chat_id} messages={props.messages.clone()} />
+                    <VariablesPanel
+                        chat_id={props.chat_id}
+                        messages={props.messages.clone()}
+                        on_messages_changed={props.on_messages_changed.clone()}
+                    />
                 }
             </div>
         </div>
@@ -3264,6 +3270,7 @@ struct VariableRefreshSignal {
 struct VariablesPanelProps {
     chat_id: Option<i64>,
     messages: Vec<Message>,
+    on_messages_changed: Callback<i64>,
 }
 
 #[function_component(VariablesPanel)]
@@ -3344,6 +3351,7 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
                                     let key = key.clone();
                                     let value = value.clone();
                                     let editing_key = editing_key.clone();
+                                    let on_messages_changed = props.on_messages_changed.clone();
                                     let chat_id = chat_id_for_actions;
                                     Callback::from(move |_| {
                                         let variables = variables.clone();
@@ -3351,6 +3359,7 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
                                         let key = key.clone();
                                         let value = value.clone();
                                         let editing_key = editing_key.clone();
+                                        let on_messages_changed = on_messages_changed.clone();
                                         wasm_bindgen_futures::spawn_local(async move {
                                             match api::delete_variable(chat_id, &variable_key).await {
                                                 Ok(()) => {
@@ -3362,6 +3371,7 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
                                                     if let Ok(list) = api::get_variables(chat_id).await {
                                                         variables.set(list);
                                                     }
+                                                    on_messages_changed.emit(chat_id);
                                                 }
                                                 Err(err) => {
                                                     if let Some(window) = web_sys::window() {
