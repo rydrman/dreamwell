@@ -580,6 +580,23 @@ pub async fn update_message_content(
     Ok(())
 }
 
+pub async fn update_message_content_and_variable_updates(
+    pool: &SqlitePool,
+    message_id: i64,
+    content: &str,
+    variable_updates: &[dreamwell_types::MessageVariableUpdate],
+) -> AppResult<()> {
+    let variable_updates_json = serde_json::to_string(variable_updates)
+        .map_err(|e| AppError::internal(format!("serialize variable updates: {e}")))?;
+    sqlx::query("UPDATE messages SET content = ?1, variable_updates = ?2 WHERE id = ?3")
+        .bind(content)
+        .bind(variable_updates_json)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct MessageGenerationSnapshot {
     pub content: String,

@@ -413,6 +413,26 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                             on_navigate.emit((route.clone().without_overlay(), true));
                         }
                     })}
+                    on_detail={Callback::from({
+                        let detail = detail.clone();
+                        let stories = stories.clone();
+                        move |d: StoryDetail| {
+                            stories.set(
+                                (*stories)
+                                    .clone()
+                                    .into_iter()
+                                    .map(|s| {
+                                        if s.id == d.story.id {
+                                            d.story.clone()
+                                        } else {
+                                            s
+                                        }
+                                    })
+                                    .collect(),
+                            );
+                            detail.set(Some(d));
+                        }
+                    })}
                 />
             }
             <StoryEditor
@@ -1836,6 +1856,8 @@ pub struct StoryVariablesOverlayProps {
     #[prop_or_default]
     pub selection: StorySelection,
     pub on_close: Callback<()>,
+    #[prop_or_default]
+    pub on_detail: Callback<StoryDetail>,
 }
 
 #[function_component(StoryVariablesOverlay)]
@@ -1989,13 +2011,19 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                                     <button class="btn secondary btn-compact" onclick={{
                                         let variables = variables.clone();
                                         let variable_key = variable_key.clone();
+                                        let on_detail = props.on_detail.clone();
                                         Callback::from(move |_| {
                                             let variables = variables.clone();
                                             let variable_key = variable_key.clone();
+                                            let on_detail = on_detail.clone();
                                             wasm_bindgen_futures::spawn_local(async move {
-                                                let _ = api::delete_story_variable(story_id, &variable_key).await;
-                                                if let Ok(list) = api::get_story_variables(story_id).await {
-                                                    variables.set(list);
+                                                if api::delete_story_variable(story_id, &variable_key).await.is_ok() {
+                                                    if let Ok(list) = api::get_story_variables(story_id).await {
+                                                        variables.set(list);
+                                                    }
+                                                    if let Ok(d) = api::get_story(story_id).await {
+                                                        on_detail.emit(d);
+                                                    }
                                                 }
                                             });
                                         })

@@ -21,6 +21,7 @@ use crate::db;
 use crate::error::AppResult;
 use crate::queue::enqueue_story_generation;
 use crate::routes::AppState;
+use crate::variables::strip_variable_key_from_story_beats;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -235,6 +236,8 @@ async fn delete_story_variable(
 ) -> AppResult<Json<OkResponse>> {
     let _ = db::get_story(&state.pool, id).await?;
     db::delete_story_variable(&state.pool, id, &key).await?;
+    strip_variable_key_from_story_beats(&state.pool, id, &key).await?;
+    db::touch_story(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 
