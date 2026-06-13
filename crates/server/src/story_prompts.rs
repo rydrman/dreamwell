@@ -176,6 +176,8 @@ pub fn build_beat_prose_messages(
     chapter: &StoryChapter,
     beat: &StoryBeat,
     guidance: &str,
+    variables: &[(String, String)],
+    variables_enabled: bool,
 ) -> Vec<Value> {
     let prior_chapters = prior_chapter_synopses(chapters, chapter.sort_order);
     let prior_beats = prior_beat_synopses(&chapter.beats, beat.sort_order);
@@ -223,14 +225,26 @@ pub fn build_beat_prose_messages(
         user.push_str(guidance.trim());
     }
     user.push_str("\n\nWrite only the narrative prose for this beat. No headings, labels, or meta commentary.");
+
+    let variables_text = crate::story_variables::format_story_variables(variables);
+    let mut system = format!(
+        "You are a fiction writer. Match the story tone and POV. \
+         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
+        story_basics(story)
+    );
+    if !variables_text.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&variables_text);
+    }
+    if variables_enabled {
+        system.push_str("\n\n");
+        system.push_str(crate::story_variables::story_variables_instruction());
+    }
+
     vec![
         serde_json::json!({
             "role": "system",
-            "content": format!(
-                "You are a fiction writer. Match the story tone and POV. \
-                 Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
-                story_basics(story)
-            ),
+            "content": system,
         }),
         serde_json::json!({ "role": "user", "content": user }),
     ]
@@ -466,6 +480,7 @@ mod tests {
             title: title.to_string(),
             synopsis: synopsis.to_string(),
             content: content.to_string(),
+            variable_updates: Vec::new(),
             sort_order: order,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -529,8 +544,15 @@ mod tests {
             ],
         );
         let beat = chapter.beats[1].clone();
-        let messages =
-            build_beat_prose_messages(&sample_story(), &[chapter.clone()], &chapter, &beat, "");
+        let messages = build_beat_prose_messages(
+            &sample_story(),
+            &[chapter.clone()],
+            &chapter,
+            &beat,
+            "",
+            &[],
+            false,
+        );
         let user = messages[1]["content"].as_str().unwrap();
         let system = messages[0]["content"].as_str().unwrap();
 

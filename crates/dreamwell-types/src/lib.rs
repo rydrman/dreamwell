@@ -277,6 +277,9 @@ pub struct StoryChapter {
     pub beats: Vec<StoryBeat>,
 }
 
+/// Per-beat audit trail for story variable changes (same shape as chat message updates).
+pub type BeatVariableUpdate = MessageVariableUpdate;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoryBeat {
     pub id: i64,
@@ -284,10 +287,29 @@ pub struct StoryBeat {
     pub title: String,
     pub synopsis: String,
     pub content: String,
+    #[serde(default)]
+    pub variable_updates: Vec<BeatVariableUpdate>,
     pub sort_order: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub job_status: Option<JobStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryVariable {
+    pub id: i64,
+    pub story_id: i64,
+    pub key: String,
+    pub value: String,
+    pub source_chapter_order: i64,
+    pub source_beat_order: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryVariableUpdate {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

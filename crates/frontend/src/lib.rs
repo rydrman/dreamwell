@@ -29,7 +29,7 @@ use install::{InstallBanner, InstallKind, InstallSettings};
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
-use stories_ui::StoriesShell;
+use stories_ui::{StoriesShell, StoryVariablesOverlay};
 use title_editor::TitleEditor;
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
@@ -1058,6 +1058,12 @@ fn app() -> Html {
                     })}
                 />
             }
+            if mode == AppMode::Stories && overlay == Some(Overlay::Variables) {
+                <StoryVariablesOverlay
+                    story_id={story_id_from_route(&route)}
+                    on_close={close_overlay.clone()}
+                />
+            }
             if sidebar_open {
                 <div class="drawer-backdrop" onclick={close_sidebar.clone()} />
             }
@@ -1248,7 +1254,11 @@ fn app() -> Html {
             <main class="main">
                 <QueueBar queue={(*queue).clone()} on_open={open_queue.clone()} />
                 if mode == AppMode::Stories {
-                    <StoriesShell route={route.clone()} on_navigate={navigate.clone()} />
+                    <StoriesShell
+                        route={route.clone()}
+                        on_navigate={navigate.clone()}
+                        variables_enabled={settings.as_ref().is_some_and(|s| s.variables_enabled)}
+                    />
                 } else {
                 <div class="chat-pane">
                 <header class="header content-header">

@@ -73,6 +73,15 @@ fn display_generated_text(settings: &dreamwell_types::Settings, text: &str) -> S
     }
 }
 
+fn display_beat_prose(settings: &dreamwell_types::Settings, text: &str, streaming: bool) -> String {
+    let text = display_generated_text(settings, text);
+    if settings.variables_enabled {
+        crate::variables::strip_variables_for_display(&text, streaming)
+    } else {
+        text
+    }
+}
+
 fn thought_timing(
     parsed: &crate::thoughts::ParsedThoughts,
     thought_started_at: &mut Option<Instant>,
@@ -1086,12 +1095,27 @@ async fn run_story_beat_prose(
         .find(|b| b.id == beat_id)
         .ok_or_else(|| AppError::internal("beat not found"))?;
 
+    let variables = if settings.variables_enabled {
+        crate::story_variables::variables_for_beat_generation(
+            pool,
+            &detail.chapters,
+            story_id,
+            chapter.sort_order,
+            beat.sort_order,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+
     let messages = build_beat_prose_messages(
         &detail.story,
         &detail.chapters,
         chapter,
         beat,
         &job.guidance_notes,
+        &variables,
+        settings.variables_enabled,
     );
 
     let max_attempts = generation_max_retries();
@@ -1117,7 +1141,15 @@ async fn run_story_beat_prose(
         }
 
         match run_beat_prose_generation_attempt(
-            pool, job_id, story_id, beat_id, settings, &messages, &token,
+            pool,
+            job_id,
+            story_id,
+            chapter.sort_order,
+            beat.sort_order,
+            beat_id,
+            settings,
+            &messages,
+            &token,
         )
         .await?
         {
@@ -1140,10 +1172,13 @@ async fn run_story_beat_prose(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_beat_prose_generation_attempt(
     pool: &SqlitePool,
     job_id: i64,
     story_id: i64,
+    chapter_order: i64,
+    beat_order: i64,
     beat_id: i64,
     settings: &dreamwell_types::Settings,
     messages: &[serde_json::Value],
@@ -1171,7 +1206,7 @@ async fn run_beat_prose_generation_attempt(
         match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
-                let display = display_generated_text(settings, &accumulated);
+                let display = display_beat_prose(settings, &accumulated, true);
                 db::update_beat_content(pool, beat_id, &display).await?;
                 db::touch_story(pool, story_id).await?;
             }
@@ -1189,12 +1224,35 @@ async fn run_beat_prose_generation_attempt(
         return Ok(BeatProseOutcome::Cancelled);
     }
 
-    let display = display_generated_text(settings, &accumulated);
+    let display = display_beat_prose(settings, &accumulated, false);
     if display.trim().is_empty() {
         return Ok(BeatProseOutcome::Retryable(
             "model returned no text".to_string(),
         ));
     }
+
+    if settings.variables_enabled {
+        let parsed = crate::variables::parse_variable_updates(&accumulated);
+        let current = db::list_story_variables(pool, story_id).await?;
+        let meaningful = crate::story_variables::filter_meaningful_story_updates(&parsed, &current);
+        if !meaningful.is_empty() {
+            let beat_updates = db::build_beat_variable_updates(pool, story_id, &meaningful).await?;
+            db::apply_story_variable_updates(
+                pool,
+                story_id,
+                chapter_order,
+                beat_order,
+                &meaningful,
+            )
+            .await?;
+            db::finalize_beat_prose(pool, beat_id, &display, &beat_updates).await?;
+        } else {
+            db::finalize_beat_prose(pool, beat_id, &display, &[]).await?;
+        }
+    } else {
+        db::finalize_beat_prose(pool, beat_id, &display, &[]).await?;
+    }
+    db::touch_story(pool, story_id).await?;
 
     Ok(BeatProseOutcome::Success)
 }
