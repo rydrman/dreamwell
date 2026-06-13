@@ -12,6 +12,7 @@ mod summary_ui;
 mod title_editor;
 mod variable_updates_ui;
 mod variables;
+mod variables_ui;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,6 +40,10 @@ use summary_ui::{
 };
 use title_editor::TitleEditor;
 use variable_updates_ui::VariableUpdatesBlock;
+use variables_ui::{
+    chat_scope_label, chat_scope_options, VariableList, VariableRowModel, VariableSavePayload,
+    MANUAL_MESSAGE_SOURCE,
+};
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
 
@@ -3269,9 +3274,6 @@ struct VariablesPanelProps {
 #[function_component(VariablesPanel)]
 fn variables_panel(props: &VariablesPanelProps) -> Html {
     let variables = use_state(Vec::<ChatVariable>::new);
-    let key = use_state(String::new);
-    let value = use_state(String::new);
-    let editing_key = use_state(|| None::<String>);
 
     let refresh_signal = VariableRefreshSignal {
         chat_id: props.chat_id,
@@ -3303,140 +3305,89 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
         return html! { <p class="muted">{"Select a chat to view variables."}</p> };
     };
 
-    let clear_form = {
-        let key = key.clone();
-        let value = value.clone();
-        let editing_key = editing_key.clone();
-        Callback::from(move |_| {
-            key.set(String::new());
-            value.set(String::new());
-            editing_key.set(None);
+    let scope_options = chat_scope_options(&props.messages);
+    let rows: Vec<VariableRowModel> = variables
+        .iter()
+        .map(|variable| VariableRowModel {
+            id: Some(variable.id),
+            key: variable.key.clone(),
+            value: variable.value.clone(),
+            scope_label: chat_scope_label(variable.source_message_id, &props.messages),
+            scope_value: variable.source_message_id.to_string(),
+            key_readonly: true,
+        })
+        .collect();
+
+    let on_save = {
+        let variables = variables.clone();
+        Callback::from(move |payload: VariableSavePayload| {
+            let variables = variables.clone();
+            let source_message_id = payload
+                .scope_value
+                .parse::<i64>()
+                .unwrap_or(MANUAL_MESSAGE_SOURCE);
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::upsert_variable(
+                    chat_id,
+                    &ChatVariableUpdate {
+                        key: payload.key,
+                        value: payload.value,
+                        source_message_id: Some(source_message_id),
+                    },
+                )
+                .await
+                {
+                    Ok(_) => {
+                        if let Ok(list) = api::get_variables(chat_id).await {
+                            variables.set(list);
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not save variable: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    let on_delete = {
+        let variables = variables.clone();
+        Callback::from(move |variable_id: Option<i64>| {
+            let Some(variable_id) = variable_id else {
+                return;
+            };
+            let variables = variables.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::delete_variable(chat_id, variable_id).await {
+                    Ok(()) => {
+                        if let Ok(list) = api::get_variables(chat_id).await {
+                            variables.set(list);
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not delete variable: {err}"));
+                        }
+                    }
+                }
+            });
         })
     };
 
     html! {
-        <div>
-            <p class="muted">{"Chat variables are injected into the prompt. The model can update them with var tags."}</p>
-            { for variables.iter().map(|v| {
-                let variable_key = v.key.clone();
-                let variable_value = v.value.clone();
-                let chat_id_for_actions = chat_id;
-                html! {
-                    <div class="variable-card">
-                        <div class="variable-card-header">
-                            <strong>{ &v.key }</strong>
-                            <div class="variable-card-actions">
-                                <button class="btn secondary btn-compact" onclick={{
-                                    let key = key.clone();
-                                    let value = value.clone();
-                                    let editing_key = editing_key.clone();
-                                    let variable_key = variable_key.clone();
-                                    let variable_value = variable_value.clone();
-                                    Callback::from(move |_| {
-                                        key.set(variable_key.clone());
-                                        value.set(variable_value.clone());
-                                        editing_key.set(Some(variable_key.clone()));
-                                    })
-                                }}>{"edit"}</button>
-                                <button class="btn secondary btn-compact" onclick={{
-                                    let variables = variables.clone();
-                                    let variable_key = variable_key.clone();
-                                    let key = key.clone();
-                                    let value = value.clone();
-                                    let editing_key = editing_key.clone();
-                                    let chat_id = chat_id_for_actions;
-                                    Callback::from(move |_| {
-                                        let variables = variables.clone();
-                                        let variable_key = variable_key.clone();
-                                        let key = key.clone();
-                                        let value = value.clone();
-                                        let editing_key = editing_key.clone();
-                                        wasm_bindgen_futures::spawn_local(async move {
-                                            match api::delete_variable(chat_id, &variable_key).await {
-                                                Ok(()) => {
-                                                    if editing_key.as_ref() == Some(&variable_key) {
-                                                        key.set(String::new());
-                                                        value.set(String::new());
-                                                        editing_key.set(None);
-                                                    }
-                                                    if let Ok(list) = api::get_variables(chat_id).await {
-                                                        variables.set(list);
-                                                    }
-                                                }
-                                                Err(err) => {
-                                                    if let Some(window) = web_sys::window() {
-                                                        let _ = window.alert_with_message(&format!(
-                                                            "Could not delete variable: {err}"
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    })
-                                }}>{"delete"}</button>
-                            </div>
-                        </div>
-                        <div class="variable-card-value">{ &v.value }</div>
-                    </div>
-                }
-            }) }
-            <label class="field">
-                <span class="muted">{"Key"}</span>
-                <input
-                    value={(*key).clone()}
-                    readonly={editing_key.is_some()}
-                    oninput={input_callback(key.clone())}
-                />
-            </label>
-            <label class="field"><span class="muted">{"Value"}</span><textarea value={(*value).clone()} oninput={input_callback(value.clone())} /></label>
-            <div class="variable-form-actions">
-                <button class="btn" onclick={{
-                    let variables = variables.clone();
-                    let key = key.clone();
-                    let value = value.clone();
-                    let editing_key = editing_key.clone();
-                    Callback::from(move |_| {
-                        if key.trim().is_empty() { return; }
-                        let variables = variables.clone();
-                        let k = (*key).clone();
-                        let v = (*value).clone();
-                        let key = key.clone();
-                        let value = value.clone();
-                        let editing_key = editing_key.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match api::upsert_variable(chat_id, &k, &v).await {
-                                Ok(_) => {
-                                    key.set(String::new());
-                                    value.set(String::new());
-                                    editing_key.set(None);
-                                    if let Ok(list) = api::get_variables(chat_id).await {
-                                        variables.set(list);
-                                    }
-                                }
-                                Err(err) => {
-                                    if let Some(window) = web_sys::window() {
-                                        let _ = window.alert_with_message(&format!(
-                                            "Could not save variable: {err}"
-                                        ));
-                                    }
-                                }
-                            }
-                        });
-                    })
-                }}>{ if editing_key.is_some() { "Update variable" } else { "Save variable" } }</button>
-                if editing_key.is_some() {
-                    <button class="btn secondary" onclick={clear_form.clone()}>{"Cancel"}</button>
-                }
-            </div>
-        </div>
+        <VariableList
+            rows={rows}
+            scope_options={scope_options}
+            new_scope_value={MANUAL_MESSAGE_SOURCE.to_string()}
+            description={"Chat variables are injected into the prompt. The model can update them with var tags. Scope controls when a manual value applies.".to_string()}
+            on_save={on_save}
+            on_delete={on_delete}
+        />
     }
-}
-
-fn input_callback(state: UseStateHandle<String>) -> Callback<InputEvent> {
-    Callback::from(move |e: InputEvent| {
-        let input: HtmlInputElement = e.target_unchecked_into();
-        state.set(input.value());
-    })
 }
 
 #[derive(Clone, PartialEq)]

@@ -1330,6 +1330,71 @@ input.header-title {
   flex-wrap: wrap;
 }
 
+.variable-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.variable-row {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.variable-row-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.variable-row-key {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.variable-row-scope,
+.variable-row-scope-select {
+  flex-shrink: 0;
+  max-width: 12rem;
+  font-size: 0.85rem;
+}
+
+.variable-row-actions {
+  display: flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.variable-row-icon-btn {
+  min-width: 2rem;
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
+}
+
+.variable-row-value {
+  width: 100%;
+  min-height: 3rem;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
+.variable-row-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 1.25rem;
+}
+
+.variable-row--new {
+  border-style: dashed;
+}
+
 .settings-group {
   border: 1px solid var(--border);
   border-radius: 0.375rem;

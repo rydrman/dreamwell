@@ -8,8 +8,8 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::inference::chat_completion;
 use crate::variables::{
-    apply_variable_updates, build_message_variable_updates, filter_meaningful_updates,
-    merge_variable_tags_into_message, parse_variable_updates,
+    apply_variable_updates, build_message_variable_updates, merge_variable_tags_into_message,
+    parse_variable_updates,
 };
 
 const RECHECK_SYSTEM_PROMPT: &str = r#"You review assistant chat replies for chat variable state.
@@ -39,22 +39,19 @@ fn recheck_max_retries() -> u32 {
         .max(1)
 }
 
-fn format_current_variables(variables: &[dreamwell_types::ChatVariable]) -> String {
+fn format_current_variables(variables: &[(String, String)]) -> String {
     if variables.is_empty() {
         "(none)".to_string()
     } else {
         variables
             .iter()
-            .map(|v| format!("- {}: {}", v.key, v.value))
+            .map(|(key, value)| format!("- {key}: {value}"))
             .collect::<Vec<_>>()
             .join("\n")
     }
 }
 
-fn build_recheck_prompt(
-    reply: &str,
-    variables: &[dreamwell_types::ChatVariable],
-) -> Vec<serde_json::Value> {
+fn build_recheck_prompt(reply: &str, variables: &[(String, String)]) -> Vec<serde_json::Value> {
     vec![
         json!({
             "role": "system",
@@ -142,8 +139,12 @@ pub async fn run_variable_recheck_job(
         return Ok(());
     }
 
-    let variables = db::list_variables(pool, chat_id).await?;
-    let prompt = build_recheck_prompt(&message.content, &variables);
+    let messages = db::list_messages(pool, chat_id).await?;
+    let panel = db::list_variables(pool, chat_id).await?;
+    let current_state = crate::variable_state::pairs_sorted(crate::variable_state::chat_state_at(
+        &messages, &panel, message_id,
+    ));
+    let prompt = build_recheck_prompt(&message.content, &current_state);
 
     let max_attempts = recheck_max_retries();
     let mut raw = None;
@@ -186,14 +187,16 @@ pub async fn run_variable_recheck_job(
         return Ok(());
     }
 
-    let meaningful = filter_meaningful_updates(&parsed, &variables);
+    let meaningful =
+        crate::story_variables::filter_meaningful_story_updates(&parsed, &current_state);
     if meaningful.is_empty() {
         db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
         return Ok(());
     }
 
-    let updates_for_message = build_message_variable_updates(pool, chat_id, &meaningful).await?;
-    apply_variable_updates(pool, chat_id, &meaningful).await?;
+    let updates_for_message =
+        build_message_variable_updates(pool, chat_id, message_id, &meaningful).await?;
+    apply_variable_updates(pool, chat_id, message_id, &meaningful).await?;
 
     let updated_content = merge_variable_tags_into_message(&message.content, &meaningful);
     db::append_message_variable_recheck(pool, message_id, &updated_content, &updates_for_message)
@@ -211,13 +214,7 @@ mod tests {
     fn recheck_prompt_includes_reply_and_variables() {
         let prompt = build_recheck_prompt(
             "You enter the tavern.",
-            &[dreamwell_types::ChatVariable {
-                id: 1,
-                chat_id: 1,
-                key: "location".into(),
-                value: "forest".into(),
-                updated_at: chrono::Utc::now(),
-            }],
+            &[("location".to_string(), "forest".to_string())],
         );
         let user = prompt[1]["content"].as_str().unwrap();
         assert!(user.contains("location: forest"));

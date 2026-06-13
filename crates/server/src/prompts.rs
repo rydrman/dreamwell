@@ -79,13 +79,13 @@ pub fn parse_example_dialogue(text: &str, ctx: &MacroContext<'_>) -> Vec<(Messag
     messages
 }
 
-fn format_variables(variables: &[dreamwell_types::ChatVariable]) -> String {
+fn format_variables(variables: &[(String, String)]) -> String {
     if variables.is_empty() {
         return String::new();
     }
     let lines: Vec<String> = variables
         .iter()
-        .map(|v| format!("- {}: {}", v.key, v.value))
+        .map(|(key, value)| format!("- {key}: {value}"))
         .collect();
     format!("Current chat variables:\n{}", lines.join("\n"))
 }
@@ -128,11 +128,17 @@ pub async fn build_messages_for_inference(
         &settings.persona_description,
     );
 
-    let variables = if settings.variables_enabled {
+    let messages = db::list_messages(pool, chat_id).await?;
+    let panel = if settings.variables_enabled {
         db::list_variables(pool, chat_id).await?
     } else {
         vec![]
     };
+    let variables = crate::variable_state::pairs_sorted(crate::variable_state::chat_state_at(
+        &messages,
+        &panel,
+        i64::MAX,
+    ));
 
     let mut system_parts = Vec::new();
     if !settings.system_prompt_prefix.trim().is_empty() {

@@ -39,13 +39,13 @@ fn max_retries() -> u32 {
         .max(1)
 }
 
-fn format_current_variables(variables: &[dreamwell_types::StoryVariable]) -> String {
+fn format_current_variables(variables: &[(String, String)]) -> String {
     if variables.is_empty() {
         "(none)".to_string()
     } else {
         variables
             .iter()
-            .map(|v| format!("- {}: {}", v.key, v.value))
+            .map(|(key, value)| format!("- {key}: {value}"))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -53,7 +53,7 @@ fn format_current_variables(variables: &[dreamwell_types::StoryVariable]) -> Str
 
 fn build_recheck_prompt(
     prose: &str,
-    variables: &[dreamwell_types::StoryVariable],
+    variables: &[(String, String)],
     guidance: &str,
 ) -> Vec<serde_json::Value> {
     let mut user = format!(
@@ -149,8 +149,21 @@ pub async fn run_beat_variable_recheck_job(
         return Ok(());
     }
 
-    let variables = db::list_story_variables(pool, story_id).await?;
-    let prompt = build_recheck_prompt(&visible, &variables, guidance);
+    let detail = db::get_story_detail(pool, story_id).await?;
+    let _chapter = detail
+        .chapters
+        .iter()
+        .find(|chapter| chapter.id == chapter_id)
+        .ok_or_else(|| AppError::internal("chapter not found"))?;
+    let current_state = crate::story_variables::variables_for_beat_generation(
+        pool,
+        &detail.chapters,
+        story_id,
+        chapter_order,
+        beat_order,
+    )
+    .await?;
+    let prompt = build_recheck_prompt(&visible, &current_state, guidance);
     let max_attempts = max_retries();
     let mut raw = None;
 
@@ -190,13 +203,21 @@ pub async fn run_beat_variable_recheck_job(
         return Ok(());
     }
 
-    let meaningful = filter_meaningful_story_updates(&parsed, &variables);
+    let meaningful = filter_meaningful_story_updates(&parsed, &current_state);
     if meaningful.is_empty() {
         db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
         return Ok(());
     }
 
-    let beat_updates = db::build_beat_variable_updates(pool, story_id, &meaningful).await?;
+    let beat_updates = db::build_beat_variable_updates(
+        pool,
+        &detail.chapters,
+        story_id,
+        chapter_order,
+        beat_order,
+        &meaningful,
+    )
+    .await?;
     db::apply_story_variable_updates(pool, story_id, chapter_order, beat_order, &meaningful)
         .await?;
 

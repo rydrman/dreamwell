@@ -224,6 +224,8 @@ pub struct ChatVariable {
     pub chat_id: i64,
     pub key: String,
     pub value: String,
+    /// `-1` = manual / session-wide panel entry; otherwise the message that introduced this value.
+    pub source_message_id: i64,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -231,6 +233,9 @@ pub struct ChatVariable {
 pub struct ChatVariableUpdate {
     pub key: String,
     pub value: String,
+    /// `-1` or omitted = manual. Otherwise anchors the change to a message.
+    #[serde(default)]
+    pub source_message_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

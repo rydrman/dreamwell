@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
-    Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, ChatVariable, Job, JobStatus,
-    JobType, Message, MessageRole, Settings, SettingsUpdate, CHAT_ARCHIVE_RETENTION_DAYS,
-    DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
+    Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, ChatVariable,
+    ChatVariableUpdate, Job, JobStatus, JobType, Message, MessageRole, Settings, SettingsUpdate,
+    CHAT_ARCHIVE_RETENTION_DAYS, DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
 };
 use std::time::Duration;
 
@@ -774,21 +774,6 @@ pub async fn finalize_message_generation(
     Ok(())
 }
 
-pub async fn get_variable_value(
-    pool: &SqlitePool,
-    chat_id: i64,
-    key: &str,
-) -> AppResult<Option<String>> {
-    let row = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM chat_variables WHERE chat_id = ?1 AND key = ?2",
-    )
-    .bind(chat_id)
-    .bind(key)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row)
-}
-
 pub async fn touch_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
     sqlx::query("UPDATE chats SET updated_at = ?1 WHERE id = ?2")
@@ -801,7 +786,7 @@ pub async fn touch_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<()> {
 
 pub async fn list_variables(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<ChatVariable>> {
     let rows = sqlx::query_as::<_, VariableRow>(
-        "SELECT id, chat_id, key, value, updated_at FROM chat_variables WHERE chat_id = ?1 ORDER BY key ASC",
+        "SELECT id, chat_id, key, value, source_message_id, updated_at FROM chat_variables WHERE chat_id = ?1 ORDER BY source_message_id ASC, key ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -814,36 +799,67 @@ pub async fn upsert_variable(
     chat_id: i64,
     key: String,
     value: String,
+    source_message_id: i64,
 ) -> AppResult<ChatVariable> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO chat_variables (chat_id, key, value, updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        "INSERT INTO chat_variables (chat_id, key, value, source_message_id, updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(chat_id, key, source_message_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
     )
     .bind(chat_id)
     .bind(&key)
     .bind(&value)
+    .bind(source_message_id)
     .bind(&now)
     .execute(pool)
     .await?;
     let row = sqlx::query_as::<_, VariableRow>(
-        "SELECT id, chat_id, key, value, updated_at FROM chat_variables WHERE chat_id = ?1 AND key = ?2",
+        "SELECT id, chat_id, key, value, source_message_id, updated_at FROM chat_variables WHERE chat_id = ?1 AND key = ?2 AND source_message_id = ?3",
     )
     .bind(chat_id)
     .bind(&key)
+    .bind(source_message_id)
     .fetch_one(pool)
     .await?;
     Ok(row.into())
 }
 
-pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, key: &str) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM chat_variables WHERE chat_id = ?1 AND key = ?2")
+pub async fn upsert_variable_manual(
+    pool: &SqlitePool,
+    chat_id: i64,
+    payload: ChatVariableUpdate,
+) -> AppResult<ChatVariable> {
+    let source_message_id = payload
+        .source_message_id
+        .unwrap_or(crate::variable_state::MANUAL_MESSAGE_SOURCE);
+    upsert_variable(pool, chat_id, payload.key, payload.value, source_message_id).await
+}
+
+pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, variable_id: i64) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM chat_variables WHERE chat_id = ?1 AND id = ?2")
         .bind(chat_id)
-        .bind(key)
+        .bind(variable_id)
         .execute(pool)
         .await?;
     if result.rows_affected() == 0 {
         return Err(AppError::not_found("Variable not found"));
     }
+    Ok(())
+}
+
+pub async fn delete_variable_scoped(
+    pool: &SqlitePool,
+    chat_id: i64,
+    key: &str,
+    source_message_id: i64,
+) -> AppResult<()> {
+    let _ = sqlx::query(
+        "DELETE FROM chat_variables WHERE chat_id = ?1 AND key = ?2 AND source_message_id = ?3",
+    )
+    .bind(chat_id)
+    .bind(key)
+    .bind(source_message_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -1319,6 +1335,7 @@ struct VariableRow {
     chat_id: i64,
     key: String,
     value: String,
+    source_message_id: i64,
     updated_at: String,
 }
 
@@ -1329,6 +1346,7 @@ impl From<VariableRow> for ChatVariable {
             chat_id: row.chat_id,
             key: row.key,
             value: row.value,
+            source_message_id: row.source_message_id,
             updated_at: DateTime::parse_from_rfc3339(&row.updated_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
