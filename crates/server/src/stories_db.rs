@@ -476,7 +476,6 @@ pub async fn ensure_beat_generation_allowed(
     pool: &SqlitePool,
     story_id: i64,
     chapter_id: i64,
-    beat_id: i64,
 ) -> AppResult<()> {
     let detail = get_story_detail(pool, story_id).await?;
     let chapter = detail
@@ -495,23 +494,6 @@ pub async fn ensure_beat_generation_allowed(
                 prior.sort_order + 1
             )));
         }
-    }
-    let beat = chapter
-        .beats
-        .iter()
-        .find(|b| b.id == beat_id)
-        .ok_or_else(|| AppError::not_found("Beat not found"))?;
-    let prior_beats_have_prose = chapter
-        .beats
-        .iter()
-        .any(|b| b.sort_order < beat.sort_order && b.content.chars().count() > 80);
-    if chapter_has_substantial_prose(chapter)
-        && prior_beats_have_prose
-        && !chapter.prose_summary_valid
-    {
-        return Err(AppError::bad_request(
-            "This chapter's prose summary is stale — summarize it before generating later beats",
-        ));
     }
     Ok(())
 }
@@ -835,7 +817,7 @@ pub async fn prepare_generate_prose(
     beat_id: i64,
     payload: &GenerateRequest,
 ) -> AppResult<Job> {
-    ensure_beat_generation_allowed(pool, story_id, chapter_id, beat_id).await?;
+    ensure_beat_generation_allowed(pool, story_id, chapter_id).await?;
     let beat = get_beat(pool, story_id, chapter_id, beat_id).await?;
     if !beat.variable_updates.is_empty() {
         revert_beat_variable_updates(pool, story_id, &beat.variable_updates).await?;
