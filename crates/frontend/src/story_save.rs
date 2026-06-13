@@ -82,12 +82,65 @@ impl AutoSaveController {
             save();
         }));
     }
+}
 
-    /// Mark the save complete. When `apply` is true, the caller should also push the
-    /// server response into parent state. When false, the user kept editing after the
-    /// request was sent — skip the parent refresh to avoid clobbering local draft.
-    pub fn complete(&self, apply: bool) -> bool {
-        self.mark_saved();
-        apply
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AutoSaveOutcome {
+    /// Draft matches the sent snapshot and last_saved was updated.
+    Synced,
+    /// The user kept editing after the request was sent.
+    Stale,
+}
+
+/// Whether the draft differs from the last successful save.
+pub fn draft_is_dirty<T: PartialEq>(draft: &T, last_saved: &T) -> bool {
+    draft != last_saved
+}
+
+/// Handle a completed auto-save without refreshing parent props.
+///
+/// Parent/detail refresh on every field save is the main cause of controlled
+/// inputs reloading and interrupting edits. Callers should only update local
+/// `last_saved` here; reserve parent callbacks for structural actions.
+pub fn finish_auto_save<T: Clone + PartialEq>(
+    controller: &AutoSaveController,
+    current: &T,
+    snapshot: &T,
+    last_saved: &UseStateHandle<T>,
+) -> AutoSaveOutcome {
+    controller.mark_saved();
+    if current == snapshot {
+        last_saved.set(snapshot.clone());
+        AutoSaveOutcome::Synced
+    } else {
+        AutoSaveOutcome::Stale
+    }
+}
+
+/// Record a failed save. Only surfaces the error when the draft still matches
+/// the snapshot that was sent.
+pub fn fail_auto_save<T: PartialEq>(
+    controller: &AutoSaveController,
+    current: &T,
+    snapshot: &T,
+    message: String,
+) -> AutoSaveOutcome {
+    if current == snapshot {
+        controller.mark_failed(message);
+        AutoSaveOutcome::Synced
+    } else {
+        controller.mark_saved();
+        AutoSaveOutcome::Stale
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_is_dirty_compares_snapshots() {
+        assert!(!draft_is_dirty(&"same", &"same"));
+        assert!(draft_is_dirty(&"new", &"old"));
     }
 }

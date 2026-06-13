@@ -14,7 +14,10 @@ use crate::generation_ui::{
     BlockGenerationStatus, GenerationStatusBar, StaleChapterItem,
 };
 use crate::router::{AppRoute, Overlay, StoryNav};
-use crate::story_save::{auto_save_status_html, AutoSaveController, AutoSavePhase};
+use crate::story_save::{
+    auto_save_status_html, draft_is_dirty, fail_auto_save, finish_auto_save, AutoSaveController,
+    AutoSaveOutcome, AutoSavePhase,
+};
 use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
 use crate::variable_updates_ui::VariableUpdatesBlock;
@@ -1086,20 +1089,17 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
     let schedule_save = {
         let draft = draft.clone();
         let last_saved = last_saved.clone();
-        let on_detail = props.on_detail.clone();
         let save_controller = save_controller.clone();
         Callback::from(move |_| {
             let snapshot = (*draft).clone();
-            if snapshot == *last_saved {
+            if !draft_is_dirty(&snapshot, &*last_saved) {
                 return;
             }
-            let on_detail = on_detail.clone();
             let controller = save_controller.clone();
             let draft = draft.clone();
             let last_saved = last_saved.clone();
             let controller_for_save = controller.clone();
             controller.schedule(move || {
-                let on_detail = on_detail.clone();
                 let controller = controller_for_save.clone();
                 let draft = draft.clone();
                 let last_saved = last_saved.clone();
@@ -1114,15 +1114,14 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                         length_preset: Some(snapshot.length_preset),
                         notes: Some(snapshot.notes.clone()),
                     };
+                    let current = (*draft).clone();
                     match api::update_story(snapshot.id, &update).await {
-                        Ok(d) => {
-                            if controller.complete(*draft == snapshot) {
-                                last_saved.set(StoryBasics::from(d.story.clone()));
-                                on_detail.emit(d);
-                            }
+                        Ok(_) => {
+                            let _ = finish_auto_save(&controller, &current, &snapshot, &last_saved);
                         }
-                        Err(err) if *draft == snapshot => controller.mark_failed(err),
-                        Err(_) => controller.mark_saved(),
+                        Err(err) => {
+                            let _ = fail_auto_save(&controller, &current, &snapshot, err);
+                        }
                     }
                 });
             });
@@ -1379,23 +1378,20 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
         let title = title.clone();
         let synopsis = synopsis.clone();
         let last_saved = last_saved.clone();
-        let on_detail = props.on_detail.clone();
         let save_controller = save_controller.clone();
         let story_id = props.story_id;
         let chapter_id = chapter.id;
         Callback::from(move |_| {
             let snapshot = ((*title).clone(), (*synopsis).clone());
-            if snapshot == *last_saved {
+            if !draft_is_dirty(&snapshot, &*last_saved) {
                 return;
             }
-            let on_detail = on_detail.clone();
             let controller = save_controller.clone();
             let title = title.clone();
             let synopsis = synopsis.clone();
             let last_saved = last_saved.clone();
             let controller_for_save = controller.clone();
             controller.schedule(move || {
-                let on_detail = on_detail.clone();
                 let controller = controller_for_save.clone();
                 let title = title.clone();
                 let synopsis = synopsis.clone();
@@ -1413,19 +1409,14 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     )
                     .await
                     {
-                        Ok(d) => {
+                        Ok(_) => {
                             let current = ((*title).clone(), (*synopsis).clone());
-                            if controller.complete(current == snapshot) {
-                                if let Some(ch) = d.chapters.iter().find(|ch| ch.id == chapter_id) {
-                                    last_saved.set((ch.title.clone(), ch.synopsis.clone()));
-                                }
-                                on_detail.emit(d);
-                            }
+                            let _ = finish_auto_save(&controller, &current, &snapshot, &last_saved);
                         }
-                        Err(err) if ((*title).clone(), (*synopsis).clone()) == snapshot => {
-                            controller.mark_failed(err)
+                        Err(err) => {
+                            let current = ((*title).clone(), (*synopsis).clone());
+                            let _ = fail_auto_save(&controller, &current, &snapshot, err);
                         }
-                        Err(_) => controller.mark_saved(),
                     }
                 });
             });
@@ -1607,6 +1598,17 @@ impl BeatFields {
             && self.mechanical == snapshot.mechanical
             && (!saved_content || self.content == snapshot.content)
     }
+
+    fn apply_saved_snapshot(&self, snapshot: &Self, saved_content: bool) -> Self {
+        let mut next = self.clone();
+        next.title = snapshot.title.clone();
+        next.synopsis = snapshot.synopsis.clone();
+        next.mechanical = snapshot.mechanical.clone();
+        if saved_content {
+            next.content = snapshot.content.clone();
+        }
+        next
+    }
 }
 
 #[derive(Properties, PartialEq)]
@@ -1662,36 +1664,6 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         });
     }
 
-    {
-        let content = content.clone();
-        let user_edited_prose = user_edited_prose.clone();
-        let server_content = beat.content.clone();
-        use_effect_with(
-            (beat.id, server_content.clone()),
-            move |(_, server_content)| {
-                if !*user_edited_prose {
-                    content.set(server_content.clone());
-                }
-                || ()
-            },
-        );
-    }
-
-    {
-        let mechanical = mechanical.clone();
-        let user_edited_mechanical = user_edited_mechanical.clone();
-        let server_mechanical = beat.mechanical.clone();
-        use_effect_with(
-            (beat.id, server_mechanical.clone()),
-            move |(_, server_mechanical)| {
-                if !*user_edited_mechanical {
-                    mechanical.set(server_mechanical.clone());
-                }
-                || ()
-            },
-        );
-    }
-
     let prose_generating = props.active_job.as_ref().is_some_and(|job| {
         job.job_type == JobType::StoryBeatProse
             && job.beat_id == Some(beat.id)
@@ -1718,6 +1690,37 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let generation_active = queued || streaming;
     let beat_job_active =
         generation_active || mechanical_generating || aligning_prose || rechecking_variables;
+
+    {
+        let content = content.clone();
+        let user_edited_prose = user_edited_prose.clone();
+        let server_content = beat.content.clone();
+        use_effect_with(
+            (beat.id, server_content.clone(), generation_active),
+            move |(_, server_content, generation_active)| {
+                if *generation_active && !*user_edited_prose {
+                    content.set(server_content.clone());
+                }
+                || ()
+            },
+        );
+    }
+
+    {
+        let mechanical = mechanical.clone();
+        let user_edited_mechanical = user_edited_mechanical.clone();
+        let server_mechanical = beat.mechanical.clone();
+        use_effect_with(
+            (beat.id, server_mechanical.clone()),
+            move |(_, server_mechanical)| {
+                if !*user_edited_mechanical {
+                    mechanical.set(server_mechanical.clone());
+                }
+                || ()
+            },
+        );
+    }
+
     let generation_error = generation_error_from_content(&beat.content);
     let prose_failure_only = generation_error.is_some();
     let story_id = props.story_id;
@@ -1725,16 +1728,15 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let beat_id = beat.id;
     let on_stale_error = props.on_stale_error.clone();
 
+    let schedule_save_cell: Rc<RefCell<Option<Callback<bool>>>> = Rc::new(RefCell::new(None));
     let schedule_save = {
         let title = title.clone();
         let synopsis = synopsis.clone();
         let mechanical = mechanical.clone();
         let content = content.clone();
         let last_saved = last_saved.clone();
-        let user_edited_prose = user_edited_prose.clone();
-        let user_edited_mechanical = user_edited_mechanical.clone();
-        let on_detail = props.on_detail.clone();
         let save_controller = save_controller.clone();
+        let reschedule_cell = schedule_save_cell.clone();
         Callback::from(move |include_content: bool| {
             let save_content = include_content && !prose_generating;
             let snapshot = BeatFields {
@@ -1746,27 +1748,23 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
             if !snapshot.is_dirty_against(&last_saved, save_content) {
                 return;
             }
-            let on_detail = on_detail.clone();
             let controller = save_controller.clone();
             let title = title.clone();
             let synopsis = synopsis.clone();
             let mechanical = mechanical.clone();
             let content = content.clone();
             let last_saved = last_saved.clone();
-            let user_edited_prose = user_edited_prose.clone();
-            let user_edited_mechanical = user_edited_mechanical.clone();
+            let reschedule_cell = reschedule_cell.clone();
             let controller_for_save = controller.clone();
             let saved_content = save_content;
             controller.schedule(move || {
-                let on_detail = on_detail.clone();
                 let controller = controller_for_save.clone();
                 let title = title.clone();
                 let synopsis = synopsis.clone();
                 let mechanical = mechanical.clone();
                 let content = content.clone();
                 let last_saved = last_saved.clone();
-                let user_edited_prose = user_edited_prose.clone();
-                let user_edited_mechanical = user_edited_mechanical.clone();
+                let reschedule_cell = reschedule_cell.clone();
                 let snapshot = snapshot.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     let mut update = StoryBeatUpdate {
@@ -1785,34 +1783,46 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                         mechanical: (*mechanical).clone(),
                         content: (*content).clone(),
                     };
-                    match api::update_beat(story_id, chapter_id, beat_id, &update).await {
-                        Ok(d) => {
-                            if controller
-                                .complete(current.matches_snapshot(&snapshot, saved_content))
-                            {
-                                if let Some(ch) = d.chapters.iter().find(|ch| ch.id == chapter_id) {
-                                    if let Some(saved_beat) =
-                                        ch.beats.iter().find(|b| b.id == beat_id)
-                                    {
-                                        last_saved.set(BeatFields::from_beat(saved_beat));
-                                        if saved_content {
-                                            user_edited_prose.set(false);
-                                        }
-                                        user_edited_mechanical.set(false);
-                                    }
-                                }
-                                on_detail.emit(d);
+                    let reschedule = |outcome: AutoSaveOutcome| {
+                        if outcome == AutoSaveOutcome::Stale
+                            && current.is_dirty_against(&last_saved, true)
+                        {
+                            let include_content =
+                                saved_content || current.content != last_saved.content;
+                            if let Some(cb) = reschedule_cell.borrow().as_ref() {
+                                cb.emit(include_content);
                             }
                         }
-                        Err(err) if current.matches_snapshot(&snapshot, saved_content) => {
-                            controller.mark_failed(err)
+                    };
+                    match api::update_beat(story_id, chapter_id, beat_id, &update).await {
+                        Ok(_) => {
+                            let outcome = if current.matches_snapshot(&snapshot, saved_content) {
+                                controller.mark_saved();
+                                last_saved
+                                    .set(last_saved.apply_saved_snapshot(&snapshot, saved_content));
+                                AutoSaveOutcome::Synced
+                            } else {
+                                controller.mark_saved();
+                                AutoSaveOutcome::Stale
+                            };
+                            reschedule(outcome);
                         }
-                        Err(_) => controller.mark_saved(),
+                        Err(err) => {
+                            let outcome = if current.matches_snapshot(&snapshot, saved_content) {
+                                controller.mark_failed(err);
+                                AutoSaveOutcome::Synced
+                            } else {
+                                controller.mark_saved();
+                                AutoSaveOutcome::Stale
+                            };
+                            reschedule(outcome);
+                        }
                     }
                 });
             });
         })
     };
+    *schedule_save_cell.borrow_mut() = Some(schedule_save.clone());
 
     let prose_display = if prose_failure_only || ((*content).is_empty() && queued) {
         String::new()
@@ -1820,6 +1830,11 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         variables::strip_variables_for_display(&content, true)
     } else {
         variables::strip_variables_for_display(&content, false)
+    };
+    let prose_value = if *user_edited_prose {
+        (*content).clone()
+    } else {
+        prose_display
     };
 
     let prose_placeholder = if queued && (*content).is_empty() {
@@ -1913,7 +1928,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             "prose-editor",
                             streaming.then_some("story-prose--streaming"),
                         )}
-                        value={prose_display}
+                        value={prose_value}
                         placeholder={prose_placeholder}
                         rows="12"
                         readonly={generation_active && !*user_edited_prose}
