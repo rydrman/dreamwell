@@ -53,6 +53,53 @@ fn window_scroll_y() -> f64 {
         .unwrap_or(0.0)
 }
 
+fn measure_element_height(selector: &str) -> f64 {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.query_selector(selector).ok().flatten())
+        .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        .map(|element| element.offset_height() as f64)
+        .unwrap_or(0.0)
+}
+
+fn set_app_layout_var(layout: &HtmlElement, name: &str, value: &str) {
+    let _ = layout.style().set_property(name, value);
+}
+
+fn clear_app_layout_var(layout: &HtmlElement, name: &str) {
+    let _ = layout.style().remove_property(name);
+}
+
+fn update_mobile_sidebar_inset(
+    layout: &HtmlElement,
+    mode: AppMode,
+    chrome_visible: bool,
+    scroll_y: f64,
+) {
+    if !is_mobile_viewport() {
+        clear_app_layout_var(layout, "--sidebar-inset-top");
+        clear_app_layout_var(layout, "--content-header-height");
+        return;
+    }
+
+    let header_height = measure_element_height(".main .content-header");
+    let topbar_height = measure_element_height(".mode-bar");
+    set_app_layout_var(
+        layout,
+        "--content-header-height",
+        &format!("{header_height}px"),
+    );
+
+    let inset = match mode {
+        AppMode::Chats if chrome_visible => topbar_height + header_height,
+        AppMode::Chats => 0.0,
+        AppMode::Stories | AppMode::Queue if scroll_y > 0.0 => header_height,
+        AppMode::Stories | AppMode::Queue => topbar_height + header_height,
+    };
+
+    set_app_layout_var(layout, "--sidebar-inset-top", &format!("{inset}px"));
+}
+
 fn scroll_chat_view_to_bottom(messages_el: Option<&HtmlElement>) {
     let Some(window) = web_sys::window() else {
         return;
@@ -792,47 +839,111 @@ fn app() -> Html {
 
     let selected = selected_chat_id.and_then(|id| chats.iter().find(|c| c.id == id).cloned());
     let active_header = active_chat_header(&selected, selected_chat_id);
+    let app_layout_ref = use_node_ref();
     let mobile_chrome_visible = use_state(|| false);
 
     {
         let mobile_chrome_visible = mobile_chrome_visible.clone();
-        use_effect_with((mode, selected_chat_id), move |(mode, chat_id)| {
-            mobile_chrome_visible.set(false);
-            let mode = *mode;
-            let chat_id = *chat_id;
-            let mobile_chrome_visible = mobile_chrome_visible.clone();
-            let last_scroll_y = Rc::new(RefCell::new(window_scroll_y()));
-            let scroll_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                if mode != AppMode::Chats || chat_id.is_none() || !is_mobile_viewport() {
-                    return;
-                }
-                let current = window_scroll_y();
-                let mut last = last_scroll_y.borrow_mut();
-                if current <= 0.0 || current < *last {
-                    mobile_chrome_visible.set(true);
-                } else if current > *last {
-                    mobile_chrome_visible.set(false);
-                }
-                *last = current;
-            }) as Box<dyn FnMut(_)>);
+        let app_layout_ref = app_layout_ref.clone();
+        use_effect_with(
+            (
+                mode,
+                selected_chat_id,
+                _selected_story_id,
+                active_header.clone(),
+            ),
+            move |(mode, chat_id, _story_id, _header)| {
+                mobile_chrome_visible.set(false);
+                let mode = *mode;
+                let chat_id = *chat_id;
+                let mobile_chrome_visible = mobile_chrome_visible.clone();
+                let app_layout_ref = app_layout_ref.clone();
+                let last_scroll_y = Rc::new(RefCell::new(window_scroll_y()));
 
-            let window = web_sys::window();
-            if let Some(window) = window.as_ref() {
-                let _ = window.add_event_listener_with_callback(
-                    "scroll",
-                    scroll_callback.as_ref().unchecked_ref(),
-                );
-            }
+                let sync_sidebar_inset = {
+                    let app_layout_ref = app_layout_ref.clone();
+                    let mobile_chrome_visible = mobile_chrome_visible.clone();
+                    Rc::new(move || {
+                        if let Some(layout) = app_layout_ref.cast::<HtmlElement>() {
+                            update_mobile_sidebar_inset(
+                                &layout,
+                                mode,
+                                *mobile_chrome_visible,
+                                window_scroll_y(),
+                            );
+                        }
+                    })
+                };
 
-            move || {
+                let scroll_callback = Closure::wrap(Box::new({
+                    let sync_sidebar_inset = sync_sidebar_inset.clone();
+                    let mobile_chrome_visible = mobile_chrome_visible.clone();
+                    let last_scroll_y = last_scroll_y.clone();
+                    move |_event: web_sys::Event| {
+                        if !is_mobile_viewport() {
+                            return;
+                        }
+                        let current = window_scroll_y();
+                        if mode == AppMode::Chats && chat_id.is_some() {
+                            let mut last = last_scroll_y.borrow_mut();
+                            if current <= 0.0 || current < *last {
+                                mobile_chrome_visible.set(true);
+                            } else if current > *last {
+                                mobile_chrome_visible.set(false);
+                            }
+                            *last = current;
+                        }
+                        sync_sidebar_inset();
+                    }
+                }) as Box<dyn FnMut(_)>);
+
+                let resize_callback = Closure::wrap(Box::new({
+                    let sync_sidebar_inset = sync_sidebar_inset.clone();
+                    move |_event: web_sys::Event| sync_sidebar_inset()
+                }) as Box<dyn FnMut(_)>);
+
+                let window = web_sys::window();
                 if let Some(window) = window.as_ref() {
-                    let _ = window.remove_event_listener_with_callback(
+                    let _ = window.add_event_listener_with_callback(
                         "scroll",
                         scroll_callback.as_ref().unchecked_ref(),
                     );
+                    let _ = window.add_event_listener_with_callback(
+                        "resize",
+                        resize_callback.as_ref().unchecked_ref(),
+                    );
                 }
-            }
-        });
+
+                let sync = sync_sidebar_inset.clone();
+                Timeout::new(0, move || sync()).forget();
+
+                move || {
+                    if let Some(window) = window.as_ref() {
+                        let _ = window.remove_event_listener_with_callback(
+                            "scroll",
+                            scroll_callback.as_ref().unchecked_ref(),
+                        );
+                        let _ = window.remove_event_listener_with_callback(
+                            "resize",
+                            resize_callback.as_ref().unchecked_ref(),
+                        );
+                    }
+                }
+            },
+        );
+    }
+
+    {
+        let app_layout_ref = app_layout_ref.clone();
+        use_effect_with(
+            (mode, *mobile_chrome_visible),
+            move |(mode, chrome_visible)| {
+                if let Some(layout) = app_layout_ref.cast::<HtmlElement>() {
+                    update_mobile_sidebar_inset(&layout, *mode, *chrome_visible, window_scroll_y());
+                }
+                || ()
+            },
+        );
     }
 
     let sidebar_open = sidebar_open_from_route(&route);
@@ -889,11 +1000,14 @@ fn app() -> Html {
     };
 
     html! {
-        <div class={classes!(
-            "app-layout",
-            (mode == AppMode::Chats).then_some("app-layout--chat-scroll-chrome"),
-            (*mobile_chrome_visible).then_some("mobile-chrome-visible"),
-        )}>
+        <div
+            ref={app_layout_ref}
+            class={classes!(
+                "app-layout",
+                (mode == AppMode::Chats).then_some("app-layout--chat-scroll-chrome"),
+                (*mobile_chrome_visible).then_some("mobile-chrome-visible"),
+            )}
+        >
             <ModeBar
                 mode={mode}
                 queue={(*queue).clone()}
