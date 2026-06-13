@@ -1342,8 +1342,9 @@ input.header-title {
   gap: 0.25rem;
 }
 
-.story-blocks > :last-child {
-  padding-bottom: 1.5rem;
+.story-blocks > :last-child:is(.story-block-header, .story-block-body),
+.story-blocks > .story-chapter-block:last-child > :last-child:not(.story-beat-block),
+.story-blocks > .story-chapter-block:last-child > .story-beat-block:last-child > :last-child {
   border-bottom: 1px solid var(--border);
 }
 
