@@ -23,7 +23,14 @@ pub async fn variables_for_beat_generation(
             .collect();
     for variable in crate::db::list_story_variables(pool, story_id).await? {
         if variable.source_chapter_order == MANUAL_VARIABLE_SOURCE {
-            state.insert(variable.key, variable.value);
+            state.insert(variable.key.clone(), variable.value.clone());
+            continue;
+        }
+        let before_current = variable.source_chapter_order < chapter_order
+            || (variable.source_chapter_order == chapter_order
+                && variable.source_beat_order < beat_order);
+        if before_current {
+            state.insert(variable.key.clone(), variable.value.clone());
         }
     }
     let mut pairs: Vec<(String, String)> = state.into_iter().collect();
@@ -148,6 +155,9 @@ mod tests {
             story_id: 1,
             title: "Chapter 1".to_string(),
             synopsis: String::new(),
+            prose_summary: String::new(),
+            prose_summary_valid: false,
+            prose_summary_at: None,
             sort_order: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),

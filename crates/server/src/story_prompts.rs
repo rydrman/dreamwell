@@ -25,6 +25,25 @@ pub fn prior_chapter_synopses(chapters: &[StoryChapter], before_order: i64) -> S
         .join("\n")
 }
 
+pub fn prior_chapter_context(chapters: &[StoryChapter], before_order: i64) -> String {
+    chapters
+        .iter()
+        .filter(|c| c.sort_order < before_order)
+        .map(|c| {
+            let label = format!("Chapter {} — {}", c.sort_order + 1, c.title);
+            if c.prose_summary_valid && !c.prose_summary.trim().is_empty() {
+                format!(
+                    "{label} (compressed from prose):\n{}",
+                    c.prose_summary.trim()
+                )
+            } else {
+                format!("{label}: {}", c.synopsis)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 pub fn prior_beat_synopses(beats: &[StoryBeat], before_order: i64) -> String {
     beats
         .iter()
@@ -179,7 +198,7 @@ pub fn build_beat_prose_messages(
     variables: &[(String, String)],
     variables_enabled: bool,
 ) -> Vec<Value> {
-    let prior_chapters = prior_chapter_synopses(chapters, chapter.sort_order);
+    let prior_chapters = prior_chapter_context(chapters, chapter.sort_order);
     let prior_beats = prior_beat_synopses(&chapter.beats, beat.sort_order);
     let prior_prose = prior_beat_prose(&chapter.beats, beat.sort_order);
     let chapter_opening = if beat.sort_order == 0 {
@@ -211,7 +230,7 @@ pub fn build_beat_prose_messages(
         user.push_str(&prior_prose);
     }
     if !prior_chapters.is_empty() {
-        user.push_str("\n\nPrior chapters (synopses only):\n");
+        user.push_str("\n\nPrior chapters (compressed summaries when available):\n");
         user.push_str(&prior_chapters);
     }
     if !prior_beats.is_empty() {
@@ -494,6 +513,9 @@ mod tests {
             story_id: 1,
             title: format!("Chapter {}", order + 1),
             synopsis: format!("Chapter {} synopsis", order + 1),
+            prose_summary: String::new(),
+            prose_summary_valid: false,
+            prose_summary_at: None,
             sort_order: order,
             created_at: Utc::now(),
             updated_at: Utc::now(),

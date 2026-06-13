@@ -7,6 +7,7 @@ mod queue_ui;
 mod router;
 mod sidebar;
 mod stories_ui;
+mod story_save;
 mod title_editor;
 mod variables;
 
@@ -29,7 +30,7 @@ use install::InstallSettings;
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
-use stories_ui::{StoriesShell, StoryVariablesOverlay};
+use stories_ui::StoriesShell;
 use title_editor::TitleEditor;
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
@@ -1018,12 +1019,6 @@ fn app() -> Html {
                             });
                         }
                     })}
-                />
-            }
-            if mode == AppMode::Stories && overlay == Some(Overlay::Variables) {
-                <StoryVariablesOverlay
-                    story_id={story_id_from_route(&route)}
-                    on_close={close_overlay.clone()}
                 />
             }
             if sidebar_open {

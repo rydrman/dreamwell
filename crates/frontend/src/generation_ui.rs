@@ -95,6 +95,8 @@ pub fn job_running_label(job_type: JobType) -> &'static str {
         JobType::StoryBeatProse => "writing prose…",
         JobType::StoryChapterOutline => "outlining chapter…",
         JobType::StoryBeatOutline => "outlining beats…",
+        JobType::StoryChapterSummarize => "summarizing chapter…",
+        JobType::StoryBeatVariableRecheck => "checking variables…",
     }
 }
 
@@ -197,6 +199,7 @@ pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
                 JobType::StoryProposeChapters | JobType::StoryProposeBeats => {
                     GenerationPhase::ProposingOutline
                 }
+                JobType::StoryChapterSummarize => GenerationPhase::Summarizing,
                 JobType::StoryBeatProse => GenerationPhase::Writing,
                 _ => GenerationPhase::ProposingOutline,
             };
@@ -214,7 +217,9 @@ pub fn chapter_block_status(
     let job = active_job?;
     let scoped = match job.job_type {
         JobType::StoryProposeChapters => chapter.title.is_empty() && chapter.synopsis.is_empty(),
-        JobType::StoryProposeBeats => job.chapter_id == Some(chapter.id),
+        JobType::StoryProposeBeats | JobType::StoryChapterSummarize => {
+            job.chapter_id == Some(chapter.id)
+        }
         _ => false,
     };
     if !scoped {
