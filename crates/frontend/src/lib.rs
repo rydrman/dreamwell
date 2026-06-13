@@ -8,6 +8,7 @@ mod router;
 mod sidebar;
 mod stories_ui;
 mod story_save;
+mod summary_ui;
 mod title_editor;
 mod variables;
 
@@ -31,6 +32,10 @@ use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
 use stories_ui::StoriesShell;
+use summary_ui::{
+    chat_summarize_in_progress, is_chat_summarize_pending, SummaryBreak, SummaryKind, SummaryView,
+    CHAT_SUMMARIZE_PLACEHOLDER,
+};
 use title_editor::TitleEditor;
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
@@ -1646,17 +1651,12 @@ fn confirm_permanent_chat_delete() -> bool {
 fn summarize_placeholder_id(messages: &[Message]) -> Option<i64> {
     messages
         .iter()
-        .find(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
+        .find(|message| is_chat_summarize_pending(message))
         .map(|message| message.id)
 }
 
 fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
-    chat.active_job
-        .as_ref()
-        .is_some_and(|job| job.job_type == JobType::ChatSummarize)
-        || messages
-            .iter()
-            .any(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
+    chat_summarize_in_progress(chat, messages)
 }
 
 fn message_generation_error(message: &Message) -> Option<String> {
@@ -2443,7 +2443,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     }
 }
 
-const SUMMARIZE_PLACEHOLDER: &str = "Summarizing earlier messages…";
+const SUMMARIZE_PLACEHOLDER: &str = CHAT_SUMMARIZE_PLACEHOLDER;
 
 #[derive(Clone, Copy, PartialEq)]
 enum SummaryMarkerMode {
@@ -2462,7 +2462,6 @@ struct SummaryMarkerProps {
 
 #[function_component(SummaryMarker)]
 fn summary_marker(props: &SummaryMarkerProps) -> Html {
-    let expanded = use_state(|| true);
     let mode = use_state(|| SummaryMarkerMode::View);
     let edit_text = use_state(String::new);
     let acting = use_state(|| false);
@@ -2471,26 +2470,16 @@ fn summary_marker(props: &SummaryMarkerProps) -> Html {
         Some(JobStatus::Queued) | Some(JobStatus::Running)
     );
     let pending = active || props.message.content == SUMMARIZE_PLACEHOLDER;
-    let summary_html = if props.chat_summary.is_empty() {
-        html! { <span class="muted">{"(Empty summary)"}</span> }
-    } else {
-        markdown::render_message_content(&props.chat_summary)
-    };
-
-    let toggle = {
-        let expanded = expanded.clone();
-        Callback::from(move |_| expanded.set(!*expanded))
-    };
+    let can_manage = !pending && !props.summarize_busy && !*acting;
+    let has_summary = !props.chat_summary.trim().is_empty();
 
     let start_edit = {
         let mode = mode.clone();
         let edit_text = edit_text.clone();
-        let expanded = expanded.clone();
         let chat_summary = props.chat_summary.clone();
         Callback::from(move |_| {
             edit_text.set(chat_summary.clone());
             mode.set(SummaryMarkerMode::Edit);
-            expanded.set(true);
         })
     };
 
@@ -2498,9 +2487,6 @@ fn summary_marker(props: &SummaryMarkerProps) -> Html {
         let mode = mode.clone();
         Callback::from(move |_| mode.set(SummaryMarkerMode::View))
     };
-
-    let can_manage = !pending && !props.summarize_busy && !*acting;
-    let has_summary = !props.chat_summary.trim().is_empty();
 
     let regenerate_summary = {
         let acting = acting.clone();
@@ -2597,69 +2583,65 @@ fn summary_marker(props: &SummaryMarkerProps) -> Html {
         })
     };
 
+    let extra_actions = if *mode == SummaryMarkerMode::View && can_manage && has_summary {
+        html! {
+            <>
+                <button type="button" class="summary-toggle" onclick={start_edit}>
+                    {"Edit summary"}
+                </button>
+                <button type="button" class="summary-toggle" onclick={regenerate_summary}>
+                    {"Regenerate"}
+                </button>
+                <button type="button" class="summary-toggle" onclick={delete_summary}>
+                    {"Delete summary"}
+                </button>
+            </>
+        }
+    } else {
+        html! {}
+    };
+
     html! {
         <div class={classes!(
             "message-summary-marker",
             active.then_some("message-summary-marker--active")
         )}>
-            <div class="message-summary-break" aria-hidden="true">
-                <span class="message-summary-break-line"></span>
-                <span class="message-summary-break-label">{
-                    if pending { "Summarizing earlier messages" } else { "Earlier messages summarized" }
-                }</span>
-                <span class="message-summary-break-line"></span>
-            </div>
+            <SummaryBreak kind={SummaryKind::ChatHistory} pending={pending} />
             <div class="message-summary-body">
                 if pending {
-                    <p class="message-summary-pending muted">
-                        <span class="settings-save-spinner" aria-hidden="true"></span>
-                        {" Compressing chat history to fit your context window…"}
-                    </p>
-                } else {
-                    <>
-                        <div class="message-summary-actions">
-                            <button type="button" class="message-summary-toggle" onclick={toggle}>
-                                <span class="message-summary-chevron">{ if *expanded { "▾" } else { "▸" } }</span>
-                                <span>{"View summary"}</span>
+                    <SummaryView
+                        text={String::new()}
+                        pending={true}
+                        kind={SummaryKind::ChatHistory}
+                        default_expanded={true}
+                    />
+                } else if *mode == SummaryMarkerMode::Edit {
+                    <div class="summary-editor">
+                        <textarea
+                            rows="8"
+                            value={(*edit_text).clone()}
+                            oninput={Callback::from({
+                                let edit_text = edit_text.clone();
+                                move |e: InputEvent| {
+                                    let input: HtmlInputElement = e.target_unchecked_into();
+                                    edit_text.set(input.value());
+                                }
+                            })}
+                        />
+                        <div class="summary-editor-actions">
+                            <button class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
+                            <button class="btn" onclick={save_edit} disabled={*acting || edit_text.trim().is_empty()}>
+                                { if *acting { "Saving…" } else { "Save summary" } }
                             </button>
-                            if *mode == SummaryMarkerMode::View && can_manage && has_summary {
-                                <button type="button" class="message-summary-toggle" onclick={start_edit}>
-                                    {"Edit summary"}
-                                </button>
-                                <button type="button" class="message-summary-toggle" onclick={regenerate_summary}>
-                                    {"Regenerate"}
-                                </button>
-                                <button type="button" class="message-summary-toggle" onclick={delete_summary}>
-                                    {"Delete summary"}
-                                </button>
-                            }
                         </div>
-                        if *expanded {
-                            if *mode == SummaryMarkerMode::Edit {
-                                <div class="message-summary-editor">
-                                    <textarea
-                                        rows="8"
-                                        value={(*edit_text).clone()}
-                                        oninput={Callback::from({
-                                            let edit_text = edit_text.clone();
-                                            move |e: InputEvent| {
-                                                let input: HtmlInputElement = e.target_unchecked_into();
-                                                edit_text.set(input.value());
-                                            }
-                                        })}
-                                    />
-                                    <div class="message-summary-editor-actions">
-                                        <button class="btn secondary" onclick={cancel_edit} disabled={*acting}>{"Cancel"}</button>
-                                        <button class="btn" onclick={save_edit} disabled={*acting || edit_text.trim().is_empty()}>
-                                            { if *acting { "Saving…" } else { "Save summary" } }
-                                        </button>
-                                    </div>
-                                </div>
-                            } else {
-                                <div class="message-summary-content">{ summary_html }</div>
-                            }
-                        }
-                    </>
+                    </div>
+                } else {
+                    <SummaryView
+                        text={props.chat_summary.clone()}
+                        pending={false}
+                        kind={SummaryKind::ChatHistory}
+                        extra_actions={extra_actions}
+                    />
                 }
             </div>
         </div>
