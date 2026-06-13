@@ -2,6 +2,7 @@
 name = "dreamwell-server"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [[bin]]
 name = "dreamwell-server"
