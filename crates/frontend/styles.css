@@ -1271,6 +1271,13 @@ input.header-title {
   font-size: 0.875rem;
 }
 
+.build-info {
+  margin-top: 1.25rem;
+  font-size: 0.75rem;
+  text-align: right;
+  opacity: 0.65;
+}
+
 .text-danger {
   color: var(--danger);
 }

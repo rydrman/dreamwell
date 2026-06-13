@@ -1,3 +1,4 @@
+mod build_info;
 mod character_import;
 mod config;
 mod db;
@@ -70,6 +71,7 @@ async fn main() {
             axum::routing::get(|| async {
                 axum::Json(HealthResponse {
                     status: "ok".to_string(),
+                    git_sha: Some(build_info::GIT_SHA.to_string()),
                 })
             }),
         )

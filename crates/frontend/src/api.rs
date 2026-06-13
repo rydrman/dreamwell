@@ -396,6 +396,10 @@ pub async fn delete_variable(chat_id: i64, key: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub async fn get_health() -> Result<HealthResponse, String> {
+    json(api_request("GET", "/api/health")).await
+}
+
 pub async fn get_settings() -> Result<Settings, String> {
     json(api_request("GET", "/api/settings")).await
 }
