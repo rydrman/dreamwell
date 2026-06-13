@@ -250,11 +250,19 @@ async fn summarize_chapter_prose(
 async fn recheck_beat_variables(
     State(state): State<AppState>,
     Path((id, chapter_id, beat_id)): Path<(i64, i64, i64)>,
+    Json(payload): Json<GenerateRequest>,
 ) -> AppResult<Json<Job>> {
     let settings = db::get_settings(&state.pool).await?;
     let job = state
         .queue
-        .enqueue_story_beat_variable_recheck(&state.pool, id, chapter_id, beat_id, &settings)
+        .enqueue_story_beat_variable_recheck(
+            &state.pool,
+            id,
+            chapter_id,
+            beat_id,
+            &payload.guidance_notes,
+            &settings,
+        )
         .await?;
     db::touch_story(&state.pool, id).await?;
     Ok(Json(job))

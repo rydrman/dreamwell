@@ -628,6 +628,7 @@ pub async fn enqueue_beat_variable_recheck_job(
     story_id: i64,
     chapter_id: i64,
     beat_id: i64,
+    guidance_notes: String,
 ) -> AppResult<Job> {
     enqueue_story_job(
         pool,
@@ -635,7 +636,7 @@ pub async fn enqueue_beat_variable_recheck_job(
         story_id,
         Some(chapter_id),
         Some(beat_id),
-        String::new(),
+        guidance_notes,
     )
     .await
 }

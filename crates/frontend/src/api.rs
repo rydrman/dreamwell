@@ -626,11 +626,12 @@ pub async fn recheck_beat_variables(
     story_id: i64,
     chapter_id: i64,
     beat_id: i64,
+    guidance_notes: &str,
 ) -> Result<Job, String> {
     json_body(
         "POST",
         &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}/variables/recheck"),
-        &serde_json::json!({}),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
     )
     .await
 }
