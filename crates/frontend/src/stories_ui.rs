@@ -1714,11 +1714,13 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     <button class="btn secondary" disabled={rechecking_variables || generation_active} onclick={{
                         let on_detail = props.on_detail.clone();
                         let bump_stream = props.bump_stream.clone();
+                        let guidance = props.guidance.clone();
                         Callback::from(move |_| {
                             let on_detail = on_detail.clone();
                             let bump_stream = bump_stream.clone();
+                            let notes = guidance.clone();
                             wasm_bindgen_futures::spawn_local(async move {
-                                match api::recheck_beat_variables(story_id, chapter_id, beat_id).await
+                                match api::recheck_beat_variables(story_id, chapter_id, beat_id, &notes).await
                                 {
                                     Ok(_) => {
                                         bump_stream.emit(());

@@ -179,6 +179,7 @@ impl JobQueue {
         story_id: i64,
         chapter_id: i64,
         beat_id: i64,
+        guidance_notes: &str,
         settings: &dreamwell_types::Settings,
     ) -> AppResult<dreamwell_types::Job> {
         let job = crate::story_variable_recheck::enqueue_beat_variable_recheck(
@@ -187,6 +188,7 @@ impl JobQueue {
             story_id,
             chapter_id,
             beat_id,
+            guidance_notes,
             settings,
         )
         .await?;
@@ -1360,6 +1362,7 @@ async fn run_story_beat_variable_recheck_handler(
         beat_id,
         chapter.sort_order,
         beat.sort_order,
+        &job.guidance_notes,
         settings,
     )
     .await

@@ -54,7 +54,16 @@ fn format_current_variables(variables: &[dreamwell_types::StoryVariable]) -> Str
 fn build_recheck_prompt(
     prose: &str,
     variables: &[dreamwell_types::StoryVariable],
+    guidance: &str,
 ) -> Vec<serde_json::Value> {
+    let mut user = format!(
+        "Current story variables:\n{}\n\nBeat prose to review:\n{prose}",
+        format_current_variables(variables),
+    );
+    if !guidance.trim().is_empty() {
+        user.push_str("\n\nGuidance from the author:\n");
+        user.push_str(guidance.trim());
+    }
     vec![
         json!({
             "role": "system",
@@ -62,10 +71,7 @@ fn build_recheck_prompt(
         }),
         json!({
             "role": "user",
-            "content": format!(
-                "Current story variables:\n{}\n\nBeat prose to review:\n{prose}",
-                format_current_variables(variables),
-            ),
+            "content": user,
         }),
     ]
 }
@@ -76,6 +82,7 @@ pub async fn enqueue_beat_variable_recheck(
     story_id: i64,
     chapter_id: i64,
     beat_id: i64,
+    guidance_notes: &str,
     settings: &Settings,
 ) -> AppResult<Job> {
     if !settings.variables_enabled {
@@ -106,7 +113,14 @@ pub async fn enqueue_beat_variable_recheck(
         ));
     }
 
-    let job = db::enqueue_beat_variable_recheck_job(pool, story_id, chapter_id, beat_id).await?;
+    let job = db::enqueue_beat_variable_recheck_job(
+        pool,
+        story_id,
+        chapter_id,
+        beat_id,
+        guidance_notes.to_string(),
+    )
+    .await?;
     let _ = work_tx.send(());
     Ok(job)
 }
@@ -120,6 +134,7 @@ pub async fn run_beat_variable_recheck_job(
     beat_id: i64,
     chapter_order: i64,
     beat_order: i64,
+    guidance: &str,
     settings: &Settings,
 ) -> AppResult<()> {
     if !settings.variables_enabled {
@@ -135,7 +150,7 @@ pub async fn run_beat_variable_recheck_job(
     }
 
     let variables = db::list_story_variables(pool, story_id).await?;
-    let prompt = build_recheck_prompt(&visible, &variables);
+    let prompt = build_recheck_prompt(&visible, &variables, guidance);
     let max_attempts = max_retries();
     let mut raw = None;
 
@@ -201,4 +216,25 @@ pub async fn run_beat_variable_recheck_job(
     db::touch_story(pool, story_id).await?;
     db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recheck_prompt_includes_guidance_when_provided() {
+        let prompt = build_recheck_prompt("She opened the door.", &[], "Track the key as an item.");
+        let user = prompt[1]["content"].as_str().unwrap();
+        assert!(user.contains("She opened the door."));
+        assert!(user.contains("Guidance from the author:"));
+        assert!(user.contains("Track the key as an item."));
+    }
+
+    #[test]
+    fn recheck_prompt_omits_guidance_when_empty() {
+        let prompt = build_recheck_prompt("She opened the door.", &[], "  ");
+        let user = prompt[1]["content"].as_str().unwrap();
+        assert!(!user.contains("Guidance from the author:"));
+    }
 }
