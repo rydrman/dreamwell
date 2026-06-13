@@ -3818,7 +3818,30 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             </label>
             <InstallSettings />
             <NotificationSettings />
+            <BuildInfo />
         </div>
+    }
+}
+
+#[function_component(BuildInfo)]
+fn build_info() -> Html {
+    let sha = use_state(|| None::<String>);
+
+    {
+        let sha = sha.clone();
+        use_effect_with((), move |_| {
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(health) = api::get_health().await {
+                    sha.set(health.git_sha);
+                }
+            });
+            || ()
+        });
+    }
+
+    match (*sha).clone() {
+        Some(sha) => html! { <p class="build-info muted">{ sha }</p> },
+        None => html! {},
     }
 }
 
