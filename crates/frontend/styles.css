@@ -1478,6 +1478,28 @@ input.header-title {
   line-height: 1.6;
 }
 
+.prose-editor-wrap {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.prose-editor-wrap .prose-editor {
+  border: none;
+  border-radius: 0;
+  display: block;
+}
+
+.prose-editor-wrap .message-variable-updates {
+  margin: 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
 .sidebar-section-tabs {
   display: flex;
   gap: 0.25rem;
