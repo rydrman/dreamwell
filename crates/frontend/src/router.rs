@@ -536,6 +536,18 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
                 sidebar: false,
             }
         }
+        [id, "chapters", chapter_id, overlay, "sidebar"]
+            if parse_id(id).is_some()
+                && parse_id(chapter_id).is_some()
+                && parse_overlay(overlay).is_some() =>
+        {
+            AppRoute::Stories {
+                story_id: parse_id(id),
+                nav: StoryNav::Chapter(parse_id(chapter_id).unwrap()),
+                overlay: parse_overlay(overlay),
+                sidebar: true,
+            }
+        }
         [id, "chapters", chapter_id, "beats", beat_id]
             if parse_id(id).is_some()
                 && parse_id(chapter_id).is_some()
@@ -580,6 +592,22 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
                 },
                 overlay: parse_overlay(overlay),
                 sidebar: false,
+            }
+        }
+        [id, "chapters", chapter_id, "beats", beat_id, overlay, "sidebar"]
+            if parse_id(id).is_some()
+                && parse_id(chapter_id).is_some()
+                && parse_id(beat_id).is_some()
+                && parse_overlay(overlay).is_some() =>
+        {
+            AppRoute::Stories {
+                story_id: parse_id(id),
+                nav: StoryNav::Beat {
+                    chapter_id: parse_id(chapter_id).unwrap(),
+                    beat_id: parse_id(beat_id).unwrap(),
+                },
+                overlay: parse_overlay(overlay),
+                sidebar: true,
             }
         }
         _ => AppRoute::Stories {
@@ -780,6 +808,21 @@ mod tests {
                 },
                 overlay: Some(Overlay::Settings),
                 sidebar: false,
+            },
+            AppRoute::Stories {
+                story_id: Some(3),
+                nav: StoryNav::Beat {
+                    chapter_id: 9,
+                    beat_id: 12,
+                },
+                overlay: Some(Overlay::Variables),
+                sidebar: true,
+            },
+            AppRoute::Stories {
+                story_id: Some(3),
+                nav: StoryNav::Chapter(9),
+                overlay: Some(Overlay::Variables),
+                sidebar: true,
             },
             AppRoute::Stories {
                 story_id: Some(3),

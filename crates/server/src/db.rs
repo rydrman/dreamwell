@@ -82,6 +82,8 @@ pub(crate) fn parse_job_type(s: &str) -> JobType {
         "story_beat_outline" => JobType::StoryBeatOutline,
         "story_propose_beats" => JobType::StoryProposeBeats,
         "story_beat_prose" => JobType::StoryBeatProse,
+        "story_beat_mechanical" => JobType::StoryBeatMechanical,
+        "story_beat_prose_recheck" => JobType::StoryBeatProseRecheck,
         "story_chapter_summarize" => JobType::StoryChapterSummarize,
         "story_beat_variable_recheck" => JobType::StoryBeatVariableRecheck,
         "chat_summarize" => JobType::ChatSummarize,
@@ -100,6 +102,8 @@ pub(crate) fn job_type_str(job_type: JobType) -> &'static str {
         JobType::StoryBeatOutline => "story_beat_outline",
         JobType::StoryProposeBeats => "story_propose_beats",
         JobType::StoryBeatProse => "story_beat_prose",
+        JobType::StoryBeatMechanical => "story_beat_mechanical",
+        JobType::StoryBeatProseRecheck => "story_beat_prose_recheck",
         JobType::StoryChapterSummarize => "story_chapter_summarize",
         JobType::StoryBeatVariableRecheck => "story_beat_variable_recheck",
     }
@@ -580,6 +584,23 @@ pub async fn update_message_content(
     Ok(())
 }
 
+pub async fn update_message_content_and_variable_updates(
+    pool: &SqlitePool,
+    message_id: i64,
+    content: &str,
+    variable_updates: &[dreamwell_types::MessageVariableUpdate],
+) -> AppResult<()> {
+    let variable_updates_json = serde_json::to_string(variable_updates)
+        .map_err(|e| AppError::internal(format!("serialize variable updates: {e}")))?;
+    sqlx::query("UPDATE messages SET content = ?1, variable_updates = ?2 WHERE id = ?3")
+        .bind(content)
+        .bind(variable_updates_json)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct MessageGenerationSnapshot {
     pub content: String,
@@ -844,6 +865,22 @@ pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, variable_id: i64) 
         return Err(AppError::not_found("Variable not found"));
     }
     Ok(())
+}
+
+pub async fn get_chat_variable(
+    pool: &SqlitePool,
+    chat_id: i64,
+    variable_id: i64,
+) -> AppResult<ChatVariable> {
+    let row = sqlx::query_as::<_, VariableRow>(
+        "SELECT id, chat_id, key, value, source_message_id, updated_at FROM chat_variables WHERE chat_id = ?1 AND id = ?2",
+    )
+    .bind(chat_id)
+    .bind(variable_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("Variable not found"))?;
+    Ok(row.into())
 }
 
 pub async fn delete_variable_scoped(

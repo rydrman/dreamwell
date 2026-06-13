@@ -20,6 +20,8 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StoryBeatOutline => "beat outline",
         JobType::StoryProposeBeats => "propose beats",
         JobType::StoryBeatProse => "beat prose",
+        JobType::StoryBeatMechanical => "beat mechanical",
+        JobType::StoryBeatProseRecheck => "prose align",
         JobType::StoryChapterSummarize => "chapter summarize",
         JobType::StoryBeatVariableRecheck => "variable recheck",
     }

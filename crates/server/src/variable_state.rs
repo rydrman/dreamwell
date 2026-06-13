@@ -261,6 +261,7 @@ mod tests {
                 chapter_id: 1,
                 title: "Beat 1".to_string(),
                 synopsis: String::new(),
+                mechanical: String::new(),
                 content: String::new(),
                 variable_updates: vec![set("coin", "gold")],
                 sort_order: 0,

@@ -34,6 +34,7 @@ use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
 use stories_ui::StoriesShell;
+use story_save::{AutoSaveField, AutoSavePhase};
 use summary_ui::{
     chat_summarize_in_progress, is_chat_summarize_pending, SummaryBreak, SummaryKind, SummaryView,
     CHAT_SUMMARIZE_PLACEHOLDER,
@@ -1145,6 +1146,7 @@ fn app() -> Html {
                             });
                         }
                     })}
+                    on_messages_changed={load_messages_for_chat.clone()}
                 />
             }
             if sidebar_open {
@@ -1688,6 +1690,7 @@ struct ChatPanelOverlayProps {
     on_chat_created: Callback<i64>,
     on_chats_changed: Callback<()>,
     on_characters_changed: Callback<()>,
+    on_messages_changed: Callback<i64>,
 }
 
 #[function_component(ChatPanelOverlay)]
@@ -1716,7 +1719,11 @@ fn chat_panel_overlay(props: &ChatPanelOverlayProps) -> Html {
                         chat_id={props.chat_id}
                     />
                 } else if props.overlay == Overlay::Variables {
-                    <VariablesPanel chat_id={props.chat_id} messages={props.messages.clone()} />
+                    <VariablesPanel
+                        chat_id={props.chat_id}
+                        messages={props.messages.clone()}
+                        on_messages_changed={props.on_messages_changed.clone()}
+                    />
                 }
             </div>
         </div>
@@ -3269,6 +3276,7 @@ struct VariableRefreshSignal {
 struct VariablesPanelProps {
     chat_id: Option<i64>,
     messages: Vec<Message>,
+    on_messages_changed: Callback<i64>,
 }
 
 #[function_component(VariablesPanel)]
@@ -3355,17 +3363,20 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
 
     let on_delete = {
         let variables = variables.clone();
+        let on_messages_changed = props.on_messages_changed.clone();
         Callback::from(move |variable_id: Option<i64>| {
             let Some(variable_id) = variable_id else {
                 return;
             };
             let variables = variables.clone();
+            let on_messages_changed = on_messages_changed.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 match api::delete_variable(chat_id, variable_id).await {
                     Ok(()) => {
                         if let Ok(list) = api::get_variables(chat_id).await {
                             variables.set(list);
                         }
+                        on_messages_changed.emit(chat_id);
                     }
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
@@ -3566,31 +3577,12 @@ fn apply_detected_context(save_ctx: &SettingsSaveContext, caps: &ModelCapabiliti
     });
 }
 
-fn settings_save_status_html(phase: &SettingsSavePhase) -> Html {
+fn settings_autosave_field_props(phase: &SettingsSavePhase) -> (AutoSavePhase, Option<String>) {
     match phase {
-        SettingsSavePhase::Saving => html! {
-            <span class="settings-save-indicator settings-save-indicator--saving">
-                <span class="settings-save-spinner" aria-hidden="true"></span>
-                <span>{"Saving…"}</span>
-            </span>
-        },
-        SettingsSavePhase::Failed(message) => html! {
-            <span class="settings-save-indicator settings-save-indicator--error" title={message.clone()}>
-                <span class="settings-save-icon" aria-hidden="true">{"✕"}</span>
-                <span>{"Save failed"}</span>
-            </span>
-        },
-        SettingsSavePhase::Debouncing => html! {
-            <span class="settings-save-indicator settings-save-indicator--pending">
-                <span class="settings-save-icon" aria-hidden="true">{"⏳"}</span>
-            </span>
-        },
-        SettingsSavePhase::Synced => html! {
-            <span class="settings-save-indicator settings-save-indicator--saved">
-                <span class="settings-save-icon" aria-hidden="true">{"✓"}</span>
-                <span>{"Saved"}</span>
-            </span>
-        },
+        SettingsSavePhase::Synced => (AutoSavePhase::Synced, None),
+        SettingsSavePhase::Debouncing => (AutoSavePhase::Debouncing, None),
+        SettingsSavePhase::Saving => (AutoSavePhase::Saving, None),
+        SettingsSavePhase::Failed(message) => (AutoSavePhase::Failed, Some(message.clone())),
     }
 }
 
@@ -3614,21 +3606,21 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
     };
 
     let prompt_budget = prompt_token_budget(s.context_tokens, s.max_tokens);
+    let (autosave_phase, autosave_error) = settings_autosave_field_props(&phase);
 
     html! {
         <div>
-            <div class="settings-status">
-                { settings_save_status_html(&phase) }
-            </div>
             <label class="field">
                 <span class="muted">{"Inference server"}</span>
-                <input value={s.inference_url.clone()} oninput={{
-                    let save_ctx = save_ctx.clone();
-                    Callback::from(move |e: InputEvent| {
-                        let input: HtmlInputElement = e.target_unchecked_into();
-                        save_ctx.update_field(|current| current.inference_url = input.value());
-                    })
-                }} />
+                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                    <input value={s.inference_url.clone()} oninput={{
+                        let save_ctx = save_ctx.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            save_ctx.update_field(|current| current.inference_url = input.value());
+                        })
+                    }} />
+                </AutoSaveField>
             </label>
             <div class="settings-model-row">
                 <label class="field">
@@ -3728,15 +3720,21 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 <div class="settings-params-grid">
                     <label class="field">
                         <span class="muted">{"Context (tokens)"}</span>
-                        <input type="number" value={s.context_tokens.to_string()} oninput={num_input(save_ctx.clone(), "context_tokens")} />
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" value={s.context_tokens.to_string()} oninput={num_input(save_ctx.clone(), "context_tokens")} />
+                        </AutoSaveField>
                     </label>
                     <label class="field">
                         <span class="muted">{"Response length (tokens)"}</span>
-                        <input type="number" value={s.max_tokens.to_string()} oninput={num_input(save_ctx.clone(), "max_tokens")} />
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" value={s.max_tokens.to_string()} oninput={num_input(save_ctx.clone(), "max_tokens")} />
+                        </AutoSaveField>
                     </label>
                     <label class="field">
                         <span class="muted">{"Max history messages"}</span>
-                        <input type="number" value={s.max_context_messages.to_string()} oninput={num_input(save_ctx.clone(), "max_context_messages")} />
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" value={s.max_context_messages.to_string()} oninput={num_input(save_ctx.clone(), "max_context_messages")} />
+                        </AutoSaveField>
                     </label>
                 </div>
                 if s.context_tokens > 0 {
@@ -3772,14 +3770,42 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 }}>{"Detect context from backend"}</button>
             </div>
             <div class="settings-params-grid">
-                <label class="field"><span class="muted">{"Temperature"}</span><input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(save_ctx.clone(), "temperature")} /></label>
-                <label class="field"><span class="muted">{"Top P"}</span><input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(save_ctx.clone(), "top_p")} /></label>
-                <label class="field"><span class="muted">{"Max concurrent jobs"}</span><input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(save_ctx.clone(), "max_concurrent_jobs")} /></label>
+                <label class="field"><span class="muted">{"Temperature"}</span>
+                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                        <input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(save_ctx.clone(), "temperature")} />
+                    </AutoSaveField>
+                </label>
+                <label class="field"><span class="muted">{"Top P"}</span>
+                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                        <input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(save_ctx.clone(), "top_p")} />
+                    </AutoSaveField>
+                </label>
+                <label class="field"><span class="muted">{"Max concurrent jobs"}</span>
+                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                        <input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(save_ctx.clone(), "max_concurrent_jobs")} />
+                    </AutoSaveField>
+                </label>
             </div>
-            <label class="field"><span class="muted">{"User name ({{user}})"}</span><input value={s.user_name.clone()} oninput={text_input(save_ctx.clone(), "user_name")} /></label>
-            <label class="field"><span class="muted">{"Persona description ({{persona}})"}</span><textarea value={s.persona_description.clone()} rows="3" oninput={text_input(save_ctx.clone(), "persona_description")} /></label>
-            <label class="field"><span class="muted">{"Main prompt (prefix)"}</span><textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(save_ctx.clone(), "system_prompt_prefix")} /></label>
-            <label class="field"><span class="muted">{"Post-history instructions (suffix)"}</span><textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(save_ctx.clone(), "system_prompt_suffix")} /></label>
+            <label class="field"><span class="muted">{"User name ({{user}})"}</span>
+                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                    <input value={s.user_name.clone()} oninput={text_input(save_ctx.clone(), "user_name")} />
+                </AutoSaveField>
+            </label>
+            <label class="field"><span class="muted">{"Persona description ({{persona}})"}</span>
+                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                    <textarea value={s.persona_description.clone()} rows="3" oninput={text_input(save_ctx.clone(), "persona_description")} />
+                </AutoSaveField>
+            </label>
+            <label class="field"><span class="muted">{"Main prompt (prefix)"}</span>
+                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                    <textarea value={s.system_prompt_prefix.clone()} rows="3" oninput={text_input(save_ctx.clone(), "system_prompt_prefix")} />
+                </AutoSaveField>
+            </label>
+            <label class="field"><span class="muted">{"Post-history instructions (suffix)"}</span>
+                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                    <textarea value={s.system_prompt_suffix.clone()} rows="3" oninput={text_input(save_ctx.clone(), "system_prompt_suffix")} />
+                </AutoSaveField>
+            </label>
             <div class="settings-group">
                 <strong>{"Auto summarize"}</strong>
                 <p class="muted" style="margin:0.35rem 0 0.5rem;">
@@ -3803,8 +3829,16 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     }} />
                     {"Adapt to context window (uses context − response budget)"}
                 </label>
-                <label class="field"><span class="muted">{"Minimum messages before summarize"}</span><input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(save_ctx.clone(), "summarize_after_messages")} /></label>
-                <label class="field"><span class="muted">{"Minimum recent messages to keep"}</span><input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(save_ctx.clone(), "summarize_keep_recent")} /></label>
+                <label class="field"><span class="muted">{"Minimum messages before summarize"}</span>
+                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                        <input type="number" value={s.summarize_after_messages.to_string()} oninput={num_input(save_ctx.clone(), "summarize_after_messages")} />
+                    </AutoSaveField>
+                </label>
+                <label class="field"><span class="muted">{"Minimum recent messages to keep"}</span>
+                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                        <input type="number" value={s.summarize_keep_recent.to_string()} oninput={num_input(save_ctx.clone(), "summarize_keep_recent")} />
+                    </AutoSaveField>
+                </label>
             </div>
             <label style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
                 <input type="checkbox" checked={s.variables_enabled} onclick={{

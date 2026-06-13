@@ -405,6 +405,70 @@ pub async fn revert_variable_updates_from_messages(
     Ok(())
 }
 
+/// Removes a deleted variable's tags from all chat messages and their update history.
+pub async fn strip_variable_key_from_chat_messages(
+    pool: &SqlitePool,
+    chat_id: i64,
+    key: &str,
+) -> AppResult<()> {
+    let keys: HashSet<&str> = std::iter::once(key).collect();
+    let messages = db::list_messages(pool, chat_id).await?;
+    for message in messages {
+        let stripped_content = remove_variable_tags_for_keys(&message.content, &keys);
+        let original_update_count = message.variable_updates.len();
+        let filtered_updates: Vec<MessageVariableUpdate> = message
+            .variable_updates
+            .into_iter()
+            .filter(|update| update.key != key)
+            .collect();
+        if stripped_content != message.content || filtered_updates.len() != original_update_count {
+            db::update_message_content_and_variable_updates(
+                pool,
+                message.id,
+                &stripped_content,
+                &filtered_updates,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes a deleted variable's tags and update history from all story beats.
+pub async fn strip_variable_key_from_story_beats(
+    pool: &SqlitePool,
+    story_id: i64,
+    key: &str,
+) -> AppResult<()> {
+    let keys: HashSet<&str> = std::iter::once(key).collect();
+    let detail = db::get_story_detail(pool, story_id).await?;
+    for chapter in &detail.chapters {
+        for beat in &chapter.beats {
+            let stripped_content = remove_variable_tags_for_keys(&beat.content, &keys);
+            let filtered_updates: Vec<MessageVariableUpdate> = beat
+                .variable_updates
+                .iter()
+                .filter(|update| update.key != key)
+                .cloned()
+                .collect();
+            if stripped_content != beat.content
+                || filtered_updates.len() != beat.variable_updates.len()
+            {
+                db::finalize_beat_prose(
+                    pool,
+                    story_id,
+                    chapter.sort_order,
+                    beat.id,
+                    &stripped_content,
+                    &filtered_updates,
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,6 +747,74 @@ mod tests {
         assert_eq!(vars.len(), 1);
         assert_eq!(vars[0].key, "location");
         assert_eq!(vars[0].value, "forest");
+    }
+
+    #[test]
+    fn remove_variable_tags_for_keys_strips_matching_tags() {
+        let keys: HashSet<&str> = ["location"].iter().copied().collect();
+        let text = r#"Hello <var key="location">tavern</var> and <var key="gold">12</var>"#;
+        let stripped = remove_variable_tags_for_keys(text, &keys);
+        assert!(!stripped.contains("location"));
+        assert!(stripped.contains(r#"<var key="gold">12</var>"#));
+    }
+
+    #[tokio::test]
+    async fn strip_variable_key_from_chat_messages_removes_tags_and_updates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.db");
+        let pool = db::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .expect("connect");
+        let chat = test_chat(&pool).await;
+
+        let message = db::insert_message(
+            &pool,
+            chat.id,
+            dreamwell_types::MessageRole::Assistant,
+            r#"You arrive. <var key="location">tavern</var>"#.into(),
+            false,
+        )
+        .await
+        .expect("message");
+        let updates = vec![MessageVariableUpdate {
+            key: "location".into(),
+            value: "tavern".into(),
+            previous_value: None,
+            deleted: false,
+        }];
+        db::finalize_message_generation(
+            &pool,
+            message.id,
+            r#"You arrive. <var key="location">tavern</var>"#,
+            "",
+            None,
+            false,
+            &updates,
+        )
+        .await
+        .expect("finalize");
+
+        let variable = db::upsert_variable(
+            &pool,
+            chat.id,
+            "location".into(),
+            "tavern".into(),
+            crate::variable_state::MANUAL_MESSAGE_SOURCE,
+        )
+        .await
+        .expect("seed variable");
+        db::delete_variable(&pool, chat.id, variable.id)
+            .await
+            .expect("delete");
+        strip_variable_key_from_chat_messages(&pool, chat.id, "location")
+            .await
+            .expect("strip");
+
+        let updated = db::get_message(&pool, chat.id, message.id)
+            .await
+            .expect("message");
+        assert!(!updated.content.contains("<var"));
+        assert!(updated.variable_updates.is_empty());
     }
 
     #[tokio::test]

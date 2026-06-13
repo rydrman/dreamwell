@@ -4,7 +4,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlDocument, HtmlInputElement, HtmlSelectElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
-use crate::story_save::{auto_save_status_html, AutoSavePhase};
+use crate::story_save::{auto_save_field_icon, AutoSavePhase};
 
 pub const MANUAL_MESSAGE_SOURCE: i64 = -1;
 pub const MANUAL_STORY_SOURCE: i64 = -1;
@@ -218,7 +218,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                 }}
             />
             <div class="variable-row-footer">
-                { auto_save_status_html(*save_phase, (*save_error).as_deref()) }
+                { auto_save_field_icon(*save_phase, (*save_error).as_deref()) }
                 if props.on_cancel.is_some() && props.model.id.is_none() {
                     <button
                         class="btn secondary btn-compact"

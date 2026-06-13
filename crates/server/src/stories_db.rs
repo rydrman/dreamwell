@@ -268,7 +268,7 @@ pub async fn delete_chapter(pool: &SqlitePool, story_id: i64, chapter_id: i64) -
 
 async fn list_beats_for_chapter(pool: &SqlitePool, chapter_id: i64) -> AppResult<Vec<StoryBeat>> {
     let rows = sqlx::query_as::<_, BeatRow>(
-        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.content, b.variable_updates, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.chapter_id = ?1 ORDER BY b.sort_order ASC, b.id ASC",
+        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.mechanical, b.content, b.variable_updates, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.chapter_id = ?1 ORDER BY b.sort_order ASC, b.id ASC",
     )
     .bind(chapter_id)
     .fetch_all(pool)
@@ -282,6 +282,7 @@ fn beat_from_row(row: BeatRow) -> StoryBeat {
         chapter_id: row.chapter_id,
         title: row.title,
         synopsis: row.synopsis,
+        mechanical: row.mechanical,
         content: row.content,
         variable_updates: parse_beat_variable_updates(&row.variable_updates),
         sort_order: row.sort_order,
@@ -307,7 +308,7 @@ pub async fn get_beat(
 ) -> AppResult<StoryBeat> {
     let _ = get_chapter(pool, story_id, chapter_id).await?;
     let row = sqlx::query_as::<_, BeatRow>(
-        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.content, b.variable_updates, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.id = ?1 AND b.chapter_id = ?2",
+        "SELECT b.id, b.chapter_id, b.title, b.synopsis, b.mechanical, b.content, b.variable_updates, b.sort_order, b.created_at, b.updated_at, j.status as job_status FROM story_beats b LEFT JOIN generation_jobs j ON j.beat_id = b.id AND j.status IN ('queued','running') WHERE b.id = ?1 AND b.chapter_id = ?2",
     )
     .bind(beat_id)
     .bind(chapter_id)
@@ -336,11 +337,12 @@ pub async fn create_beat(
         };
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO story_beats (chapter_id, title, synopsis, content, sort_order, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6) RETURNING id",
+        "INSERT INTO story_beats (chapter_id, title, synopsis, mechanical, content, sort_order, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7) RETURNING id",
     )
     .bind(chapter_id)
     .bind(&payload.title)
     .bind(&payload.synopsis)
+    .bind(&payload.mechanical)
     .bind(&payload.content)
     .bind(sort_order)
     .bind(&now)
@@ -361,6 +363,7 @@ pub async fn update_beat(
     let existing = get_beat(pool, story_id, chapter_id, beat_id).await?;
     let title = payload.title.unwrap_or(existing.title);
     let synopsis = payload.synopsis.unwrap_or(existing.synopsis);
+    let mechanical = payload.mechanical.unwrap_or(existing.mechanical);
     let content_changed = payload
         .content
         .as_ref()
@@ -369,10 +372,11 @@ pub async fn update_beat(
     let sort_order = payload.sort_order.unwrap_or(existing.sort_order);
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE story_beats SET title=?1, synopsis=?2, content=?3, sort_order=?4, updated_at=?5 WHERE id=?6",
+        "UPDATE story_beats SET title=?1, synopsis=?2, mechanical=?3, content=?4, sort_order=?5, updated_at=?6 WHERE id=?7",
     )
     .bind(&title)
     .bind(&synopsis)
+    .bind(&mechanical)
     .bind(&content)
     .bind(sort_order)
     .bind(&now)
@@ -439,6 +443,21 @@ pub async fn update_beat_outline(
     Ok(())
 }
 
+pub async fn update_beat_mechanical(
+    pool: &SqlitePool,
+    beat_id: i64,
+    mechanical: &str,
+) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE story_beats SET mechanical=?1, updated_at=?2 WHERE id=?3")
+        .bind(mechanical)
+        .bind(&now)
+        .bind(beat_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn update_beat_content(pool: &SqlitePool, beat_id: i64, content: &str) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
     sqlx::query("UPDATE story_beats SET content=?1, updated_at=?2 WHERE id=?3")
@@ -476,7 +495,6 @@ pub async fn ensure_beat_generation_allowed(
     pool: &SqlitePool,
     story_id: i64,
     chapter_id: i64,
-    beat_id: i64,
 ) -> AppResult<()> {
     let detail = get_story_detail(pool, story_id).await?;
     let chapter = detail
@@ -495,23 +513,6 @@ pub async fn ensure_beat_generation_allowed(
                 prior.sort_order + 1
             )));
         }
-    }
-    let beat = chapter
-        .beats
-        .iter()
-        .find(|b| b.id == beat_id)
-        .ok_or_else(|| AppError::not_found("Beat not found"))?;
-    let prior_beats_have_prose = chapter
-        .beats
-        .iter()
-        .any(|b| b.sort_order < beat.sort_order && b.content.chars().count() > 80);
-    if chapter_has_substantial_prose(chapter)
-        && prior_beats_have_prose
-        && !chapter.prose_summary_valid
-    {
-        return Err(AppError::bad_request(
-            "This chapter's prose summary is stale — summarize it before generating later beats",
-        ));
     }
     Ok(())
 }
@@ -600,22 +601,9 @@ pub async fn has_active_chapter_summarize_job(
     Ok(count > 0)
 }
 
-pub async fn has_active_beat_prose_job(pool: &SqlitePool, beat_id: i64) -> AppResult<bool> {
+pub async fn has_active_beat_job(pool: &SqlitePool, beat_id: i64) -> AppResult<bool> {
     let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM generation_jobs WHERE beat_id = ?1 AND job_type = 'story_beat_prose' AND status IN ('queued','running')",
-    )
-    .bind(beat_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(count > 0)
-}
-
-pub async fn has_active_beat_variable_recheck_job(
-    pool: &SqlitePool,
-    beat_id: i64,
-) -> AppResult<bool> {
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM generation_jobs WHERE beat_id = ?1 AND job_type = 'story_beat_variable_recheck' AND status IN ('queued','running')",
+        "SELECT COUNT(*) FROM generation_jobs WHERE beat_id = ?1 AND status IN ('queued','running')",
     )
     .bind(beat_id)
     .fetch_one(pool)
@@ -633,6 +621,24 @@ pub async fn enqueue_beat_variable_recheck_job(
     enqueue_story_job(
         pool,
         JobType::StoryBeatVariableRecheck,
+        story_id,
+        Some(chapter_id),
+        Some(beat_id),
+        guidance_notes,
+    )
+    .await
+}
+
+pub async fn enqueue_beat_prose_recheck_job(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance_notes: String,
+) -> AppResult<Job> {
+    enqueue_story_job(
+        pool,
+        JobType::StoryBeatProseRecheck,
         story_id,
         Some(chapter_id),
         Some(beat_id),
@@ -760,6 +766,7 @@ pub async fn apply_beat_proposal(
             StoryBeatCreate {
                 title: title.clone(),
                 synopsis: synopsis.clone(),
+                mechanical: String::new(),
                 content: String::new(),
                 sort_order: Some(sort_order as i64),
             },
@@ -811,6 +818,7 @@ pub async fn prepare_generate_beat(
         StoryBeatCreate {
             title: String::new(),
             synopsis: String::new(),
+            mechanical: String::new(),
             content: String::new(),
             sort_order: None,
         },
@@ -828,6 +836,35 @@ pub async fn prepare_generate_beat(
     Ok((beat, job))
 }
 
+pub async fn prepare_generate_mechanical(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    payload: &GenerateRequest,
+) -> AppResult<Job> {
+    let beat = get_beat(pool, story_id, chapter_id, beat_id).await?;
+    if beat.synopsis.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "Add a beat synopsis before generating a mechanical plan",
+        ));
+    }
+    if has_active_beat_job(pool, beat_id).await? {
+        return Err(AppError::bad_request(
+            "Wait for the current beat job to finish before generating a mechanical plan",
+        ));
+    }
+    enqueue_story_job(
+        pool,
+        JobType::StoryBeatMechanical,
+        story_id,
+        Some(chapter_id),
+        Some(beat_id),
+        payload.guidance_notes.clone(),
+    )
+    .await
+}
+
 pub async fn prepare_generate_prose(
     pool: &SqlitePool,
     story_id: i64,
@@ -835,9 +872,19 @@ pub async fn prepare_generate_prose(
     beat_id: i64,
     payload: &GenerateRequest,
 ) -> AppResult<Job> {
-    ensure_beat_generation_allowed(pool, story_id, chapter_id, beat_id).await?;
+    ensure_beat_generation_allowed(pool, story_id, chapter_id).await?;
     let beat = get_beat(pool, story_id, chapter_id, beat_id).await?;
     let chapter = get_chapter(pool, story_id, chapter_id).await?;
+    if beat.mechanical.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "Generate a mechanical beat plan before generating prose",
+        ));
+    }
+    if has_active_beat_job(pool, beat_id).await? {
+        return Err(AppError::bad_request(
+            "Wait for the current beat job to finish before generating prose",
+        ));
+    }
     if !beat.variable_updates.is_empty() {
         revert_beat_variable_updates(
             pool,
@@ -946,6 +993,22 @@ pub async fn delete_story_variable(
         return Err(AppError::not_found("Variable not found"));
     }
     Ok(())
+}
+
+pub async fn get_story_variable(
+    pool: &SqlitePool,
+    story_id: i64,
+    variable_id: i64,
+) -> AppResult<StoryVariable> {
+    let row = sqlx::query_as::<_, StoryVariableRow>(
+        "SELECT id, story_id, key, value, source_chapter_order, source_beat_order, updated_at FROM story_variables WHERE story_id = ?1 AND id = ?2",
+    )
+    .bind(story_id)
+    .bind(variable_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("Variable not found"))?;
+    Ok(row.into())
 }
 
 pub async fn delete_story_variable_scoped(
@@ -1134,6 +1197,7 @@ struct BeatRow {
     chapter_id: i64,
     title: String,
     synopsis: String,
+    mechanical: String,
     content: String,
     variable_updates: String,
     sort_order: i64,

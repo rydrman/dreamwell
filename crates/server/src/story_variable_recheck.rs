@@ -102,14 +102,9 @@ pub async fn enqueue_beat_variable_recheck(
     {
         return Err(AppError::bad_request("Beat has no prose to recheck"));
     }
-    if db::has_active_beat_variable_recheck_job(pool, beat_id).await? {
+    if db::has_active_beat_job(pool, beat_id).await? {
         return Err(AppError::bad_request(
-            "A variable recheck is already in progress for this beat",
-        ));
-    }
-    if db::has_active_beat_prose_job(pool, beat_id).await? {
-        return Err(AppError::bad_request(
-            "Wait for prose generation to finish before rechecking variables",
+            "Wait for the current beat job to finish before rechecking variables",
         ));
     }
 

@@ -21,7 +21,10 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::queue::enqueue_generation;
 use crate::routes::AppState;
-use crate::variables::{revert_message_variable_updates, revert_variable_updates_from_messages};
+use crate::variables::{
+    revert_message_variable_updates, revert_variable_updates_from_messages,
+    strip_variable_key_from_chat_messages,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -278,7 +281,12 @@ async fn delete_variable(
     State(state): State<AppState>,
     Path((id, variable_id)): Path<(i64, i64)>,
 ) -> AppResult<Json<OkResponse>> {
+    let key = db::get_chat_variable(&state.pool, id, variable_id)
+        .await?
+        .key;
     db::delete_variable(&state.pool, id, variable_id).await?;
+    strip_variable_key_from_chat_messages(&state.pool, id, &key).await?;
+    db::touch_chat(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 

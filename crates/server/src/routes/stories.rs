@@ -21,6 +21,7 @@ use crate::db;
 use crate::error::AppResult;
 use crate::queue::enqueue_story_generation;
 use crate::routes::AppState;
+use crate::variables::strip_variable_key_from_story_beats;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -51,8 +52,16 @@ pub fn router() -> Router<AppState> {
             axum::routing::patch(update_beat).delete(delete_beat),
         )
         .route(
+            "/:id/chapters/:chapter_id/beats/:beat_id/generate-mechanical",
+            post(generate_mechanical),
+        )
+        .route(
             "/:id/chapters/:chapter_id/beats/:beat_id/generate-prose",
             post(generate_prose),
+        )
+        .route(
+            "/:id/chapters/:chapter_id/beats/:beat_id/align-prose",
+            post(align_beat_prose),
         )
         .route(
             "/:id/chapters/:chapter_id/summarize-prose",
@@ -200,6 +209,17 @@ async fn generate_beat(
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
 
+async fn generate_mechanical(
+    State(state): State<AppState>,
+    Path((id, chapter_id, beat_id)): Path<(i64, i64, i64)>,
+    Json(payload): Json<GenerateRequest>,
+) -> AppResult<Json<StoryDetail>> {
+    let job =
+        db::prepare_generate_mechanical(&state.pool, id, chapter_id, beat_id, &payload).await?;
+    enqueue_story_generation(&state.queue, job).await?;
+    Ok(Json(db::get_story_detail(&state.pool, id).await?))
+}
+
 async fn generate_prose(
     State(state): State<AppState>,
     Path((id, chapter_id, beat_id)): Path<(i64, i64, i64)>,
@@ -208,6 +228,27 @@ async fn generate_prose(
     let job = db::prepare_generate_prose(&state.pool, id, chapter_id, beat_id, &payload).await?;
     enqueue_story_generation(&state.queue, job).await?;
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
+}
+
+async fn align_beat_prose(
+    State(state): State<AppState>,
+    Path((id, chapter_id, beat_id)): Path<(i64, i64, i64)>,
+    Json(payload): Json<GenerateRequest>,
+) -> AppResult<Json<Job>> {
+    let settings = db::get_settings(&state.pool).await?;
+    let job = state
+        .queue
+        .enqueue_story_beat_prose_recheck(
+            &state.pool,
+            id,
+            chapter_id,
+            beat_id,
+            &payload.guidance_notes,
+            &settings,
+        )
+        .await?;
+    db::touch_story(&state.pool, id).await?;
+    Ok(Json(job))
 }
 
 async fn list_story_variables(
@@ -234,7 +275,12 @@ async fn delete_story_variable(
     Path((id, variable_id)): Path<(i64, i64)>,
 ) -> AppResult<Json<OkResponse>> {
     let _ = db::get_story(&state.pool, id).await?;
+    let key = db::get_story_variable(&state.pool, id, variable_id)
+        .await?
+        .key;
     db::delete_story_variable(&state.pool, id, variable_id).await?;
+    strip_variable_key_from_story_beats(&state.pool, id, &key).await?;
+    db::touch_story(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 

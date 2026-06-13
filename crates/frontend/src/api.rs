@@ -595,6 +595,22 @@ pub async fn propose_beats(
     .await
 }
 
+pub async fn generate_mechanical(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance_notes: &str,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!(
+            "/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}/generate-mechanical"
+        ),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
 pub async fn generate_prose(
     story_id: i64,
     chapter_id: i64,
@@ -630,6 +646,20 @@ pub async fn recheck_beat_variables(
     json_body(
         "POST",
         &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}/variables/recheck"),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
+pub async fn align_beat_prose(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance_notes: &str,
+) -> Result<Job, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}/align-prose"),
         &serde_json::json!({ "guidance_notes": guidance_notes }),
     )
     .await
