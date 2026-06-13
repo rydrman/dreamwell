@@ -82,4 +82,12 @@ impl AutoSaveController {
             save();
         }));
     }
+
+    /// Mark the save complete. When `apply` is true, the caller should also push the
+    /// server response into parent state. When false, the user kept editing after the
+    /// request was sent — skip the parent refresh to avoid clobbering local draft.
+    pub fn complete(&self, apply: bool) -> bool {
+        self.mark_saved();
+        apply
+    }
 }
