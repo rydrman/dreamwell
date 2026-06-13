@@ -240,6 +240,47 @@ pub fn beat_block_status(beat: &StoryBeat) -> Option<BlockGenerationStatus> {
     }
 }
 
+pub fn chapter_has_substantial_prose(chapter: &StoryChapter) -> bool {
+    chapter
+        .beats
+        .iter()
+        .any(|beat| beat.content.chars().count() > 80)
+}
+
+pub fn chapter_summary_stale(chapter: &StoryChapter) -> bool {
+    chapter_has_substantial_prose(chapter) && !chapter.prose_summary_valid
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleChapterItem {
+    pub id: i64,
+    pub number: i64,
+    pub title: String,
+}
+
+pub fn stale_chapters_in_story(detail: &StoryDetail) -> Vec<StaleChapterItem> {
+    let mut stale = detail
+        .chapters
+        .iter()
+        .filter(|ch| chapter_summary_stale(ch))
+        .map(|ch| StaleChapterItem {
+            id: ch.id,
+            number: ch.sort_order + 1,
+            title: if ch.title.is_empty() {
+                "…".to_string()
+            } else {
+                ch.title.clone()
+            },
+        })
+        .collect::<Vec<_>>();
+    stale.sort_by_key(|ch| ch.number);
+    stale
+}
+
+pub fn is_stale_summary_error(err: &str) -> bool {
+    err.contains("prose summary is stale")
+}
+
 #[derive(Properties, PartialEq)]
 pub struct GenerationStatusBarProps {
     pub notice: GenerationNotice,
@@ -353,5 +394,39 @@ mod tests {
             story_notice(&detail),
             Some(GenerationNotice::Running(GenerationPhase::Writing))
         );
+    }
+
+    #[test]
+    fn chapter_summary_stale_requires_substantial_prose() {
+        let chapter: StoryChapter = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "story_id": 1,
+            "title": "Ch1",
+            "synopsis": "",
+            "prose_summary_valid": false,
+            "sort_order": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "beats": [{
+                "id": 2,
+                "chapter_id": 1,
+                "title": "Beat",
+                "synopsis": "",
+                "content": "short",
+                "sort_order": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }]
+        }))
+        .expect("chapter");
+        assert!(!chapter_summary_stale(&chapter));
+    }
+
+    #[test]
+    fn detects_stale_summary_errors() {
+        assert!(is_stale_summary_error(
+            "Chapter 2 prose summary is stale — summarize it before working on later chapters"
+        ));
+        assert!(!is_stale_summary_error("network error"));
     }
 }
