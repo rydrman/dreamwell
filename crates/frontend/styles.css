@@ -578,19 +578,25 @@ input.header-title {
   padding: 0.5rem 0;
 }
 
-.message-summary-marker--active .message-summary-break-label {
+.message-summary-marker--active .summary-break-label {
   color: var(--fg);
   font-weight: 600;
 }
 
-.message-summary-break {
+.message-summary-body {
+  max-width: 42rem;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.summary-break {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 0.5rem;
 }
 
-.message-summary-break-line {
+.summary-break-line {
   flex: 1;
   height: 1px;
   background: linear-gradient(
@@ -602,7 +608,7 @@ input.header-title {
   );
 }
 
-.message-summary-break-label {
+.summary-break-label {
   flex-shrink: 0;
   font-size: 0.75rem;
   letter-spacing: 0.04em;
@@ -610,13 +616,11 @@ input.header-title {
   color: var(--muted);
 }
 
-.message-summary-body {
-  max-width: 42rem;
-  margin: 0 auto;
+.summary-view {
   width: 100%;
 }
 
-.message-summary-pending {
+.summary-pending {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -624,13 +628,13 @@ input.header-title {
   font-size: 0.875rem;
 }
 
-.message-summary-actions {
+.summary-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
 }
 
-.message-summary-toggle {
+.summary-toggle {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -643,12 +647,12 @@ input.header-title {
   cursor: pointer;
 }
 
-.message-summary-toggle:hover {
+.summary-toggle:hover {
   color: var(--fg);
   border-color: var(--fg);
 }
 
-.message-summary-content {
+.summary-content {
   margin-top: 0.5rem;
   padding: 0.75rem 1rem;
   border-left: 3px solid var(--border);
@@ -658,14 +662,14 @@ input.header-title {
   color: var(--muted);
 }
 
-.message-summary-editor {
+.summary-editor {
   margin-top: 0.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
 
-.message-summary-editor textarea {
+.summary-editor textarea {
   width: 100%;
   box-sizing: border-box;
   min-height: 10rem;
@@ -679,7 +683,7 @@ input.header-title {
   font: inherit;
 }
 
-.message-summary-editor-actions {
+.summary-editor-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;

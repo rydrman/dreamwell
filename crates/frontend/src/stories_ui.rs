@@ -14,6 +14,7 @@ use crate::generation_ui::{
 };
 use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::story_save::{auto_save_status_html, AutoSaveController, AutoSavePhase};
+use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
 use crate::variables;
 
@@ -1219,15 +1220,18 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                     {"Prose summary is out of date — summarize from prose to refresh context for later chapters."}
                 </p>
             }
-            if chapter.prose_summary_valid {
-                <label class="field" style="margin-top:0.75rem;">
-                    <span class="muted">{"Prose summary"}</span>
-                    <textarea
-                        value={chapter.prose_summary.clone()}
-                        rows="6"
-                        readonly={true}
+            if summarizing_chapter || chapter.prose_summary_valid {
+                <div style="margin-top:0.75rem;">
+                    <SummaryBreak
+                        kind={SummaryKind::ChapterProse}
+                        pending={summarizing_chapter}
                     />
-                </label>
+                    <SummaryView
+                        text={chapter.prose_summary.clone()}
+                        pending={summarizing_chapter}
+                        kind={SummaryKind::ChapterProse}
+                    />
+                </div>
             }
             <div class="story-actions" style="margin-top:0.75rem;">
                 <button class="btn secondary" disabled={summarizing_chapter || !chapter_has_substantial_prose(&chapter)} onclick={{

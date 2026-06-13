@@ -1,6 +1,8 @@
 use dreamwell_types::*;
 use yew::prelude::*;
 
+use crate::summary_ui::{chat_summarize_in_progress, SummaryKind};
+
 const GENERATION_FAILED_PREFIX: &str = "[Generation failed: ";
 
 pub fn generation_error_from_content(content: &str) -> Option<String> {
@@ -25,7 +27,7 @@ pub fn generation_error_message(content: &str, explicit: Option<&str>) -> Option
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerationPhase {
     Writing,
-    Summarizing,
+    Summarizing(SummaryKind),
     ProposingOutline,
 }
 
@@ -40,7 +42,12 @@ impl GenerationNotice {
         match self {
             Self::Queued => "Queued — waiting for server…",
             Self::Running(GenerationPhase::Writing) => "Still writing — more coming…",
-            Self::Running(GenerationPhase::Summarizing) => "Summarizing earlier messages…",
+            Self::Running(GenerationPhase::Summarizing(SummaryKind::ChatHistory)) => {
+                "Summarizing earlier messages…"
+            }
+            Self::Running(GenerationPhase::Summarizing(SummaryKind::ChapterProse)) => {
+                "Summarizing chapter prose…"
+            }
             Self::Running(GenerationPhase::ProposingOutline) => "Proposing outline…",
         }
     }
@@ -48,7 +55,7 @@ impl GenerationNotice {
     pub fn status_class(self) -> &'static str {
         match self {
             Self::Queued => "composer-status--queued",
-            Self::Running(GenerationPhase::Summarizing) => "composer-status--summarize",
+            Self::Running(GenerationPhase::Summarizing(_)) => "composer-status--summarize",
             Self::Running(GenerationPhase::Writing)
             | Self::Running(GenerationPhase::ProposingOutline) => "composer-status--writing",
         }
@@ -58,7 +65,12 @@ impl GenerationNotice {
         match self {
             Self::Queued => "Reply waiting in queue…",
             Self::Running(GenerationPhase::Writing) => "Reply still generating…",
-            Self::Running(GenerationPhase::Summarizing) => "Summarization in progress…",
+            Self::Running(GenerationPhase::Summarizing(SummaryKind::ChatHistory)) => {
+                "Summarization in progress…"
+            }
+            Self::Running(GenerationPhase::Summarizing(SummaryKind::ChapterProse)) => {
+                "Chapter summarization in progress…"
+            }
             Self::Running(GenerationPhase::ProposingOutline) => "Outline proposal in progress…",
         }
     }
@@ -146,18 +158,11 @@ impl BlockGenerationStatus {
     }
 }
 
-fn summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
-    chat.active_job
-        .as_ref()
-        .is_some_and(|job| job.job_type == JobType::ChatSummarize)
-        || messages
-            .iter()
-            .any(|message| message.is_summary && message.content.starts_with("Summarizing earlier"))
-}
-
 pub fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<GenerationNotice> {
-    if summarize_in_progress(chat, messages) {
-        return Some(GenerationNotice::Running(GenerationPhase::Summarizing));
+    if chat_summarize_in_progress(chat, messages) {
+        return Some(GenerationNotice::Running(GenerationPhase::Summarizing(
+            SummaryKind::ChatHistory,
+        )));
     }
     if messages
         .iter()
@@ -199,7 +204,9 @@ pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
                 JobType::StoryProposeChapters | JobType::StoryProposeBeats => {
                     GenerationPhase::ProposingOutline
                 }
-                JobType::StoryChapterSummarize => GenerationPhase::Summarizing,
+                JobType::StoryChapterSummarize => {
+                    GenerationPhase::Summarizing(SummaryKind::ChapterProse)
+                }
                 JobType::StoryBeatProse => GenerationPhase::Writing,
                 _ => GenerationPhase::ProposingOutline,
             };
@@ -300,6 +307,48 @@ mod tests {
         let job = sample_job(JobStatus::Running, JobType::StoryBeatProse);
         let badge = job_status_badge(&job, 0).expect("badge");
         assert_eq!(badge.label, "writing prose…");
+    }
+
+    #[test]
+    fn chapter_summarize_shows_chapter_specific_notice() {
+        let detail: StoryDetail = serde_json::from_value(serde_json::json!({
+            "story": {
+                "id": 1,
+                "title": "Test",
+                "premise": "",
+                "tone": "",
+                "genre": "",
+                "pov": "",
+                "length_preset": "short",
+                "notes": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "queued_jobs": 0,
+                "active_job": {
+                    "id": 2,
+                    "job_type": "story_chapter_summarize",
+                    "story_id": 1,
+                    "chapter_id": 10,
+                    "guidance_notes": "",
+                    "status": "running",
+                    "position": 0,
+                    "created_at": "2026-01-01T00:00:00Z"
+                }
+            },
+            "chapters": [{
+                "id": 10,
+                "story_id": 1,
+                "title": "Ch1",
+                "synopsis": "",
+                "sort_order": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "beats": []
+            }]
+        }))
+        .expect("story detail");
+        let notice = story_notice(&detail).expect("notice");
+        assert_eq!(notice.message(), "Summarizing chapter prose…");
     }
 
     #[test]
