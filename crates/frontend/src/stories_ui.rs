@@ -646,58 +646,63 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
 
     html! {
         <div class="story-blocks">
-            <StoryBlockHeader
-                label={"Story basics".to_string()}
-                subtitle={props.detail.story.title.clone()}
-                open={props.selection == StorySelection::Basics}
-                on_toggle={props.on_selection.reform(move |_| {
-                    toggle_selection(current_selection, StorySelection::Basics)
-                })}
-            />
-            if props.selection == StorySelection::Basics {
-                <div class="story-block-body">
-                    <StoryBasicsForm
-                        story={props.detail.story.clone()}
-                        on_detail={props.on_detail.clone()}
-                    />
-                    <label class="field" style="margin-top:1rem;">
-                        <span class="muted">{"Guidance for proposal"}</span>
-                        <textarea
-                            placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
-                            value={props.guidance.clone()}
-                            rows="3"
-                            oninput={guidance_input(props.on_guidance.clone())}
+            <div class={classes!(
+                "story-block",
+                (props.selection == StorySelection::Basics).then_some("story-block--open"),
+            )}>
+                <StoryBlockHeader
+                    label={"Story basics".to_string()}
+                    subtitle={props.detail.story.title.clone()}
+                    open={props.selection == StorySelection::Basics}
+                    on_toggle={props.on_selection.reform(move |_| {
+                        toggle_selection(current_selection, StorySelection::Basics)
+                    })}
+                />
+                if props.selection == StorySelection::Basics {
+                    <div class="story-block-body">
+                        <StoryBasicsForm
+                            story={props.detail.story.clone()}
+                            on_detail={props.on_detail.clone()}
                         />
-                    </label>
-                    <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
-                        {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
-                    </p>
-                    <div class="story-actions" style="margin-top:0.75rem;">
-                        <button
-                            class="btn"
-                            disabled={props.detail.story.active_job.as_ref().is_some_and(|job| {
-                                job.job_type == JobType::StoryProposeChapters
-                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                            })}
-                            onclick={propose_chapters_action(
-                                story_id,
-                                props.guidance.clone(),
-                                props.on_detail.clone(),
-                                props.bump_stream.clone(),
-                            )}
-                        >
-                            { if props.detail.story.active_job.as_ref().is_some_and(|job| {
-                                job.job_type == JobType::StoryProposeChapters
-                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                            }) {
-                                "Proposing chapters…"
-                            } else {
-                                "Propose chapters"
-                            } }
-                        </button>
+                        <label class="field" style="margin-top:1rem;">
+                            <span class="muted">{"Guidance for proposal"}</span>
+                            <textarea
+                                placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
+                                value={props.guidance.clone()}
+                                rows="3"
+                                oninput={guidance_input(props.on_guidance.clone())}
+                            />
+                        </label>
+                        <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
+                            {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
+                        </p>
+                        <div class="story-actions" style="margin-top:0.75rem;">
+                            <button
+                                class="btn"
+                                disabled={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                    job.job_type == JobType::StoryProposeChapters
+                                        && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                                })}
+                                onclick={propose_chapters_action(
+                                    story_id,
+                                    props.guidance.clone(),
+                                    props.on_detail.clone(),
+                                    props.bump_stream.clone(),
+                                )}
+                            >
+                                { if props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                    job.job_type == JobType::StoryProposeChapters
+                                        && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                                }) {
+                                    "Proposing chapters…"
+                                } else {
+                                    "Propose chapters"
+                                } }
+                            </button>
+                        </div>
                     </div>
-                </div>
-            }
+                }
+            </div>
 
             { for props.detail.chapters.iter().map(|ch| {
                 let ch_id = ch.id;
@@ -709,39 +714,44 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                 let chapter_target = StorySelection::Chapter(ch_id);
                 html! {
                     <div key={ch_id} class="story-chapter-block">
-                        <StoryBlockHeader
-                            label={ch_label}
-                            subtitle={ch_subtitle}
-                            open={ch_open}
-                            status_badge={chapter_status}
-                            summary_stale={summary_stale}
-                            on_toggle={props.on_selection.reform(move |_| {
-                                toggle_selection(current_selection, chapter_target)
-                            })}
-                        />
-                        if ch_open {
-                            <div class="story-block-body">
-                                <ChapterEditor
-                                    story_id={story_id}
-                                    chapter={Some(ch.clone())}
-                                    proposing_beats={props.detail.story.active_job.as_ref().is_some_and(|job| {
-                                        job.job_type == JobType::StoryProposeBeats
-                                            && job.chapter_id == Some(ch_id)
-                                            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                                    })}
-                                    summarizing_chapter={props.detail.story.active_job.as_ref().is_some_and(|job| {
-                                        job.job_type == JobType::StoryChapterSummarize
-                                            && job.chapter_id == Some(ch_id)
-                                            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                                    })}
-                                    guidance={props.guidance.clone()}
-                                    bump_stream={props.bump_stream.clone()}
-                                    on_guidance={props.on_guidance.clone()}
-                                    on_detail={props.on_detail.clone()}
-                                    on_stale_error={props.on_stale_error.clone()}
-                                />
-                            </div>
-                        }
+                        <div class={classes!(
+                            "story-block",
+                            ch_open.then_some("story-block--open"),
+                        )}>
+                            <StoryBlockHeader
+                                label={ch_label}
+                                subtitle={ch_subtitle}
+                                open={ch_open}
+                                status_badge={chapter_status}
+                                summary_stale={summary_stale}
+                                on_toggle={props.on_selection.reform(move |_| {
+                                    toggle_selection(current_selection, chapter_target)
+                                })}
+                            />
+                            if ch_open {
+                                <div class="story-block-body">
+                                    <ChapterEditor
+                                        story_id={story_id}
+                                        chapter={Some(ch.clone())}
+                                        proposing_beats={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                            job.job_type == JobType::StoryProposeBeats
+                                                && job.chapter_id == Some(ch_id)
+                                                && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                                        })}
+                                        summarizing_chapter={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                            job.job_type == JobType::StoryChapterSummarize
+                                                && job.chapter_id == Some(ch_id)
+                                                && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                                        })}
+                                        guidance={props.guidance.clone()}
+                                        bump_stream={props.bump_stream.clone()}
+                                        on_guidance={props.on_guidance.clone()}
+                                        on_detail={props.on_detail.clone()}
+                                        on_stale_error={props.on_stale_error.clone()}
+                                    />
+                                </div>
+                            }
+                        </div>
                         { for ch.beats.iter().map(|beat| {
                             let beat_id = beat.id;
                             let beat_open = props.selection == StorySelection::Beat { chapter_id: ch_id, beat_id };
@@ -751,36 +761,41 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                             let beat_target = StorySelection::Beat { chapter_id: ch_id, beat_id };
                             html! {
                                 <div key={beat_id} class="story-beat-block">
-                                    <StoryBlockHeader
-                                        label={beat_label}
-                                        subtitle={beat_subtitle}
-                                        open={beat_open}
-                                        indent={true}
-                                        status_badge={beat_status}
-                                        on_toggle={props.on_selection.reform(move |_| {
-                                            toggle_selection(current_selection, beat_target)
-                                        })}
-                                    />
-                                    if beat_open {
-                                        <div class={classes!(
-                                            "story-block-body",
-                                            "story-block-body-nested",
-                                            (beat.job_status == Some(JobStatus::Running)).then_some("story-block-body--streaming"),
-                                        )}>
-                                            <BeatEditor
-                                                story_id={story_id}
-                                                chapter_id={ch_id}
-                                                beat={Some(beat.clone())}
-                                                variables_enabled={props.variables_enabled}
-                                                active_job={props.detail.story.active_job.clone()}
-                                                guidance={props.guidance.clone()}
-                                                bump_stream={props.bump_stream.clone()}
-                                                on_guidance={props.on_guidance.clone()}
-                                                on_detail={props.on_detail.clone()}
-                                                on_stale_error={props.on_stale_error.clone()}
-                                            />
-                                        </div>
-                                    }
+                                    <div class={classes!(
+                                        "story-block",
+                                        beat_open.then_some("story-block--open"),
+                                    )}>
+                                        <StoryBlockHeader
+                                            label={beat_label}
+                                            subtitle={beat_subtitle}
+                                            open={beat_open}
+                                            indent={true}
+                                            status_badge={beat_status}
+                                            on_toggle={props.on_selection.reform(move |_| {
+                                                toggle_selection(current_selection, beat_target)
+                                            })}
+                                        />
+                                        if beat_open {
+                                            <div class={classes!(
+                                                "story-block-body",
+                                                "story-block-body-nested",
+                                                (beat.job_status == Some(JobStatus::Running)).then_some("story-block-body--streaming"),
+                                            )}>
+                                                <BeatEditor
+                                                    story_id={story_id}
+                                                    chapter_id={ch_id}
+                                                    beat={Some(beat.clone())}
+                                                    variables_enabled={props.variables_enabled}
+                                                    active_job={props.detail.story.active_job.clone()}
+                                                    guidance={props.guidance.clone()}
+                                                    bump_stream={props.bump_stream.clone()}
+                                                    on_guidance={props.on_guidance.clone()}
+                                                    on_detail={props.on_detail.clone()}
+                                                    on_stale_error={props.on_stale_error.clone()}
+                                                />
+                                            </div>
+                                        }
+                                    </div>
                                 </div>
                             }
                         }) }
