@@ -173,6 +173,27 @@ impl JobQueue {
         Ok(job)
     }
 
+    pub async fn enqueue_story_beat_variable_recheck(
+        &self,
+        pool: &SqlitePool,
+        story_id: i64,
+        chapter_id: i64,
+        beat_id: i64,
+        settings: &dreamwell_types::Settings,
+    ) -> AppResult<dreamwell_types::Job> {
+        let job = crate::story_variable_recheck::enqueue_beat_variable_recheck(
+            pool,
+            &self.work_tx,
+            story_id,
+            chapter_id,
+            beat_id,
+            settings,
+        )
+        .await?;
+        self.wake();
+        Ok(job)
+    }
+
     pub async fn cancel_job(&self, pool: &SqlitePool, job_id: i64) -> AppResult<Job> {
         let job = db::get_job(pool, job_id).await?;
         match job.status {
@@ -343,6 +364,12 @@ async fn run_job(
             run_story_propose_beats(pool, job_id, &job, &settings, token).await
         }
         JobType::StoryBeatProse => run_story_beat_prose(pool, job_id, &job, &settings, token).await,
+        JobType::StoryChapterSummarize => {
+            run_story_chapter_summarize_handler(pool, job_id, &job, &settings, token).await
+        }
+        JobType::StoryBeatVariableRecheck => {
+            run_story_beat_variable_recheck_handler(pool, job_id, &job, &settings, token).await
+        }
     }
 }
 
@@ -390,7 +417,9 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
         | JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
         | JobType::StoryBeatOutline
-        | JobType::StoryProposeBeats => {}
+        | JobType::StoryProposeBeats
+        | JobType::StoryChapterSummarize
+        | JobType::StoryBeatVariableRecheck => {}
     }
     Ok(())
 }
@@ -428,7 +457,9 @@ async fn fail_job(
         | JobType::StoryChapterOutline
         | JobType::StoryProposeChapters
         | JobType::StoryBeatOutline
-        | JobType::StoryProposeBeats => {}
+        | JobType::StoryProposeBeats
+        | JobType::StoryChapterSummarize
+        | JobType::StoryBeatVariableRecheck => {}
     }
     Ok(())
 }
@@ -1245,16 +1276,97 @@ async fn run_beat_prose_generation_attempt(
                 &meaningful,
             )
             .await?;
-            db::finalize_beat_prose(pool, beat_id, &display, &beat_updates).await?;
+            db::finalize_beat_prose(
+                pool,
+                story_id,
+                chapter_order,
+                beat_id,
+                &display,
+                &beat_updates,
+            )
+            .await?;
         } else {
-            db::finalize_beat_prose(pool, beat_id, &display, &[]).await?;
+            db::finalize_beat_prose(pool, story_id, chapter_order, beat_id, &display, &[]).await?;
         }
     } else {
-        db::finalize_beat_prose(pool, beat_id, &display, &[]).await?;
+        db::finalize_beat_prose(pool, story_id, chapter_order, beat_id, &display, &[]).await?;
     }
     db::touch_story(pool, story_id).await?;
 
     Ok(BeatProseOutcome::Success)
+}
+
+async fn run_story_chapter_summarize_handler(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &dreamwell_types::Job,
+    settings: &dreamwell_types::Settings,
+    token: CancellationToken,
+) -> AppResult<()> {
+    if token.is_cancelled() {
+        return cancel_job_record(pool, job).await;
+    }
+    let story_id = job
+        .story_id
+        .ok_or_else(|| AppError::internal("summarize job missing story_id"))?;
+    let chapter_id = job
+        .chapter_id
+        .ok_or_else(|| AppError::internal("summarize job missing chapter_id"))?;
+    match crate::story_summarize::run_story_chapter_summarize_job(
+        pool, job_id, story_id, chapter_id, settings,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(err) => fail_job(pool, job_id, job, &err.to_string()).await,
+    }
+}
+
+async fn run_story_beat_variable_recheck_handler(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &dreamwell_types::Job,
+    settings: &dreamwell_types::Settings,
+    token: CancellationToken,
+) -> AppResult<()> {
+    if token.is_cancelled() {
+        return cancel_job_record(pool, job).await;
+    }
+    let story_id = job
+        .story_id
+        .ok_or_else(|| AppError::internal("recheck job missing story_id"))?;
+    let chapter_id = job
+        .chapter_id
+        .ok_or_else(|| AppError::internal("recheck job missing chapter_id"))?;
+    let beat_id = job
+        .beat_id
+        .ok_or_else(|| AppError::internal("recheck job missing beat_id"))?;
+    let detail = db::get_story_detail(pool, story_id).await?;
+    let chapter = detail
+        .chapters
+        .iter()
+        .find(|c| c.id == chapter_id)
+        .ok_or_else(|| AppError::internal("chapter not found"))?;
+    let beat = chapter
+        .beats
+        .iter()
+        .find(|b| b.id == beat_id)
+        .ok_or_else(|| AppError::internal("beat not found"))?;
+    match crate::story_variable_recheck::run_beat_variable_recheck_job(
+        pool,
+        job_id,
+        story_id,
+        chapter_id,
+        beat_id,
+        chapter.sort_order,
+        beat.sort_order,
+        settings,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(err) => fail_job(pool, job_id, job, &err.to_string()).await,
+    }
 }
 
 pub async fn enqueue_generation(

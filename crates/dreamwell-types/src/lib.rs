@@ -26,6 +26,8 @@ pub enum JobType {
     StoryBeatOutline,
     StoryProposeBeats,
     StoryBeatProse,
+    StoryChapterSummarize,
+    StoryBeatVariableRecheck,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -271,6 +273,12 @@ pub struct StoryChapter {
     pub story_id: i64,
     pub title: String,
     pub synopsis: String,
+    #[serde(default)]
+    pub prose_summary: String,
+    #[serde(default)]
+    pub prose_summary_valid: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose_summary_at: Option<DateTime<Utc>>,
     pub sort_order: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -310,6 +318,10 @@ pub struct StoryVariable {
 pub struct StoryVariableUpdate {
     pub key: String,
     pub value: String,
+    #[serde(default)]
+    pub source_chapter_order: Option<i64>,
+    #[serde(default)]
+    pub source_beat_order: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
