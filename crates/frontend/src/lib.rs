@@ -10,6 +10,7 @@ mod stories_ui;
 mod story_save;
 mod summary_ui;
 mod title_editor;
+mod variable_updates_ui;
 mod variables;
 
 use std::cell::RefCell;
@@ -37,6 +38,7 @@ use summary_ui::{
     CHAT_SUMMARIZE_PLACEHOLDER,
 };
 use title_editor::TitleEditor;
+use variable_updates_ui::VariableUpdatesBlock;
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
 
@@ -1852,65 +1854,6 @@ struct ThoughtBlockProps {
     thought_content: String,
     thought_duration_ms: Option<i64>,
     thought_in_progress: bool,
-}
-
-fn format_variable_update_value(update: &MessageVariableUpdate) -> String {
-    if update.deleted {
-        if let Some(previous) = &update.previous_value {
-            format!("{previous} → (deleted)")
-        } else {
-            "(deleted)".to_string()
-        }
-    } else if let Some(previous) = &update.previous_value {
-        format!("{previous} → {}", update.value)
-    } else {
-        update.value.clone()
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct VariableUpdatesBlockProps {
-    updates: Vec<MessageVariableUpdate>,
-}
-
-#[function_component(VariableUpdatesBlock)]
-fn variable_updates_block(props: &VariableUpdatesBlockProps) -> Html {
-    let expanded = use_state(|| false);
-    let count = props.updates.len();
-
-    let toggle = {
-        let expanded = expanded.clone();
-        Callback::from(move |_| expanded.set(!*expanded))
-    };
-
-    html! {
-        <div class="message-variable-updates">
-            <button type="button" class="message-variable-updates-toggle" onclick={toggle}>
-                <span class="message-variable-updates-label">
-                    { format!("Updated variables ({count})") }
-                </span>
-                <span class="message-variable-updates-chevron" aria-hidden="true">
-                    { if *expanded { "▾" } else { "▸" } }
-                </span>
-            </button>
-            if *expanded {
-                <div class="message-variable-updates-body">
-                    <div class="message-variable-updates-grid" role="table">
-                        <div class="message-variable-updates-grid-header" role="columnheader">{"Name"}</div>
-                        <div class="message-variable-updates-grid-header" role="columnheader">{"Value"}</div>
-                        { for props.updates.iter().map(|update| {
-                            html! {
-                                <>
-                                    <div class="message-variable-updates-key" role="cell">{ &update.key }</div>
-                                    <div class="message-variable-updates-value" role="cell">{ format_variable_update_value(update) }</div>
-                                </>
-                            }
-                        }) }
-                    </div>
-                </div>
-            }
-        </div>
-    }
 }
 
 #[function_component(ThoughtBlock)]

@@ -17,6 +17,7 @@ use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::story_save::{auto_save_status_html, AutoSaveController, AutoSavePhase};
 use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
+use crate::variable_updates_ui::VariableUpdatesBlock;
 use crate::variables;
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -1608,6 +1609,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
 
     let show_recheck = props.variables_enabled && !(*content).trim().is_empty();
     let variable_update_count = beat.variable_updates.len();
+    let show_variable_updates = props.variables_enabled && variable_update_count > 0;
 
     html! {
         <div class="story-form">
@@ -1634,27 +1636,32 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                 }} />
             </label>
             <label class="field"><span class="muted">{"Prose"}</span>
-                <textarea
-                    class={classes!(
-                        "prose-editor",
-                        streaming.then_some("story-prose--streaming"),
-                    )}
-                    value={prose_display}
-                    placeholder={prose_placeholder}
-                    rows="12"
-                    readonly={generation_active && !*user_edited_prose}
-                    oninput={{
-                        let content = content.clone();
-                        let user_edited_prose = user_edited_prose.clone();
-                        let schedule_save = schedule_save.clone();
-                        Callback::from(move |e: InputEvent| {
-                            let input: HtmlInputElement = e.target_unchecked_into();
-                            user_edited_prose.set(true);
-                            content.set(input.value());
-                            schedule_save.emit(true);
-                        })
-                    }}
-                />
+                <div class="prose-editor-wrap">
+                    <textarea
+                        class={classes!(
+                            "prose-editor",
+                            streaming.then_some("story-prose--streaming"),
+                        )}
+                        value={prose_display}
+                        placeholder={prose_placeholder}
+                        rows="12"
+                        readonly={generation_active && !*user_edited_prose}
+                        oninput={{
+                            let content = content.clone();
+                            let user_edited_prose = user_edited_prose.clone();
+                            let schedule_save = schedule_save.clone();
+                            Callback::from(move |e: InputEvent| {
+                                let input: HtmlInputElement = e.target_unchecked_into();
+                                user_edited_prose.set(true);
+                                content.set(input.value());
+                                schedule_save.emit(true);
+                            })
+                        }}
+                    />
+                    if show_variable_updates {
+                        <VariableUpdatesBlock updates={beat.variable_updates.clone()} />
+                    }
+                </div>
                 if queued && (*content).is_empty() && !prose_failure_only {
                     <span class="muted" style="font-size:0.85rem;">{"Waiting in queue…"}</span>
                 }
@@ -1668,11 +1675,6 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     </div>
                 }
             </label>
-            if variable_update_count > 0 {
-                <p class="muted" style="font-size:0.85rem;">
-                    { format!("Updated variables ({variable_update_count})") }
-                </p>
-            }
             { auto_save_status_html(*save_phase, (*save_error).as_deref()) }
             <label class="field">
                 <span class="muted">{"Guidance for generation"}</span>
