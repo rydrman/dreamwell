@@ -25,7 +25,7 @@ use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
 };
 use gloo_timers::callback::{Interval, Timeout};
-use install::{InstallButton, InstallKind, InstallSettings};
+use install::InstallSettings;
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
@@ -274,34 +274,19 @@ fn app() -> Html {
     let chat_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let summarize_watch = use_mut_ref(|| None::<i64>);
     let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
-    let install_kind = use_state(install::install_kind);
-    let install_ui_tick = use_state(|| 0u32);
-
-    let refresh_install_ui = {
-        let install_kind = install_kind.clone();
-        let install_ui_tick = install_ui_tick.clone();
-        Callback::from(move |_| {
-            install_kind.set(install::install_kind());
-            install_ui_tick.set(*install_ui_tick + 1);
-        })
-    };
+    let installed = use_state(install::is_installed);
 
     {
-        let install_kind = install_kind.clone();
-        let refresh_install_ui = refresh_install_ui.clone();
+        let installed = installed.clone();
         use_effect_with((), move |_| {
             install::init(Callback::from(move |_| {
-                refresh_install_ui.emit(());
+                installed.set(install::is_installed());
             }));
-            install_kind.set(install::install_kind());
             || ()
         });
     }
 
-    let show_install = {
-        let _ = *install_ui_tick;
-        matches!(install::install_kind(), InstallKind::NativePrompt)
-    };
+    let _installed = *installed;
 
     let navigate = {
         let router = router.clone();
@@ -744,8 +729,6 @@ fn app() -> Html {
                     settings_open={route.overlay() == Some(Overlay::Settings)}
                     show_sidebar_toggle={false}
                     sidebar_open={false}
-                    show_install={show_install}
-                    on_install_change={refresh_install_ui.clone()}
                     on_toggle_sidebar={toggle_sidebar.clone()}
                     on_open_settings={open_settings.clone()}
                     on_open_queue={open_queue.clone()}
@@ -754,8 +737,6 @@ fn app() -> Html {
                 if route.overlay() == Some(Overlay::Settings) {
                     <SettingsOverlay
                         settings={settings.clone()}
-                        install_kind={*install_kind}
-                        on_install_change={refresh_install_ui.clone()}
                         on_close={close_overlay.clone()}
                     />
                 }
@@ -914,8 +895,6 @@ fn app() -> Html {
                 on_toggle_sidebar={toggle_sidebar.clone()}
                 show_sidebar_toggle={true}
                 sidebar_open={sidebar_open}
-                show_install={show_install}
-                on_install_change={refresh_install_ui.clone()}
                 on_open_settings={open_settings.clone()}
                 on_open_queue={open_queue.clone()}
                 on_close_overlay={close_overlay.clone()}
@@ -935,8 +914,6 @@ fn app() -> Html {
             if overlay == Some(Overlay::Settings) {
                 <SettingsOverlay
                     settings={settings.clone()}
-                    install_kind={*install_kind}
-                    on_install_change={refresh_install_ui.clone()}
                     on_close={close_overlay.clone()}
                 />
             }
@@ -1454,8 +1431,6 @@ struct ModeBarProps {
     settings_open: bool,
     show_sidebar_toggle: bool,
     sidebar_open: bool,
-    show_install: bool,
-    on_install_change: Callback<()>,
     on_toggle_sidebar: Callback<()>,
     on_open_settings: Callback<()>,
     on_open_queue: Callback<()>,
@@ -1489,9 +1464,6 @@ fn mode_bar(props: &ModeBarProps) -> Html {
                     <span class="mode-bar-title">{"Dreamwell"}</span>
                 </div>
                 <div class="mode-bar-actions">
-                    if props.show_install {
-                        <InstallButton on_change={props.on_install_change.clone()} />
-                    }
                     <TopBarQueueButton
                         queue={props.queue.clone()}
                         active={props.mode == AppMode::Queue}
@@ -1515,8 +1487,6 @@ fn mode_bar(props: &ModeBarProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct SettingsOverlayProps {
     settings: UseStateHandle<Option<Settings>>,
-    install_kind: InstallKind,
-    on_install_change: Callback<()>,
     on_close: Callback<()>,
 }
 
@@ -1570,11 +1540,7 @@ fn settings_overlay(props: &SettingsOverlayProps) -> Html {
                 <h2>{"Settings"}</h2>
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
             </div>
-            <SettingsPanel
-                save_ctx={save_ctx}
-                install_kind={props.install_kind}
-                on_install_change={props.on_install_change.clone()}
-            />
+            <SettingsPanel save_ctx={save_ctx} />
         </div>
     }
 }
@@ -3636,8 +3602,6 @@ fn settings_save_status_html(phase: &SettingsSavePhase) -> Html {
 #[derive(Properties, PartialEq)]
 struct SettingsPanelProps {
     save_ctx: SettingsSaveContext,
-    install_kind: InstallKind,
-    on_install_change: Callback<()>,
 }
 
 #[function_component(SettingsPanel)]
@@ -3865,10 +3829,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 }} />
                 {"Extract reasoning into collapsible thought block"}
             </label>
-            <InstallSettings
-                kind={props.install_kind}
-                on_change={props.on_install_change.clone()}
-            />
+            <InstallSettings />
             <NotificationSettings />
         </div>
     }
