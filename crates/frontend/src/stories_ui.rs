@@ -4,7 +4,7 @@ use std::rc::Rc;
 use dreamwell_types::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlInputElement, HtmlSelectElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::api;
@@ -67,6 +67,21 @@ fn selection_from_story_nav(nav: StoryNav) -> StorySelection {
             chapter_id,
             beat_id,
         },
+    }
+}
+
+fn story_nav_exists(detail: &StoryDetail, nav: StoryNav) -> bool {
+    match nav {
+        StoryNav::None | StoryNav::Basics => true,
+        StoryNav::Chapter(id) => detail.chapters.iter().any(|ch| ch.id == id),
+        StoryNav::Beat {
+            chapter_id,
+            beat_id,
+        } => detail
+            .chapters
+            .iter()
+            .find(|ch| ch.id == chapter_id)
+            .is_some_and(|ch| ch.beats.iter().any(|beat| beat.id == beat_id)),
     }
 }
 
@@ -229,6 +244,43 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
             }
             || ()
         });
+    }
+
+    {
+        let detail = detail.clone();
+        let on_navigate = props.on_navigate.clone();
+        let route = props.route.clone();
+        use_effect_with(
+            (route.clone(), (*detail).clone()),
+            move |(route, detail)| {
+                if let (
+                    AppRoute::Stories {
+                        story_id,
+                        nav,
+                        overlay,
+                        sidebar,
+                    },
+                    Some(detail),
+                ) = (route, detail.as_ref())
+                {
+                    if story_id.is_some()
+                        && !matches!(nav, StoryNav::None | StoryNav::Basics)
+                        && !story_nav_exists(detail, *nav)
+                    {
+                        on_navigate.emit((
+                            AppRoute::Stories {
+                                story_id: *story_id,
+                                nav: StoryNav::None,
+                                overlay: *overlay,
+                                sidebar: *sidebar,
+                            },
+                            false,
+                        ));
+                    }
+                }
+                || ()
+            },
+        );
     }
 
     {
@@ -1758,8 +1810,13 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
 
 fn string_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
     Callback::from(move |e: InputEvent| {
-        let input: HtmlInputElement = e.target_unchecked_into();
-        state.set(input.value());
+        if let Some(target) = e.target() {
+            if let Ok(input) = target.clone().dyn_into::<HtmlInputElement>() {
+                state.set(input.value());
+            } else if let Ok(textarea) = target.dyn_into::<HtmlTextAreaElement>() {
+                state.set(textarea.value());
+            }
+        }
     })
 }
 
@@ -1794,36 +1851,51 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
             .map(|detail| variable_when_from_selection(detail, props.selection))
             .unwrap_or(VariableWhen::Manual)
     });
+    let prev_selection = use_mut_ref(|| None::<StorySelection>);
 
     {
         let when = when.clone();
         let detail = props.detail.clone();
         let selection = props.selection;
+        let prev_selection = prev_selection.clone();
         use_effect_with((detail.clone(), selection), move |(detail, selection)| {
-            if let Some(detail) = detail.as_ref() {
-                when.set(variable_when_from_selection(detail, *selection));
-            } else {
-                when.set(VariableWhen::Manual);
+            let selection_changed = *prev_selection.borrow() != Some(*selection);
+            *prev_selection.borrow_mut() = Some(*selection);
+            if selection_changed {
+                if let Some(detail) = detail.as_ref() {
+                    when.set(variable_when_from_selection(detail, *selection));
+                } else {
+                    when.set(VariableWhen::Manual);
+                }
             }
             || ()
         });
     }
 
+    let variable_refresh = props.detail.as_ref().map(|detail| {
+        let beat_count: usize = detail.chapters.iter().map(|ch| ch.beats.len()).sum();
+        let job_id = detail.story.active_job.as_ref().map(|job| job.id);
+        (beat_count, job_id)
+    });
+
     {
         let variables = variables.clone();
-        use_effect_with(props.story_id, move |story_id| {
-            if let Some(story_id) = *story_id {
-                let variables = variables.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(list) = api::get_story_variables(story_id).await {
-                        variables.set(list);
-                    }
-                });
-            } else {
-                variables.set(vec![]);
-            }
-            || ()
-        });
+        use_effect_with(
+            (props.story_id, variable_refresh),
+            move |(story_id, _refresh)| {
+                if let Some(story_id) = *story_id {
+                    let variables = variables.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Ok(list) = api::get_story_variables(story_id).await {
+                            variables.set(list);
+                        }
+                    });
+                } else {
+                    variables.set(vec![]);
+                }
+                || ()
+            },
+        );
     }
 
     let Some(story_id) = props.story_id else {
@@ -1852,6 +1924,25 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
             }
         }
         options
+    };
+
+    let clear_form = {
+        let key = key.clone();
+        let value = value.clone();
+        let editing_key = editing_key.clone();
+        let when = when.clone();
+        let detail = props.detail.clone();
+        let selection = props.selection;
+        Callback::from(move |_| {
+            key.set(String::new());
+            value.set(String::new());
+            editing_key.set(None);
+            if let Some(detail) = detail.as_ref() {
+                when.set(variable_when_from_selection(detail, selection));
+            } else {
+                when.set(VariableWhen::Manual);
+            }
+        })
     };
 
     html! {
@@ -1918,76 +2009,108 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                 <div class="variable-form">
                     <label class="field">
                         <span class="muted">{"When"}</span>
-                        <select onchange={{
-                            let when = when.clone();
-                            Callback::from(move |e: Event| {
-                                let input: HtmlInputElement = e.target_unchecked_into();
-                                if let Some(next) = variable_when_from_option(&input.value()) {
-                                    when.set(next);
-                                }
-                            })
-                        }}>
+                        <select
+                            value={variable_when_option_value(*when)}
+                            onchange={{
+                                let when = when.clone();
+                                Callback::from(move |e: Event| {
+                                    if let Some(select) = e.target_dyn_into::<HtmlSelectElement>() {
+                                        if let Some(next) =
+                                            variable_when_from_option(&select.value())
+                                        {
+                                            when.set(next);
+                                        }
+                                    }
+                                })
+                            }}
+                        >
                             { for when_options.iter().map(|option| {
-                                let selected = *option == *when;
                                 let label = detail
                                     .map(|detail| variable_when_label(*option, detail))
                                     .unwrap_or_else(|| "Story-wide (manual)".to_string());
                                 html! {
-                                    <option
-                                        value={variable_when_option_value(*option)}
-                                        selected={selected}
-                                    >
+                                    <option value={variable_when_option_value(*option)}>
                                         { label }
                                     </option>
                                 }
                             }) }
                         </select>
                     </label>
-                    <input type="text" placeholder="Key" value={(*key).clone()} oninput={string_input(key.clone())} />
-                    <textarea placeholder="Value" value={(*value).clone()} rows="3" oninput={string_input(value.clone())} />
-                    <button class="btn" onclick={{
-                        let key = key.clone();
-                        let value = value.clone();
-                        let editing_key = editing_key.clone();
-                        let variables = variables.clone();
-                        let when = *when;
-                        Callback::from(move |_| {
-                            if (*key).trim().is_empty() {
-                                return;
-                            }
-                            let variables = variables.clone();
-                            let (source_chapter_order, source_beat_order) = match when {
-                                VariableWhen::Manual => (
-                                    Some(MANUAL_VARIABLE_SOURCE),
-                                    Some(MANUAL_VARIABLE_SOURCE),
-                                ),
-                                VariableWhen::Beat {
-                                    chapter_order,
-                                    beat_order,
-                                } => (Some(chapter_order), Some(beat_order)),
-                            };
-                            let payload = StoryVariableUpdate {
-                                key: (*key).trim().to_string(),
-                                value: (*value).clone(),
-                                source_chapter_order,
-                                source_beat_order,
-                            };
-                            let editing = (*editing_key).clone();
+                    <label class="field">
+                        <span class="muted">{"Key"}</span>
+                        <input
+                            type="text"
+                            placeholder="Key"
+                            value={(*key).clone()}
+                            readonly={editing_key.is_some()}
+                            oninput={string_input(key.clone())}
+                        />
+                    </label>
+                    <label class="field">
+                        <span class="muted">{"Value"}</span>
+                        <textarea
+                            placeholder="Value"
+                            value={(*value).clone()}
+                            rows="3"
+                            oninput={string_input(value.clone())}
+                        />
+                    </label>
+                    <div class="variable-form-actions">
+                        <button class="btn" onclick={{
                             let key = key.clone();
                             let value = value.clone();
-                            wasm_bindgen_futures::spawn_local(async move {
-                                if api::upsert_story_variable(story_id, &payload).await.is_ok() {
-                                    if let Ok(list) = api::get_story_variables(story_id).await {
-                                        variables.set(list);
-                                    }
-                                    if editing.is_none() {
-                                        key.set(String::new());
-                                        value.set(String::new());
-                                    }
+                            let variables = variables.clone();
+                            let when = *when;
+                            let clear_form = clear_form.clone();
+                            Callback::from(move |_| {
+                                if (*key).trim().is_empty() {
+                                    return;
                                 }
-                            });
-                        })
-                    }}>{ if (*editing_key).is_some() { "Save" } else { "Add variable" } }</button>
+                                let variables = variables.clone();
+                                let (source_chapter_order, source_beat_order) = match when {
+                                    VariableWhen::Manual => (
+                                        Some(MANUAL_VARIABLE_SOURCE),
+                                        Some(MANUAL_VARIABLE_SOURCE),
+                                    ),
+                                    VariableWhen::Beat {
+                                        chapter_order,
+                                        beat_order,
+                                    } => (Some(chapter_order), Some(beat_order)),
+                                };
+                                let payload = StoryVariableUpdate {
+                                    key: (*key).trim().to_string(),
+                                    value: (*value).clone(),
+                                    source_chapter_order,
+                                    source_beat_order,
+                                };
+                                let clear_form = clear_form.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    match api::upsert_story_variable(story_id, &payload).await {
+                                        Ok(_) => {
+                                            if let Ok(list) =
+                                                api::get_story_variables(story_id).await
+                                            {
+                                                variables.set(list);
+                                            }
+                                            clear_form.emit(());
+                                        }
+                                        Err(err) => {
+                                            if let Some(window) = web_sys::window() {
+                                                let _ = window.alert_with_message(&format!(
+                                                    "Could not save variable: {err}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                });
+                            })
+                        }}>{ if (*editing_key).is_some() { "Save" } else { "Add variable" } }</button>
+                        if (*editing_key).is_some() {
+                            <button class="btn secondary" onclick={clear_form.reform(|_| ())}>
+                                {"Cancel"}
+                            </button>
+                        }
+                    </div>
                 </div>
             </div>
         </div>
