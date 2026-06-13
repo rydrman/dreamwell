@@ -76,7 +76,7 @@ pub fn router() -> Router<AppState> {
             get(list_story_variables).put(upsert_story_variable),
         )
         .route(
-            "/:id/variables/:key",
+            "/:id/variables/:variable_id",
             axum::routing::delete(delete_story_variable),
         )
 }
@@ -272,10 +272,13 @@ async fn upsert_story_variable(
 
 async fn delete_story_variable(
     State(state): State<AppState>,
-    Path((id, key)): Path<(i64, String)>,
+    Path((id, variable_id)): Path<(i64, i64)>,
 ) -> AppResult<Json<OkResponse>> {
     let _ = db::get_story(&state.pool, id).await?;
-    db::delete_story_variable(&state.pool, id, &key).await?;
+    let key = db::get_story_variable(&state.pool, id, variable_id)
+        .await?
+        .key;
+    db::delete_story_variable(&state.pool, id, variable_id).await?;
     strip_variable_key_from_story_beats(&state.pool, id, &key).await?;
     db::touch_story(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))

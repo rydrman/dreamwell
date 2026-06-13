@@ -1,15 +1,16 @@
-use std::collections::HashMap;
-
-use dreamwell_types::{BeatVariableUpdate, StoryChapter, StoryVariable};
+use dreamwell_types::StoryChapter;
 use sqlx::SqlitePool;
 
 use crate::error::AppResult;
+use crate::variable_state::{pairs_sorted, story_state_at};
 use crate::variables::VariableUpdate;
 
-/// Manual panel edits use negative source positions so they apply at every beat.
-pub const MANUAL_VARIABLE_SOURCE: i64 = -1;
+pub use crate::variable_state::MANUAL_STORY_SOURCE;
 
-/// Variables available when generating prose for a beat (prior beats + manual overrides).
+/// Alias kept for callers that imported `MANUAL_VARIABLE_SOURCE`.
+pub const MANUAL_VARIABLE_SOURCE: i64 = MANUAL_STORY_SOURCE;
+
+/// Variables available when generating prose for a beat (prior beats + scoped panel entries).
 pub async fn variables_for_beat_generation(
     pool: &SqlitePool,
     chapters: &[StoryChapter],
@@ -17,84 +18,28 @@ pub async fn variables_for_beat_generation(
     chapter_order: i64,
     beat_order: i64,
 ) -> AppResult<Vec<(String, String)>> {
-    let mut state: HashMap<String, String> =
-        replay_variables_before(chapters, chapter_order, beat_order)
-            .into_iter()
-            .collect();
-    for variable in crate::db::list_story_variables(pool, story_id).await? {
-        if variable.source_chapter_order == MANUAL_VARIABLE_SOURCE {
-            state.insert(variable.key.clone(), variable.value.clone());
-            continue;
-        }
-        let before_current = variable.source_chapter_order < chapter_order
-            || (variable.source_chapter_order == chapter_order
-                && variable.source_beat_order < beat_order);
-        if before_current {
-            state.insert(variable.key.clone(), variable.value.clone());
-        }
-    }
-    let mut pairs: Vec<(String, String)> = state.into_iter().collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(pairs)
-}
-
-/// Variables known strictly before the given beat position (prior beats only).
-pub fn replay_variables_before(
-    chapters: &[StoryChapter],
-    chapter_order: i64,
-    beat_order: i64,
-) -> Vec<(String, String)> {
-    let mut state: HashMap<String, String> = HashMap::new();
-    for chapter in chapters
-        .iter()
-        .filter(|chapter| chapter.sort_order < chapter_order)
-    {
-        for beat in &chapter.beats {
-            apply_beat_updates(&mut state, &beat.variable_updates);
-        }
-    }
-    if let Some(chapter) = chapters
-        .iter()
-        .find(|chapter| chapter.sort_order == chapter_order)
-    {
-        for beat in chapter
-            .beats
-            .iter()
-            .filter(|beat| beat.sort_order < beat_order)
-        {
-            apply_beat_updates(&mut state, &beat.variable_updates);
-        }
-    }
-    let mut pairs: Vec<(String, String)> = state.into_iter().collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    pairs
-}
-
-fn apply_beat_updates(state: &mut HashMap<String, String>, updates: &[BeatVariableUpdate]) {
-    for update in updates {
-        if update.deleted {
-            state.remove(&update.key);
-        } else {
-            state.insert(update.key.clone(), update.value.clone());
-        }
-    }
+    let panel = crate::db::list_story_variables(pool, story_id).await?;
+    Ok(pairs_sorted(story_state_at(
+        chapters,
+        &panel,
+        chapter_order,
+        beat_order,
+    )))
 }
 
 pub fn filter_meaningful_story_updates(
     updates: &[VariableUpdate],
-    current_variables: &[StoryVariable],
+    current_variables: &[(String, String)],
 ) -> Vec<VariableUpdate> {
+    let current: std::collections::HashMap<_, _> = current_variables
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
     updates
         .iter()
         .filter(|update| match update {
-            VariableUpdate::Set { key, value } => current_variables
-                .iter()
-                .find(|variable| variable.key == *key)
-                .map(|variable| variable.value != *value)
-                .unwrap_or(true),
-            VariableUpdate::Delete { key } => current_variables
-                .iter()
-                .any(|variable| variable.key == *key),
+            VariableUpdate::Set { key, value } => current.get(key) != Some(value),
+            VariableUpdate::Delete { key } => current.contains_key(key),
         })
         .cloned()
         .collect()
@@ -122,7 +67,7 @@ pub fn story_variables_instruction() -> &'static str {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use dreamwell_types::StoryBeat;
+    use dreamwell_types::{BeatVariableUpdate, StoryBeat};
 
     fn beat(order: i64, updates: Vec<BeatVariableUpdate>) -> StoryBeat {
         StoryBeat {
@@ -168,7 +113,8 @@ mod tests {
                 beat(2, vec![set("coin", "gold")]),
             ],
         }];
-        let vars = replay_variables_before(&chapters, 0, 1);
-        assert_eq!(vars, vec![("baker".to_string(), "Tomas".to_string()),]);
+        let vars = crate::variable_state::replay_story_beat_updates(&chapters, 0, 1);
+        assert_eq!(vars.get("baker"), Some(&"Tomas".to_string()));
+        assert!(!vars.contains_key("bread"));
     }
 }

@@ -17,6 +17,7 @@ mod story_variables;
 mod summarize;
 mod thoughts;
 mod variable_recheck;
+mod variable_state;
 mod variables;
 
 use std::net::SocketAddr;
