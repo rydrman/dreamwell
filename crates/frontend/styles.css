@@ -877,6 +877,15 @@ input.header-title {
   min-height: 2.25rem;
 }
 
+.variable-row .field-autosave-wrap {
+  display: block;
+}
+
+.variable-row .field-autosave-wrap .variable-row-value {
+  display: block;
+  width: 100%;
+}
+
 .message-variable-updates .variable-list--compact .variable-row-scope {
   font-size: 0.75rem;
   max-width: 9rem;

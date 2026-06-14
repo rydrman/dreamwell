@@ -1,11 +1,13 @@
 use dreamwell_types::*;
-use gloo_timers::callback::Timeout;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlDocument, HtmlInputElement, HtmlSelectElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::api;
-use crate::story_save::{auto_save_field_icon, AutoSavePhase};
+use crate::story_save::{
+    draft_is_dirty, fail_auto_save, finish_auto_save, AutoSaveController, AutoSaveField,
+    AutoSavePhase,
+};
 
 pub const MANUAL_MESSAGE_SOURCE: i64 = -1;
 pub const MANUAL_STORY_SOURCE: i64 = -1;
@@ -32,6 +34,36 @@ pub struct VariableSavePayload {
     pub key: String,
     pub value: String,
     pub scope_value: String,
+}
+
+pub struct VariableSaveAction {
+    pub payload: VariableSavePayload,
+    pub on_complete: Callback<Result<(), String>>,
+}
+
+#[derive(Clone, PartialEq)]
+struct RowFields {
+    key: String,
+    value: String,
+    scope_value: String,
+}
+
+impl RowFields {
+    fn from_model(model: &VariableRowModel) -> Self {
+        Self {
+            key: model.key.clone(),
+            value: model.value.clone(),
+            scope_value: model.scope_value.clone(),
+        }
+    }
+
+    fn snapshot(key: &str, value: &str, scope_value: &str) -> Self {
+        Self {
+            key: key.trim().to_string(),
+            value: value.to_string(),
+            scope_value: scope_value.to_string(),
+        }
+    }
 }
 
 fn text_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
@@ -72,7 +104,7 @@ pub struct VariableRowProps {
     pub scope_options: Vec<ScopeOption>,
     #[prop_or(false)]
     pub scope_readonly: bool,
-    pub on_save: Callback<VariableSavePayload>,
+    pub on_save: Callback<VariableSaveAction>,
     pub on_delete: Callback<Option<i64>>,
     #[prop_or_default]
     pub on_cancel: Option<Callback<()>>,
@@ -83,19 +115,25 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
     let key = use_state(|| props.model.key.clone());
     let value = use_state(|| props.model.value.clone());
     let scope_value = use_state(|| props.model.scope_value.clone());
+    let last_saved = use_state(|| RowFields::from_model(&props.model));
     let save_phase = use_state(|| AutoSavePhase::Synced);
     let save_error = use_state(|| None::<String>);
-    let save_timeout = use_mut_ref(|| None::<Timeout>);
+    let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
 
     {
         let key = key.clone();
         let value = value.clone();
         let scope_value = scope_value.clone();
+        let last_saved = last_saved.clone();
         let model = props.model.clone();
         use_effect_with(model, move |model| {
-            key.set(model.key.clone());
-            value.set(model.value.clone());
-            scope_value.set(model.scope_value.clone());
+            let current = RowFields::snapshot(&key, &value, &scope_value);
+            if !draft_is_dirty(&current, &*last_saved) {
+                key.set(model.key.clone());
+                value.set(model.value.clone());
+                scope_value.set(model.scope_value.clone());
+                last_saved.set(RowFields::from_model(model));
+            }
             || ()
         });
     }
@@ -104,36 +142,53 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         let key = key.clone();
         let value = value.clone();
         let scope_value = scope_value.clone();
-        let save_phase = save_phase.clone();
-        let save_error = save_error.clone();
-        let save_timeout = save_timeout.clone();
+        let last_saved = last_saved.clone();
+        let save_controller = save_controller.clone();
         let on_save = props.on_save.clone();
         let id = props.model.id;
         Callback::from(move |_| {
-            if (*key).trim().is_empty() {
+            let snapshot = RowFields::snapshot(&key, &value, &scope_value);
+            if snapshot.key.is_empty() || !draft_is_dirty(&snapshot, &*last_saved) {
                 return;
             }
-            if let Some(handle) = save_timeout.borrow_mut().take() {
-                drop(handle);
-            }
-            save_phase.set(AutoSavePhase::Debouncing);
             let key = key.clone();
             let value = value.clone();
             let scope_value = scope_value.clone();
-            let save_phase = save_phase.clone();
-            let save_error = save_error.clone();
+            let last_saved = last_saved.clone();
+            let save_controller = save_controller.clone();
             let on_save = on_save.clone();
-            *save_timeout.borrow_mut() = Some(Timeout::new(400, move || {
-                save_phase.set(AutoSavePhase::Saving);
-                on_save.emit(VariableSavePayload {
+            let controller_for_save = save_controller.clone();
+            save_controller.schedule(move || {
+                let payload = VariableSavePayload {
                     id,
-                    key: (*key).trim().to_string(),
-                    value: (*value).clone(),
-                    scope_value: (*scope_value).clone(),
+                    key: snapshot.key.clone(),
+                    value: snapshot.value.clone(),
+                    scope_value: snapshot.scope_value.clone(),
+                };
+                let key = key.clone();
+                let value = value.clone();
+                let scope_value = scope_value.clone();
+                let last_saved = last_saved.clone();
+                let save_controller = controller_for_save.clone();
+                on_save.emit(VariableSaveAction {
+                    payload,
+                    on_complete: Callback::from(move |result| match result {
+                        Ok(()) => {
+                            let current = RowFields::snapshot(&key, &value, &scope_value);
+                            let _ = finish_auto_save(
+                                &save_controller,
+                                &current,
+                                &snapshot,
+                                &last_saved,
+                            );
+                        }
+                        Err(message) => {
+                            let current = RowFields::snapshot(&key, &value, &scope_value);
+                            let _ = fail_auto_save(&save_controller, &current, &snapshot, message);
+                        }
+                    }),
                 });
-                save_phase.set(AutoSavePhase::Synced);
-                save_error.set(None);
-            }));
+            });
         })
     };
 
@@ -204,31 +259,32 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                     }
                 </div>
             </div>
-            <textarea
-                class="variable-row-value"
-                placeholder="Value"
-                rows="2"
-                value={(*value).clone()}
-                oninput={{
-                    let value = value.clone();
-                    let schedule_save = schedule_save.clone();
-                    Callback::from(move |e: InputEvent| {
-                        text_input(value.clone()).emit(e);
-                        schedule_save.emit(());
-                    })
-                }}
-            />
-            <div class="variable-row-footer">
-                { auto_save_field_icon(*save_phase, (*save_error).as_deref()) }
-                if props.on_cancel.is_some() && props.model.id.is_none() {
+            <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
+                <textarea
+                    class="variable-row-value"
+                    placeholder="Value"
+                    rows="2"
+                    value={(*value).clone()}
+                    oninput={{
+                        let value = value.clone();
+                        let schedule_save = schedule_save.clone();
+                        Callback::from(move |e: InputEvent| {
+                            text_input(value.clone()).emit(e);
+                            schedule_save.emit(());
+                        })
+                    }}
+                />
+            </AutoSaveField>
+            if props.on_cancel.is_some() && props.model.id.is_none() {
+                <div class="variable-row-footer">
                     <button
                         class="btn secondary btn-compact"
                         onclick={props.on_cancel.clone().unwrap().reform(|_| ())}
                     >
                         {"Clear"}
                     </button>
-                }
-            </div>
+                </div>
+            }
         </div>
     }
 }
@@ -460,10 +516,12 @@ pub fn make_chat_variable_handlers(
     chat_id: i64,
     variables: UseStateHandle<Vec<ChatVariable>>,
     on_changed: Option<Callback<()>>,
-) -> (Callback<VariableSavePayload>, Callback<Option<i64>>) {
+) -> (Callback<VariableSaveAction>, Callback<Option<i64>>) {
     let on_save = {
         let variables = variables.clone();
-        Callback::from(move |payload: VariableSavePayload| {
+        Callback::from(move |action: VariableSaveAction| {
+            let payload = action.payload;
+            let on_complete = action.on_complete;
             let variables = variables.clone();
             let source_message_id = payload
                 .scope_value
@@ -480,17 +538,11 @@ pub fn make_chat_variable_handlers(
                 )
                 .await
                 {
-                    Ok(_) => {
-                        if let Ok(list) = api::get_variables(chat_id).await {
-                            variables.set(list);
-                        }
+                    Ok(saved) => {
+                        variables.set(patch_chat_variable(&variables, saved));
+                        on_complete.emit(Ok(()));
                     }
-                    Err(err) => {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window
-                                .alert_with_message(&format!("Could not save variable: {err}"));
-                        }
-                    }
+                    Err(err) => on_complete.emit(Err(err)),
                 }
             });
         })
@@ -507,9 +559,7 @@ pub fn make_chat_variable_handlers(
             wasm_bindgen_futures::spawn_local(async move {
                 match api::delete_variable(chat_id, variable_id).await {
                     Ok(()) => {
-                        if let Ok(list) = api::get_variables(chat_id).await {
-                            variables.set(list);
-                        }
+                        variables.set(remove_chat_variable(&variables, variable_id));
                         if let Some(on_changed) = on_changed {
                             on_changed.emit(());
                         }
@@ -528,14 +578,60 @@ pub fn make_chat_variable_handlers(
     (on_save, on_delete)
 }
 
+fn patch_chat_variable(list: &[ChatVariable], saved: ChatVariable) -> Vec<ChatVariable> {
+    let mut next: Vec<ChatVariable> = list
+        .iter()
+        .filter(|variable| variable.id != saved.id)
+        .cloned()
+        .collect();
+    next.push(saved);
+    next.sort_by(|left, right| {
+        (left.source_message_id, &left.key).cmp(&(right.source_message_id, &right.key))
+    });
+    next
+}
+
+fn remove_chat_variable(list: &[ChatVariable], id: i64) -> Vec<ChatVariable> {
+    list.iter()
+        .filter(|variable| variable.id != id)
+        .cloned()
+        .collect()
+}
+
+fn patch_story_variable(list: &[StoryVariable], saved: StoryVariable) -> Vec<StoryVariable> {
+    let mut next: Vec<StoryVariable> = list
+        .iter()
+        .filter(|variable| variable.id != saved.id)
+        .cloned()
+        .collect();
+    next.push(saved);
+    next.sort_by(|left, right| {
+        (left.source_chapter_order, left.source_beat_order, &left.key).cmp(&(
+            right.source_chapter_order,
+            right.source_beat_order,
+            &right.key,
+        ))
+    });
+    next
+}
+
+fn remove_story_variable(list: &[StoryVariable], id: i64) -> Vec<StoryVariable> {
+    list.iter()
+        .filter(|variable| variable.id != id)
+        .cloned()
+        .collect()
+}
+
 pub fn make_story_variable_handlers(
     story_id: i64,
     variables: UseStateHandle<Vec<StoryVariable>>,
     on_detail: Option<Callback<StoryDetail>>,
-) -> (Callback<VariableSavePayload>, Callback<Option<i64>>) {
+) -> (Callback<VariableSaveAction>, Callback<Option<i64>>) {
     let on_save = {
         let variables = variables.clone();
-        Callback::from(move |payload: VariableSavePayload| {
+        Callback::from(move |action: VariableSaveAction| {
+            let payload = action.payload;
+            let on_complete = action.on_complete;
             let variables = variables.clone();
             let (chapter_order, beat_order) = story_scope_from_value(&payload.scope_value);
             let old_scope = payload.id.and_then(|id| {
@@ -550,6 +646,7 @@ pub fn make_story_variable_handlers(
                 if let Some(old_id) = payload.id {
                     if old_scope.as_deref() != Some(payload.scope_value.as_str()) {
                         let _ = api::delete_story_variable(story_id, old_id).await;
+                        variables.set(remove_story_variable(&variables, old_id));
                     }
                 }
                 match api::upsert_story_variable(
@@ -563,17 +660,11 @@ pub fn make_story_variable_handlers(
                 )
                 .await
                 {
-                    Ok(_) => {
-                        if let Ok(list) = api::get_story_variables(story_id).await {
-                            variables.set(list);
-                        }
+                    Ok(saved) => {
+                        variables.set(patch_story_variable(&variables, saved));
+                        on_complete.emit(Ok(()));
                     }
-                    Err(err) => {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window
-                                .alert_with_message(&format!("Could not save variable: {err}"));
-                        }
-                    }
+                    Err(err) => on_complete.emit(Err(err)),
                 }
             });
         })
@@ -590,9 +681,7 @@ pub fn make_story_variable_handlers(
             wasm_bindgen_futures::spawn_local(async move {
                 match api::delete_story_variable(story_id, variable_id).await {
                     Ok(()) => {
-                        if let Ok(list) = api::get_story_variables(story_id).await {
-                            variables.set(list);
-                        }
+                        variables.set(remove_story_variable(&variables, variable_id));
                         if let Some(on_detail) = on_detail {
                             if let Ok(detail) = api::get_story(story_id).await {
                                 on_detail.emit(detail);
@@ -663,7 +752,7 @@ pub fn inline_chat_variables(props: &InlineChatVariablesProps) -> Html {
     let title = format!("Variables ({count})");
 
     html! {
-        <CollapsibleVariablesSection title={title}>
+        <CollapsibleVariablesSection title={title} default_expanded={true}>
             <VariableUpdatesAudit updates={props.variable_updates.clone()} />
             <VariableList
                 rows={scoped}
@@ -733,7 +822,7 @@ pub fn inline_story_variables(props: &InlineStoryVariablesProps) -> Html {
     let title = format!("Variables ({count})");
 
     html! {
-        <CollapsibleVariablesSection title={title}>
+        <CollapsibleVariablesSection title={title} default_expanded={true}>
             <VariableUpdatesAudit updates={props.variable_updates.clone()} />
             <VariableList
                 rows={scoped}
@@ -751,7 +840,7 @@ pub struct VariableListProps {
     pub rows: Vec<VariableRowModel>,
     #[prop_or_default]
     pub scope_options: Vec<ScopeOption>,
-    pub on_save: Callback<VariableSavePayload>,
+    pub on_save: Callback<VariableSaveAction>,
     pub on_delete: Callback<Option<i64>>,
     #[prop_or_default]
     pub new_scope_value: String,
@@ -766,6 +855,10 @@ pub fn variable_list(props: &VariableListProps) -> Html {
     let new_key = use_state(String::new);
     let new_value = use_state(String::new);
     let new_scope = use_state(|| props.new_scope_value.clone());
+    let new_save_phase = use_state(|| AutoSavePhase::Synced);
+    let new_save_error = use_state(|| None::<String>);
+    let new_save_controller =
+        AutoSaveController::new(new_save_phase.clone(), new_save_error.clone());
 
     {
         let new_scope = new_scope.clone();
@@ -780,11 +873,13 @@ pub fn variable_list(props: &VariableListProps) -> Html {
         let new_key = new_key.clone();
         let new_value = new_value.clone();
         let new_scope = new_scope.clone();
+        let new_save_controller = new_save_controller.clone();
         let default_scope = props.new_scope_value.clone();
         Callback::from(move |_| {
             new_key.set(String::new());
             new_value.set(String::new());
             new_scope.set(default_scope.clone());
+            new_save_controller.mark_saved();
         })
     };
 
@@ -839,38 +934,57 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                         </select>
                     }
                 </div>
-                <textarea
-                    class="variable-row-value"
-                    placeholder="Value"
-                    rows="2"
-                    value={(*new_value).clone()}
-                    oninput={text_input(new_value.clone())}
-                />
+                <AutoSaveField phase={*new_save_phase} error={(*new_save_error).clone()}>
+                    <textarea
+                        class="variable-row-value"
+                        placeholder="Value"
+                        rows="2"
+                        value={(*new_value).clone()}
+                        oninput={text_input(new_value.clone())}
+                    />
+                </AutoSaveField>
                 <div class="variable-row-footer">
                     <button
                         class="btn"
-                        disabled={new_key.trim().is_empty()}
+                        disabled={new_key.trim().is_empty() || *new_save_phase == AutoSavePhase::Saving}
                         onclick={{
                             let on_save = props.on_save.clone();
                             let new_key = new_key.clone();
                             let new_value = new_value.clone();
                             let new_scope = new_scope.clone();
                             let clear_new = clear_new.clone();
+                            let new_save_controller = new_save_controller.clone();
+                            let new_save_phase = new_save_phase.clone();
                             Callback::from(move |_| {
                                 if (*new_key).trim().is_empty() {
                                     return;
                                 }
-                                on_save.emit(VariableSavePayload {
+                                let payload = VariableSavePayload {
                                     id: None,
                                     key: (*new_key).trim().to_string(),
                                     value: (*new_value).clone(),
                                     scope_value: (*new_scope).clone(),
+                                };
+                                let clear_new = clear_new.clone();
+                                let new_save_controller = new_save_controller.clone();
+                                let new_save_phase = new_save_phase.clone();
+                                new_save_phase.set(AutoSavePhase::Saving);
+                                on_save.emit(VariableSaveAction {
+                                    payload,
+                                    on_complete: Callback::from(move |result| match result {
+                                        Ok(()) => {
+                                            new_save_controller.mark_saved();
+                                            clear_new.emit(());
+                                        }
+                                        Err(message) => {
+                                            new_save_controller.mark_failed(message);
+                                        }
+                                    }),
                                 });
-                                clear_new.emit(());
                             })
                         }}
                     >
-                        {"Add variable"}
+                        { if *new_save_phase == AutoSavePhase::Saving { "Adding…" } else { "Add variable" } }
                     </button>
                 </div>
             </div>
