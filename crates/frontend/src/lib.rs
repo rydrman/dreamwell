@@ -1,6 +1,7 @@
 mod api;
 mod generation_ui;
 mod install;
+mod item_list;
 mod markdown;
 mod notifications;
 mod queue_ui;
@@ -29,6 +30,7 @@ use generation_ui::{
 };
 use gloo_timers::callback::{Interval, Timeout};
 use install::InstallSettings;
+use item_list::ChatList;
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
@@ -393,22 +395,6 @@ fn app() -> Html {
 
                 if !chat_list.is_empty() {
                     match router.route() {
-                        AppRoute::Chats {
-                            chat_id: None,
-                            overlay: None,
-                            sidebar: false,
-                        } => {
-                            if let Some(id) = chat_list.first().map(|c| c.id) {
-                                router.navigate(
-                                    AppRoute::Chats {
-                                        chat_id: Some(id),
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    false,
-                                );
-                            }
-                        }
                         AppRoute::Chats {
                             chat_id: Some(id),
                             overlay,
@@ -1441,7 +1427,7 @@ fn app() -> Html {
                         if chats.is_empty() {
                             <p class="header-subtitle muted">{"Create a character, then start a chat from the sidebar."}</p>
                         } else {
-                            <p class="header-subtitle muted">{"Responses stream on the server — switch chats freely while they generate."}</p>
+                            <p class="header-subtitle muted">{"Pick a chat below to continue."}</p>
                         }
                     }
                 </header>
@@ -1508,9 +1494,24 @@ fn app() -> Html {
                         }
                     </div>
                 } else {
-                    <div class="empty-state muted">
-                        <p>{"Select a chat from the sidebar."}</p>
-                    </div>
+                    <ChatList
+                        chats={(*chats).clone()}
+                        on_select={Callback::from({
+                            let navigate = navigate.clone();
+                            let load_messages_for_chat = load_messages_for_chat.clone();
+                            move |id| {
+                                navigate.emit((
+                                    AppRoute::Chats {
+                                        chat_id: Some(id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                                load_messages_for_chat.emit(id);
+                            }
+                        })}
+                    />
                 }
                 <Composer
                     disabled={
