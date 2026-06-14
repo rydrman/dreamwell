@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::auth;
 use dreamwell_types::*;
 use gloo_net::http::{Request, RequestBuilder};
 use gloo_timers::callback::Timeout;
@@ -78,7 +79,7 @@ impl ReconnectingEventSource {
                     return;
                 }
                 inner.close_source();
-                inner.schedule_reconnect();
+                probe_auth_session(inner.clone());
             }) as Box<dyn FnMut(_)>);
             source.set_onerror(Some(callback.as_ref().unchecked_ref()));
             callback.forget();
@@ -152,27 +153,78 @@ fn api_request(method: &str, path: &str) -> RequestBuilder {
     .header("Content-Type", "application/json")
 }
 
+pub fn is_auth_expired(err: &str) -> bool {
+    auth::is_auth_expired(err)
+}
+
+fn response_content_type(response: &gloo_net::http::Response) -> Option<String> {
+    response.headers().get("content-type")
+}
+
+fn auth_failure_from_response(response: &gloo_net::http::Response) -> Option<String> {
+    if auth::is_auth_redirect_response(
+        response.status(),
+        response_content_type(response).as_deref(),
+    ) {
+        auth::handle_auth_expiry();
+        return Some(auth::auth_expiry_error());
+    }
+    None
+}
+
+async fn response_error_text(response: gloo_net::http::Response) -> String {
+    response
+        .text()
+        .await
+        .unwrap_or_else(|_| response.status_text())
+}
+
+async fn ensure_ok_response(
+    response: gloo_net::http::Response,
+) -> Result<gloo_net::http::Response, String> {
+    if let Some(err) = auth_failure_from_response(&response) {
+        return Err(err);
+    }
+    if !response.ok() {
+        return Err(response_error_text(response).await);
+    }
+    Ok(response)
+}
+
+async fn send_empty(builder: RequestBuilder) -> Result<(), String> {
+    let response = builder.send().await.map_err(|e| e.to_string())?;
+    ensure_ok_response(response).await?;
+    Ok(())
+}
+
+fn probe_auth_session(inner: Rc<ReconnectingEventSource>) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let response = match Request::get("/api/health").send().await {
+            Ok(response) => response,
+            Err(_) => {
+                inner.schedule_reconnect();
+                return;
+            }
+        };
+        if auth_failure_from_response(&response).is_some() {
+            inner.stop();
+            return;
+        }
+        inner.schedule_reconnect();
+    });
+}
+
 async fn send<T: serde::de::DeserializeOwned>(
     request: gloo_net::http::Request,
 ) -> Result<T, String> {
     let response = request.send().await.map_err(|e| e.to_string())?;
-    if !response.ok() {
-        return Err(response
-            .text()
-            .await
-            .unwrap_or_else(|_| response.status_text()));
-    }
+    let response = ensure_ok_response(response).await?;
     response.json().await.map_err(|e| e.to_string())
 }
 
 async fn json<T: serde::de::DeserializeOwned>(builder: RequestBuilder) -> Result<T, String> {
     let response = builder.send().await.map_err(|e| e.to_string())?;
-    if !response.ok() {
-        return Err(response
-            .text()
-            .await
-            .unwrap_or_else(|_| response.status_text()));
-    }
+    let response = ensure_ok_response(response).await?;
     response.json().await.map_err(|e| e.to_string())
 }
 
@@ -209,11 +261,7 @@ pub async fn update_chat(id: i64, payload: &ChatUpdate) -> Result<Chat, String> 
 }
 
 pub async fn archive_chat(id: i64) -> Result<(), String> {
-    api_request("DELETE", &format!("/api/chats/{id}"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    send_empty(api_request("DELETE", &format!("/api/chats/{id}"))).await
 }
 
 pub async fn restore_chat(id: i64) -> Result<Chat, String> {
@@ -226,11 +274,7 @@ pub async fn restore_chat(id: i64) -> Result<Chat, String> {
 }
 
 pub async fn permanently_delete_chat(id: i64) -> Result<(), String> {
-    api_request("DELETE", &format!("/api/chats/{id}/permanent"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    send_empty(api_request("DELETE", &format!("/api/chats/{id}/permanent"))).await
 }
 
 pub async fn get_messages(chat_id: i64) -> Result<Vec<Message>, String> {
@@ -296,11 +340,11 @@ pub async fn summarize_chat(chat_id: i64) -> Result<Job, String> {
 }
 
 pub async fn delete_chat_summary(chat_id: i64) -> Result<(), String> {
-    api_request("DELETE", &format!("/api/chats/{chat_id}/summary"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    send_empty(api_request(
+        "DELETE",
+        &format!("/api/chats/{chat_id}/summary"),
+    ))
+    .await
 }
 
 pub async fn regenerate_chat_summary(chat_id: i64, marker_id: i64) -> Result<Job, String> {
@@ -313,14 +357,11 @@ pub async fn regenerate_chat_summary(chat_id: i64, marker_id: i64) -> Result<Job
 }
 
 pub async fn rewind_message(chat_id: i64, message_id: i64) -> Result<(), String> {
-    api_request(
+    send_empty(api_request(
         "DELETE",
         &format!("/api/chats/{chat_id}/messages/{message_id}"),
-    )
-    .send()
+    ))
     .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub async fn get_queue() -> Result<QueueStatus, String> {
@@ -332,17 +373,7 @@ pub async fn get_jobs() -> Result<QueueStatus, String> {
 }
 
 pub async fn cancel_job(id: i64) -> Result<Job, String> {
-    let response = api_request("POST", &format!("/api/jobs/{id}/cancel"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !response.ok() {
-        return Err(response
-            .text()
-            .await
-            .unwrap_or_else(|_| response.status_text()));
-    }
-    response.json().await.map_err(|e| e.to_string())
+    json(api_request("POST", &format!("/api/jobs/{id}/cancel"))).await
 }
 
 pub async fn list_characters() -> Result<Vec<Character>, String> {
@@ -358,11 +389,7 @@ pub async fn update_character(id: i64, payload: &CharacterUpdate) -> Result<Char
 }
 
 pub async fn delete_character(id: i64) -> Result<(), String> {
-    api_request("DELETE", &format!("/api/characters/{id}"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    send_empty(api_request("DELETE", &format!("/api/characters/{id}"))).await
 }
 
 pub async fn get_variables(chat_id: i64) -> Result<Vec<ChatVariable>, String> {
@@ -381,14 +408,11 @@ pub async fn upsert_variable(
 }
 
 pub async fn delete_variable(chat_id: i64, variable_id: i64) -> Result<(), String> {
-    api_request(
+    send_empty(api_request(
         "DELETE",
         &format!("/api/chats/{chat_id}/variables/{variable_id}"),
-    )
-    .send()
+    ))
     .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub async fn get_health() -> Result<HealthResponse, String> {
@@ -426,12 +450,7 @@ pub async fn import_character(file: &web_sys::File) -> Result<Character, String>
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    if !response.ok() {
-        return Err(response
-            .text()
-            .await
-            .unwrap_or_else(|_| response.status_text()));
-    }
+    let response = ensure_ok_response(response).await?;
     let result: ImportCharacterResponse = response.json().await.map_err(|e| e.to_string())?;
     Ok(result.character)
 }
@@ -492,11 +511,7 @@ pub async fn update_story(id: i64, payload: &StoryUpdate) -> Result<StoryDetail,
 }
 
 pub async fn delete_story(id: i64) -> Result<(), String> {
-    api_request("DELETE", &format!("/api/stories/{id}"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    send_empty(api_request("DELETE", &format!("/api/stories/{id}"))).await
 }
 
 pub async fn update_chapter(
@@ -513,14 +528,11 @@ pub async fn update_chapter(
 }
 
 pub async fn delete_chapter(story_id: i64, chapter_id: i64) -> Result<(), String> {
-    api_request(
+    send_empty(api_request(
         "DELETE",
         &format!("/api/stories/{story_id}/chapters/{chapter_id}"),
-    )
-    .send()
+    ))
     .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub async fn create_chapter(
@@ -550,14 +562,11 @@ pub async fn update_beat(
 }
 
 pub async fn delete_beat(story_id: i64, chapter_id: i64, beat_id: i64) -> Result<(), String> {
-    api_request(
+    send_empty(api_request(
         "DELETE",
         &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}"),
-    )
-    .send()
+    ))
     .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub async fn create_beat(
@@ -686,14 +695,11 @@ pub async fn upsert_story_variable(
 }
 
 pub async fn delete_story_variable(story_id: i64, variable_id: i64) -> Result<(), String> {
-    api_request(
+    send_empty(api_request(
         "DELETE",
         &format!("/api/stories/{story_id}/variables/{variable_id}"),
-    )
-    .send()
+    ))
     .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub struct StoryStream {

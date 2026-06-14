@@ -2116,6 +2116,25 @@ input.header-title {
   padding: 2rem;
 }
 
+.session-expired-screen {
+  display: grid;
+  place-content: center;
+  gap: 1rem;
+  min-height: 100%;
+  padding: 2rem;
+  text-align: center;
+}
+
+.session-expired-screen h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.session-expired-screen p {
+  margin: 0;
+  max-width: 24rem;
+}
+
 @media (max-width: 768px) {
   html,
   body {
