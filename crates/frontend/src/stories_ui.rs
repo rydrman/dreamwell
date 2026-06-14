@@ -589,6 +589,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                                         pov: None,
                                         length_preset: None,
                                         notes: None,
+                                        tracked_details: None,
                                     }).await {
                                         on_detail.emit(d);
                                     }
@@ -1191,6 +1192,7 @@ struct StoryBasics {
     pov: String,
     length_preset: LengthPreset,
     notes: String,
+    tracked_details: String,
 }
 
 impl From<Story> for StoryBasics {
@@ -1204,6 +1206,7 @@ impl From<Story> for StoryBasics {
             pov: s.pov,
             length_preset: s.length_preset,
             notes: s.notes,
+            tracked_details: s.tracked_details,
         }
     }
 }
@@ -1261,6 +1264,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                         pov: Some(snapshot.pov.clone()),
                         length_preset: Some(snapshot.length_preset),
                         notes: Some(snapshot.notes.clone()),
+                        tracked_details: Some(snapshot.tracked_details.clone()),
                     };
                     let current = (*draft).clone();
                     match api::update_story(snapshot.id, &update).await {
@@ -1388,6 +1392,25 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                             let input: HtmlInputElement = e.target_unchecked_into();
                             let mut next = (*draft).clone();
                             next.notes = input.value();
+                            draft.set(next);
+                            schedule_save.emit(());
+                        })
+                    }} />
+                </AutoSaveField>
+            </label>
+            <label class="field"><span class="muted">{"Details to track"}</span>
+                <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
+                    <textarea
+                        value={draft.tracked_details.clone()}
+                        rows="3"
+                        placeholder="Important details to keep consistent — e.g. protagonist name, key objects, relationships"
+                        oninput={{
+                        let draft = draft.clone();
+                        let schedule_save = schedule_save.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            let mut next = (*draft).clone();
+                            next.tracked_details = input.value();
                             draft.set(next);
                             schedule_save.emit(());
                         })
