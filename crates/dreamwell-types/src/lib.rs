@@ -301,6 +301,8 @@ pub struct Story {
     pub pov: String,
     pub length_preset: LengthPreset,
     pub notes: String,
+    #[serde(default)]
+    pub tracked_details: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub active_job: Option<Job>,
@@ -388,6 +390,8 @@ pub struct StoryCreate {
     pub length_preset: LengthPreset,
     #[serde(default)]
     pub notes: String,
+    #[serde(default)]
+    pub tracked_details: String,
 }
 
 fn default_story_title() -> String {
@@ -407,6 +411,7 @@ pub struct StoryUpdate {
     pub pov: Option<String>,
     pub length_preset: Option<LengthPreset>,
     pub notes: Option<String>,
+    pub tracked_details: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

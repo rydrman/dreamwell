@@ -328,6 +328,11 @@ pub fn build_beat_prose_messages(
         system.push_str("\n\n");
         system.push_str(&variables_text);
     }
+    let tracked_text = crate::story_variables::format_tracked_details(&story.tracked_details);
+    if !tracked_text.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&tracked_text);
+    }
     if variables_enabled {
         system.push_str("\n\n");
         system.push_str(crate::story_variables::story_variables_instruction());
@@ -558,6 +563,7 @@ mod tests {
             pov: "Third person".to_string(),
             length_preset: LengthPreset::Short,
             notes: String::new(),
+            tracked_details: String::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             active_job: None,
@@ -711,5 +717,26 @@ mod tests {
         assert!(user.contains("The wagon rolled to a stop."));
         assert!(user.contains("written prose — canonical"));
         assert!(system.contains("Respect established details in prior prose"));
+    }
+
+    #[test]
+    fn beat_prose_prompt_formats_variables_as_tags_and_includes_tracked_details() {
+        let chapter = sample_chapter(0, vec![sample_beat(0, "Start", "They begin.", "")]);
+        let beat = chapter.beats[0].clone();
+        let mut story = sample_story();
+        story.tracked_details = "- protagonist name\n- the silver locket".to_string();
+        let messages = build_beat_prose_messages(
+            &story,
+            &[chapter.clone()],
+            &chapter,
+            &beat,
+            "",
+            &[("baker_name".to_string(), "Tomas".to_string())],
+            true,
+        );
+        let system = messages[0]["content"].as_str().unwrap();
+        assert!(system.contains(r#"<var key="baker_name">Tomas</var>"#));
+        assert!(system.contains("Important details to track"));
+        assert!(system.contains("silver locket"));
     }
 }

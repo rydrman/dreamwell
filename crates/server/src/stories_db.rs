@@ -11,7 +11,7 @@ use crate::error::{AppError, AppResult};
 
 pub async fn list_stories(pool: &SqlitePool) -> AppResult<Vec<Story>> {
     let rows = sqlx::query_as::<_, StoryRow>(
-        "SELECT id, title, premise, tone, genre, pov, length_preset, notes, created_at, updated_at FROM stories ORDER BY updated_at DESC",
+        "SELECT id, title, premise, tone, genre, pov, length_preset, notes, tracked_details, created_at, updated_at FROM stories ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -24,7 +24,7 @@ pub async fn list_stories(pool: &SqlitePool) -> AppResult<Vec<Story>> {
 
 pub async fn get_story(pool: &SqlitePool, id: i64) -> AppResult<Story> {
     let row = sqlx::query_as::<_, StoryRow>(
-        "SELECT id, title, premise, tone, genre, pov, length_preset, notes, created_at, updated_at FROM stories WHERE id = ?1",
+        "SELECT id, title, premise, tone, genre, pov, length_preset, notes, tracked_details, created_at, updated_at FROM stories WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -56,6 +56,7 @@ async fn story_from_row(pool: &SqlitePool, row: StoryRow) -> AppResult<Story> {
         pov: row.pov,
         length_preset: parse_length_preset(&row.length_preset),
         notes: row.notes,
+        tracked_details: row.tracked_details,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
         active_job,
@@ -84,7 +85,7 @@ fn length_preset_str(preset: LengthPreset) -> &'static str {
 pub async fn create_story(pool: &SqlitePool, payload: StoryCreate) -> AppResult<Story> {
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO stories (title, premise, tone, genre, pov, length_preset, notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8) RETURNING id",
+        "INSERT INTO stories (title, premise, tone, genre, pov, length_preset, notes, tracked_details, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
@@ -93,6 +94,7 @@ pub async fn create_story(pool: &SqlitePool, payload: StoryCreate) -> AppResult<
     .bind(&payload.pov)
     .bind(length_preset_str(payload.length_preset))
     .bind(&payload.notes)
+    .bind(&payload.tracked_details)
     .bind(&now)
     .fetch_one(pool)
     .await?;
@@ -109,11 +111,12 @@ pub async fn update_story(pool: &SqlitePool, id: i64, payload: StoryUpdate) -> A
         pov: payload.pov.unwrap_or(existing.pov),
         length_preset: payload.length_preset.unwrap_or(existing.length_preset),
         notes: payload.notes.unwrap_or(existing.notes),
+        tracked_details: payload.tracked_details.unwrap_or(existing.tracked_details),
         updated_at: Utc::now(),
         ..existing
     };
     sqlx::query(
-        "UPDATE stories SET title=?1, premise=?2, tone=?3, genre=?4, pov=?5, length_preset=?6, notes=?7, updated_at=?8 WHERE id=?9",
+        "UPDATE stories SET title=?1, premise=?2, tone=?3, genre=?4, pov=?5, length_preset=?6, notes=?7, tracked_details=?8, updated_at=?9 WHERE id=?10",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
@@ -122,6 +125,7 @@ pub async fn update_story(pool: &SqlitePool, id: i64, payload: StoryUpdate) -> A
     .bind(&updated.pov)
     .bind(length_preset_str(updated.length_preset))
     .bind(&updated.notes)
+    .bind(&updated.tracked_details)
     .bind(updated.updated_at.to_rfc3339())
     .bind(id)
     .execute(pool)
@@ -1173,6 +1177,7 @@ struct StoryRow {
     pov: String,
     length_preset: String,
     notes: String,
+    tracked_details: String,
     created_at: String,
     updated_at: String,
 }

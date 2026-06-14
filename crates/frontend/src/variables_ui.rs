@@ -1664,6 +1664,7 @@ mod tests {
                 pov: String::new(),
                 length_preset: dreamwell_types::LengthPreset::Short,
                 notes: String::new(),
+                tracked_details: String::new(),
                 created_at: now,
                 updated_at: now,
                 active_job: None,

@@ -7,7 +7,9 @@ use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::inference::chat_completion;
-use crate::story_variables::filter_meaningful_story_updates;
+use crate::story_variables::{
+    filter_meaningful_story_updates, format_story_variables, format_tracked_details,
+};
 use crate::variables::{
     merge_variable_tags_into_message, parse_variable_updates, strip_variables_for_display,
 };
@@ -39,27 +41,23 @@ fn max_retries() -> u32 {
         .max(1)
 }
 
-fn format_current_variables(variables: &[(String, String)]) -> String {
-    if variables.is_empty() {
-        "(none)".to_string()
-    } else {
-        variables
-            .iter()
-            .map(|(key, value)| format!("- {key}: {value}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-}
-
 fn build_recheck_prompt(
     prose: &str,
     variables: &[(String, String)],
     guidance: &str,
+    tracked_details: &str,
 ) -> Vec<serde_json::Value> {
-    let mut user = format!(
-        "Current story variables:\n{}\n\nBeat prose to review:\n{prose}",
-        format_current_variables(variables),
-    );
+    let variables_text = format_story_variables(variables);
+    let mut user = if variables_text.is_empty() {
+        format!("Beat prose to review:\n{prose}")
+    } else {
+        format!("{variables_text}\n\nBeat prose to review:\n{prose}")
+    };
+    let tracked_text = format_tracked_details(tracked_details);
+    if !tracked_text.is_empty() {
+        user.push_str("\n\n");
+        user.push_str(&tracked_text);
+    }
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the author:\n");
         user.push_str(guidance.trim());
@@ -158,7 +156,12 @@ pub async fn run_beat_variable_recheck_job(
         beat_order,
     )
     .await?;
-    let prompt = build_recheck_prompt(&visible, &current_state, guidance);
+    let prompt = build_recheck_prompt(
+        &visible,
+        &current_state,
+        guidance,
+        &detail.story.tracked_details,
+    );
     let max_attempts = max_retries();
     let mut raw = None;
 
@@ -240,7 +243,8 @@ mod tests {
 
     #[test]
     fn recheck_prompt_includes_guidance_when_provided() {
-        let prompt = build_recheck_prompt("She opened the door.", &[], "Track the key as an item.");
+        let prompt =
+            build_recheck_prompt("She opened the door.", &[], "Track the key as an item.", "");
         let user = prompt[1]["content"].as_str().unwrap();
         assert!(user.contains("She opened the door."));
         assert!(user.contains("Guidance from the author:"));
@@ -249,8 +253,33 @@ mod tests {
 
     #[test]
     fn recheck_prompt_omits_guidance_when_empty() {
-        let prompt = build_recheck_prompt("She opened the door.", &[], "  ");
+        let prompt = build_recheck_prompt("She opened the door.", &[], "  ", "");
         let user = prompt[1]["content"].as_str().unwrap();
         assert!(!user.contains("Guidance from the author:"));
+    }
+
+    #[test]
+    fn recheck_prompt_formats_variables_as_tags() {
+        let prompt = build_recheck_prompt(
+            "She met Tomas.",
+            &[("baker_name".to_string(), "Tomas".to_string())],
+            "",
+            "",
+        );
+        let user = prompt[1]["content"].as_str().unwrap();
+        assert!(user.contains(r#"<var key="baker_name">Tomas</var>"#));
+    }
+
+    #[test]
+    fn recheck_prompt_includes_tracked_details() {
+        let prompt = build_recheck_prompt(
+            "She met Tomas.",
+            &[],
+            "",
+            "- protagonist name\n- the locket",
+        );
+        let user = prompt[1]["content"].as_str().unwrap();
+        assert!(user.contains("Important details to track"));
+        assert!(user.contains("the locket"));
     }
 }
