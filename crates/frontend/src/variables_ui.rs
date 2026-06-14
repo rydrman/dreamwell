@@ -104,6 +104,10 @@ pub struct VariableRowProps {
     pub scope_options: Vec<ScopeOption>,
     #[prop_or(false)]
     pub scope_readonly: bool,
+    #[prop_or(false)]
+    pub fixed_scope: bool,
+    #[prop_or(false)]
+    pub compact: bool,
     pub on_save: Callback<VariableSaveAction>,
     pub on_delete: Callback<Option<i64>>,
     #[prop_or_default]
@@ -192,7 +196,13 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         })
     };
 
-    let scope_select = if props.scope_options.is_empty() {
+    let scope_select = if props.fixed_scope {
+        html! {
+            <span class="variable-row-scope variable-row-scope--locked" title="Scope for this entry">
+                { &props.model.scope_label }
+            </span>
+        }
+    } else if props.scope_options.is_empty() {
         html! { <span class="muted variable-row-scope">{ &props.model.scope_label }</span> }
     } else {
         html! {
@@ -218,15 +228,18 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         }
     };
 
+    let key_disabled = props.model.key_readonly || props.model.id.is_some();
+    let value_rows = if props.compact { "1" } else { "2" };
+
     html! {
-        <div class="variable-row">
+        <div class={classes!("variable-row", props.compact.then_some("variable-row--compact"))}>
             <div class="variable-row-header">
                 <input
                     class="variable-row-key"
                     type="text"
                     placeholder="Key"
                     value={(*key).clone()}
-                    readonly={props.model.key_readonly}
+                    disabled={key_disabled}
                     oninput={{
                         let key = key.clone();
                         let schedule_save = schedule_save.clone();
@@ -236,7 +249,9 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                         })
                     }}
                 />
-                { scope_select }
+                if !props.compact {
+                    { scope_select }
+                }
                 <div class="variable-row-actions">
                     <button
                         class="btn secondary btn-compact variable-row-icon-btn"
@@ -263,7 +278,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                 <textarea
                     class="variable-row-value"
                     placeholder="Value"
-                    rows="2"
+                    rows={value_rows}
                     value={(*value).clone()}
                     oninput={{
                         let value = value.clone();
@@ -275,6 +290,9 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                     }}
                 />
             </AutoSaveField>
+            if props.compact && props.fixed_scope {
+                <div class="variable-row-meta muted">{ &props.model.scope_label }</div>
+            }
             if props.on_cancel.is_some() && props.model.id.is_none() {
                 <div class="variable-row-footer">
                     <button
@@ -706,6 +724,7 @@ pub fn make_story_variable_handlers(
 pub struct InlineChatVariablesProps {
     pub chat_id: i64,
     pub message_id: i64,
+    pub scope_label: String,
     pub variable_updates: Vec<MessageVariableUpdate>,
     pub on_changed: Callback<()>,
 }
@@ -739,7 +758,7 @@ pub fn inline_chat_variables(props: &InlineChatVariablesProps) -> Html {
             id: Some(variable.id),
             key: variable.key.clone(),
             value: variable.value.clone(),
-            scope_label: format!("Message {}", props.message_id),
+            scope_label: props.scope_label.clone(),
             scope_value: props.message_id.to_string(),
             key_readonly: true,
         })
@@ -757,6 +776,7 @@ pub fn inline_chat_variables(props: &InlineChatVariablesProps) -> Html {
             <VariableList
                 rows={scoped}
                 new_scope_value={props.message_id.to_string()}
+                fixed_scope_label={Some(props.scope_label.clone())}
                 on_save={on_save}
                 on_delete={on_delete}
                 compact={true}
@@ -827,6 +847,7 @@ pub fn inline_story_variables(props: &InlineStoryVariablesProps) -> Html {
             <VariableList
                 rows={scoped}
                 new_scope_value={scope_value}
+                fixed_scope_label={Some(props.scope_label.clone())}
                 on_save={on_save}
                 on_delete={on_delete}
                 compact={true}
@@ -846,6 +867,8 @@ pub struct VariableListProps {
     pub new_scope_value: String,
     #[prop_or_default]
     pub description: String,
+    #[prop_or_default]
+    pub fixed_scope_label: Option<String>,
     #[prop_or(false)]
     pub compact: bool,
 }
@@ -883,6 +906,8 @@ pub fn variable_list(props: &VariableListProps) -> Html {
         })
     };
 
+    let fixed_scope = props.fixed_scope_label.is_some();
+
     html! {
         <div class={classes!("variable-list", props.compact.then_some("variable-list--compact"))}>
             if !props.description.is_empty() {
@@ -899,12 +924,15 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                         key={row_key}
                         model={model}
                         scope_options={props.scope_options.clone()}
+                        scope_readonly={fixed_scope}
+                        fixed_scope={fixed_scope}
+                        compact={props.compact}
                         on_save={props.on_save.clone()}
                         on_delete={props.on_delete.clone()}
                     />
                 }
             }) }
-            <div class="variable-row variable-row--new">
+            <div class={classes!("variable-row", "variable-row--new", props.compact.then_some("variable-row--compact"))}>
                 <div class="variable-row-header">
                     <input
                         class="variable-row-key"
@@ -913,36 +941,45 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                         value={(*new_key).clone()}
                         oninput={text_input(new_key.clone())}
                     />
-                    if props.scope_options.is_empty() {
-                        <span class="muted variable-row-scope">{"New"}</span>
-                    } else {
-                        <select
-                            class="variable-row-scope-select"
-                            value={(*new_scope).clone()}
-                            onchange={{
-                                let new_scope = new_scope.clone();
-                                Callback::from(move |e: Event| {
-                                    if let Some(select) = e.target_dyn_into::<HtmlSelectElement>() {
-                                        new_scope.set(select.value());
-                                    }
-                                })
-                            }}
-                        >
-                            { for props.scope_options.iter().map(|option| html! {
-                                <option value={option.value.clone()}>{ &option.label }</option>
-                            }) }
-                        </select>
+                    if !props.compact {
+                        if let Some(label) = props.fixed_scope_label.as_ref() {
+                            <span class="variable-row-scope variable-row-scope--locked">{ label }</span>
+                        } else if props.scope_options.is_empty() {
+                            <span class="muted variable-row-scope">{"New"}</span>
+                        } else {
+                            <select
+                                class="variable-row-scope-select"
+                                value={(*new_scope).clone()}
+                                onchange={{
+                                    let new_scope = new_scope.clone();
+                                    Callback::from(move |e: Event| {
+                                        if let Some(select) = e.target_dyn_into::<HtmlSelectElement>() {
+                                            new_scope.set(select.value());
+                                        }
+                                    })
+                                }}
+                            >
+                                { for props.scope_options.iter().map(|option| html! {
+                                    <option value={option.value.clone()}>{ &option.label }</option>
+                                }) }
+                            </select>
+                        }
                     }
                 </div>
                 <AutoSaveField phase={*new_save_phase} error={(*new_save_error).clone()}>
                     <textarea
                         class="variable-row-value"
                         placeholder="Value"
-                        rows="2"
+                        rows={if props.compact { "1" } else { "2" }}
                         value={(*new_value).clone()}
                         oninput={text_input(new_value.clone())}
                     />
                 </AutoSaveField>
+                if props.compact {
+                    if let Some(label) = props.fixed_scope_label.as_ref() {
+                        <div class="variable-row-meta muted">{ label }</div>
+                    }
+                }
                 <div class="variable-row-footer">
                     <button
                         class="btn"

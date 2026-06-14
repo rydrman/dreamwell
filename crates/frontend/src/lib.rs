@@ -40,8 +40,8 @@ use summary_ui::{
 };
 use title_editor::TitleEditor;
 use variables_ui::{
-    chat_scope_options, chat_variable_row, make_chat_variable_handlers, InlineChatVariables,
-    VariableList, VariableRowModel, MANUAL_MESSAGE_SOURCE,
+    chat_scope_label, chat_scope_options, chat_variable_row, make_chat_variable_handlers,
+    InlineChatVariables, VariableList, VariableRowModel, MANUAL_MESSAGE_SOURCE,
 };
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
@@ -2087,6 +2087,7 @@ enum MessageBubbleMode {
 struct MessageBubbleProps {
     message: Message,
     chat_id: i64,
+    variable_scope_label: String,
     is_last: bool,
     after_count: usize,
     display_content: String,
@@ -2506,6 +2507,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                 <InlineChatVariables
                     chat_id={props.chat_id}
                     message_id={props.message.id}
+                    scope_label={props.variable_scope_label.clone()}
                     variable_updates={props.message.variable_updates.clone()}
                     on_changed={props.on_changed.clone()}
                 />
@@ -2820,6 +2822,7 @@ fn message_list(props: &MessageListProps) -> Html {
                                 key={m.id}
                                 message={m.clone()}
                                 chat_id={chat_id}
+                                variable_scope_label={chat_scope_label(m.id, &props.messages)}
                                 is_last={is_last}
                                 after_count={after_count}
                                 display_content={display_content}
