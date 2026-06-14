@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod generation_ui;
 mod install;
 mod markdown;
@@ -320,15 +321,16 @@ fn app() -> Html {
     let mode = route.mode();
     let selected_chat_id = chat_id_from_route(&route);
     let _selected_story_id = story_id_from_route(&route);
-    let chats = use_state(load_cached_chats);
+    let chats = use_state(Vec::<Chat>::new);
     let stories = use_state(Vec::<Story>::new);
-    let archived_chats = use_state(load_cached_archived_chats);
+    let archived_chats = use_state(Vec::<Chat>::new);
     let characters = use_state(Vec::<Character>::new);
     let messages = use_state(Vec::<Message>::new);
     let messages_loading = use_state(|| false);
     let settings = use_state(|| None::<Settings>);
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
+    let auth_expired = use_state(|| false);
     let refresh_generation = use_state(|| 0u32);
     let chat_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let summarize_watch = use_mut_ref(|| None::<i64>);
@@ -369,25 +371,68 @@ fn app() -> Html {
         let settings = settings.clone();
         let stories = stories.clone();
         let loading = loading.clone();
+        let auth_expired = auth_expired.clone();
         let router = router.clone();
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
+                let cached_chats = load_cached_chats();
+                let cached_archived = load_cached_archived_chats();
+
                 let mut chat_list = Vec::<Chat>::new();
-                if let Ok(list) = api::list_chats().await {
-                    chat_list = sort_chats(list);
-                    publish_chats(&chats, chat_list.clone());
+                match api::list_chats().await {
+                    Ok(list) => {
+                        chat_list = sort_chats(list);
+                        publish_chats(&chats, chat_list.clone());
+                    }
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) if !cached_chats.is_empty() => {
+                        chat_list = cached_chats.clone();
+                        publish_chats(&chats, chat_list.clone());
+                    }
+                    Err(_) => {}
                 }
-                if let Ok(list) = api::list_archived_chats().await {
-                    publish_archived_chats(&archived_chats, list);
+                match api::list_archived_chats().await {
+                    Ok(list) => publish_archived_chats(&archived_chats, list),
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) if !cached_archived.is_empty() => {
+                        publish_archived_chats(&archived_chats, cached_archived);
+                    }
+                    Err(_) => {}
                 }
-                if let Ok(list) = api::list_characters().await {
-                    characters.set(list);
+                match api::list_characters().await {
+                    Ok(list) => characters.set(list),
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) => {}
                 }
-                if let Ok(s) = api::get_settings().await {
-                    settings.set(Some(s));
+                match api::get_settings().await {
+                    Ok(s) => settings.set(Some(s)),
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) => {}
                 }
-                if let Ok(list) = api::list_stories().await {
-                    stories.set(list);
+                match api::list_stories().await {
+                    Ok(list) => stories.set(list),
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) => {}
                 }
                 loading.set(false);
 
@@ -750,8 +795,21 @@ fn app() -> Html {
         })
     };
 
-    if *loading && mode == AppMode::Chats {
+    if *loading {
         return html! { <div class="loading-screen muted">{"Loading Dreamwell…"}</div> };
+    }
+
+    if *auth_expired {
+        let on_sign_in = Callback::from(|_| {
+            auth::handle_auth_expiry();
+        });
+        return html! {
+            <div class="session-expired-screen">
+                <h1>{"Session expired"}</h1>
+                <p class="muted">{"Your sign-in session ended. Sign in again to continue using Dreamwell."}</p>
+                <button type="button" class="primary" onclick={on_sign_in}>{"Sign in again"}</button>
+            </div>
+        };
     }
 
     let on_mode = {
