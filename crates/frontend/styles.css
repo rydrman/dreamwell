@@ -818,8 +818,8 @@ input.header-title {
 
 .message-variable-updates-grid {
   display: grid;
-  grid-template-columns: minmax(5rem, max-content) 1fr;
-  gap: 0.35rem 0.75rem;
+  grid-template-columns: minmax(4.5rem, 30%) minmax(0, 1fr);
+  gap: 0.35rem 0.65rem;
   align-items: baseline;
 }
 
@@ -861,87 +861,122 @@ input.header-title {
   margin-top: 0.65rem;
 }
 
-.message-variable-updates .variable-list--compact {
-  gap: 0.35rem;
+.variable-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
   margin-top: 0.35rem;
-  min-width: 0;
 }
 
-.message-variable-updates .variable-list--compact .variable-row,
-.message-variable-updates .variable-list--compact .variable-row--new {
-  padding: 0.35rem 0.45rem;
-  gap: 0.3rem;
-}
-
-.message-variable-updates .variable-list--compact .variable-row-header {
+.variable-table-header,
+.variable-table-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.25rem;
+  grid-template-columns: minmax(4.5rem, 30%) minmax(0, 1fr) auto;
+  gap: 0.35rem 0.65rem;
   align-items: center;
-}
-
-.message-variable-updates .variable-list--compact .variable-row-key,
-.message-variable-updates .variable-list--compact .variable-row-value {
-  font-size: 0.8125rem;
-  box-sizing: border-box;
-  max-width: 100%;
-}
-
-.message-variable-updates .variable-list--compact .variable-row-key {
   min-width: 0;
-  padding: 0.25rem 0.4rem;
 }
 
-.message-variable-updates .variable-list--compact .variable-row-value {
-  min-height: 1.6rem;
-  padding: 0.3rem 0.4rem;
-  resize: vertical;
+.variable-table-header {
+  padding-bottom: 0.2rem;
+  margin-bottom: 0.1rem;
+  border-bottom: 1px solid var(--border);
 }
 
-.message-variable-updates .variable-list--compact .field-autosave-wrap {
+.variable-table-header-cell {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.variable-table-header-actions {
+  width: 4.25rem;
+}
+
+.variable-table-row {
+  padding: 0.15rem 0;
+}
+
+.variable-table-row--new {
+  margin-top: 0.15rem;
+  padding-top: 0.25rem;
+  border-top: 1px dashed var(--border);
+}
+
+.variable-table-key-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--fg);
+  word-break: break-word;
+  line-height: 1.35;
+  padding: 0.15rem 0;
+}
+
+.variable-table-key,
+.variable-table-value {
+  width: 100%;
+  min-width: 0;
+  min-height: 2rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.variable-table-value-cell {
+  min-width: 0;
+}
+
+.variable-table-value-cell .field-autosave-wrap {
+  display: block;
   min-width: 0;
   width: 100%;
 }
 
-.message-variable-updates .variable-list--compact .field-autosave-wrap textarea {
+.variable-table-value-cell .field-autosave-wrap input {
   padding-right: 1.35rem;
   padding-bottom: 0.3rem;
 }
 
-.message-variable-updates .variable-list--compact .field-autosave-icon {
+.variable-table-value-cell .field-autosave-icon {
   right: 0.3rem;
-  bottom: 0.3rem;
-  width: 0.95rem;
-  height: 0.95rem;
+  bottom: 0.35rem;
+  width: 0.9rem;
+  height: 0.9rem;
 }
 
-.message-variable-updates .variable-list--compact .variable-row-meta {
-  font-size: 0.6875rem;
-  line-height: 1.2;
+.variable-table-actions {
+  display: flex;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  min-width: 4.25rem;
 }
 
-.message-variable-updates .variable-list--compact .variable-row-icon-btn {
-  min-width: 1.6rem;
+.variable-table-actions .variable-row-icon-btn {
+  min-width: 1.85rem;
+  min-height: 1.85rem;
   padding: 0.2rem 0.35rem;
   font-size: 0.75rem;
 }
 
-.message-variable-updates .variable-list--compact .variable-row-footer .btn {
+.variable-table-actions .btn-compact {
+  min-height: 1.85rem;
+  padding: 0.25rem 0.55rem;
   font-size: 0.75rem;
-  padding: 0.25rem 0.5rem;
 }
 
-.variable-row .field-autosave-wrap {
-  display: block;
-  min-width: 0;
-  width: 100%;
-}
-
-.variable-row .field-autosave-wrap .variable-row-value {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  box-sizing: border-box;
+.variable-table-scope {
+  margin-top: 0.35rem;
+  font-size: 0.6875rem;
+  line-height: 1.2;
 }
 
 .message {
@@ -1515,23 +1550,11 @@ input.header-title {
   min-width: 0;
 }
 
-.variable-row--compact {
-  padding: 0.45rem 0.55rem;
-  gap: 0.35rem;
-  border-radius: 0.25rem;
-}
-
 .variable-row-header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
-}
-
-.variable-row--compact .variable-row-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.35rem;
 }
 
 .variable-row-key {
@@ -1559,11 +1582,6 @@ input.header-title {
   display: none;
 }
 
-.variable-row-meta {
-  font-size: 0.75rem;
-  line-height: 1.2;
-}
-
 .variable-row-value {
   width: 100%;
   min-height: 3rem;
@@ -1572,8 +1590,17 @@ input.header-title {
   box-sizing: border-box;
 }
 
-.variable-row--compact .variable-row-value {
-  min-height: 1.75rem;
+.variable-row .field-autosave-wrap {
+  display: block;
+  min-width: 0;
+  width: 100%;
+}
+
+.variable-row .field-autosave-wrap .variable-row-value {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .variable-row-actions {
