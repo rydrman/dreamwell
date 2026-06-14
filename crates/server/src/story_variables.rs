@@ -38,6 +38,7 @@ pub fn filter_meaningful_story_updates(
     updates
         .iter()
         .filter(|update| match update {
+            VariableUpdate::Set { key, value } if value.is_empty() => current.contains_key(key),
             VariableUpdate::Set { key, value } => current.get(key) != Some(value),
             VariableUpdate::Delete { key } => current.contains_key(key),
         })
@@ -90,7 +91,6 @@ mod tests {
             key: key.to_string(),
             value: value.to_string(),
             previous_value: None,
-            deleted: false,
         }
     }
 

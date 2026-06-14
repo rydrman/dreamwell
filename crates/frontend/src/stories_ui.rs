@@ -818,7 +818,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                             let beat_status = beat_block_status(beat);
                             let beat_target = StorySelection::Beat { chapter_id: ch_id, beat_id };
                             html! {
-                                <div key={beat_id} class="story-beat-block">
+                                <div key={beat_id} id={format!("beat-{beat_id}")} class="story-beat-block">
                                     <StoryBlockHeader
                                         label={beat_label}
                                         subtitle={beat_subtitle}
@@ -837,6 +837,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                         )}>
                                             <BeatEditor
                                                 story_id={story_id}
+                                                detail={props.detail.clone()}
                                                 chapter_id={ch_id}
                                                 chapter_sort_order={ch.sort_order}
                                                 beat={Some(beat.clone())}
@@ -1663,6 +1664,7 @@ impl BeatFields {
 #[derive(Properties, PartialEq)]
 struct BeatEditorProps {
     story_id: i64,
+    detail: StoryDetail,
     chapter_id: i64,
     chapter_sort_order: i64,
     beat: Option<StoryBeat>,
@@ -2048,6 +2050,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     if show_variables_section {
                         <InlineStoryVariables
                             story_id={story_id}
+                            detail={props.detail.clone()}
                             chapter_order={props.chapter_sort_order}
                             beat_order={beat.sort_order}
                             scope_label={beat_scope_label}
@@ -2207,6 +2210,7 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                         scope_label: scope_value.clone(),
                         scope_value,
                         key_readonly: true,
+                        previous_value: None,
                     }
                 })
         })
@@ -2216,7 +2220,7 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
         make_story_variable_handlers(story_id, variables, Some(props.on_detail.clone()));
 
     html! {
-        <div class="settings-popover panel-overlay">
+        <div id="story-variables-panel" class="settings-popover panel-overlay">
             <div class="settings-header">
                 <h2>{"Variables"}</h2>
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>

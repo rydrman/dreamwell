@@ -8,7 +8,7 @@ pub const MANUAL_STORY_SOURCE: i64 = -1;
 
 pub fn apply_beat_updates(state: &mut HashMap<String, String>, updates: &[BeatVariableUpdate]) {
     for update in updates {
-        if update.deleted {
+        if update.clears() {
             state.remove(&update.key);
         } else {
             state.insert(update.key.clone(), update.value.clone());
@@ -90,7 +90,7 @@ pub fn replay_chat_message_updates(
         .filter(|message| message.id < before_message_id)
     {
         for update in &message.variable_updates {
-            if update.deleted {
+            if update.clears() {
                 state.remove(&update.key);
             } else {
                 state.insert(update.key.clone(), update.value.clone());
@@ -176,7 +176,6 @@ mod tests {
             key: key.to_string(),
             value: value.to_string(),
             previous_value: None,
-            deleted: false,
         }
     }
 

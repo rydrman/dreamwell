@@ -167,14 +167,47 @@ pub const DEFAULT_SYSTEM_PROMPT_PREFIX: &str =
 /// Default user/persona name (SillyTavern `username`).
 pub const DEFAULT_USER_NAME: &str = "User";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MessageVariableUpdate {
     pub key: String,
     pub value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_value: Option<String>,
+}
+
+impl MessageVariableUpdate {
+    pub fn clears(&self) -> bool {
+        self.value.is_empty()
+    }
+}
+
+#[derive(Deserialize)]
+struct MessageVariableUpdateRaw {
+    key: String,
     #[serde(default)]
-    pub deleted: bool,
+    value: String,
+    #[serde(default)]
+    previous_value: Option<String>,
+    #[serde(default)]
+    deleted: bool,
+}
+
+impl<'de> Deserialize<'de> for MessageVariableUpdate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = MessageVariableUpdateRaw::deserialize(deserializer)?;
+        Ok(Self {
+            key: raw.key,
+            value: if raw.deleted {
+                String::new()
+            } else {
+                raw.value
+            },
+            previous_value: raw.previous_value,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

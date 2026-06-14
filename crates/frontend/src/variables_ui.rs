@@ -1,4 +1,6 @@
 use dreamwell_types::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlDocument, HtmlInputElement, HtmlSelectElement, HtmlTextAreaElement};
 use yew::prelude::*;
@@ -6,7 +8,7 @@ use yew::prelude::*;
 use crate::api;
 use crate::story_save::{
     draft_is_dirty, fail_auto_save, finish_auto_save, AutoSaveController, AutoSaveField,
-    AutoSavePhase,
+    AutoSaveOutcome, AutoSavePhase,
 };
 
 pub const MANUAL_MESSAGE_SOURCE: i64 = -1;
@@ -19,6 +21,13 @@ pub struct ScopeOption {
 }
 
 #[derive(Clone, PartialEq)]
+pub struct PreviousValueLink {
+    pub value: String,
+    pub label: String,
+    pub href: String,
+}
+
+#[derive(Clone, PartialEq)]
 pub struct VariableRowModel {
     pub id: Option<i64>,
     pub key: String,
@@ -26,6 +35,11 @@ pub struct VariableRowModel {
     pub scope_label: String,
     pub scope_value: String,
     pub key_readonly: bool,
+    pub previous_value: Option<PreviousValueLink>,
+}
+
+fn variable_row_stable_key(model: &VariableRowModel) -> String {
+    format!("{}::{}", model.scope_value, model.key)
 }
 
 #[derive(Clone, PartialEq)]
@@ -66,6 +80,59 @@ impl RowFields {
     }
 }
 
+#[derive(Clone)]
+struct VariableRowSaveContext {
+    controller: AutoSaveController,
+    key: UseStateHandle<String>,
+    value: UseStateHandle<String>,
+    scope_value: UseStateHandle<String>,
+    last_saved: UseStateHandle<RowFields>,
+    variable_id: UseStateHandle<Option<i64>>,
+}
+
+fn perform_variable_row_save(
+    ctx: &VariableRowSaveContext,
+    on_save: &Callback<VariableSaveAction>,
+    reschedule: &Callback<()>,
+) {
+    let snapshot = RowFields::snapshot(&ctx.key, &ctx.value, &ctx.scope_value);
+    if snapshot.key.is_empty() || !draft_is_dirty(&snapshot, &*ctx.last_saved) {
+        ctx.controller.mark_saved();
+        return;
+    }
+    let key = ctx.key.clone();
+    let value = ctx.value.clone();
+    let scope_value = ctx.scope_value.clone();
+    let last_saved = ctx.last_saved.clone();
+    let save_controller = ctx.controller.clone();
+    let reschedule = reschedule.clone();
+    let id = *ctx.variable_id;
+    on_save.emit(VariableSaveAction {
+        payload: VariableSavePayload {
+            id,
+            key: snapshot.key.clone(),
+            value: snapshot.value.clone(),
+            scope_value: snapshot.scope_value.clone(),
+        },
+        on_complete: Callback::from(move |result| match result {
+            Ok(()) => {
+                let current = RowFields::snapshot(&key, &value, &scope_value);
+                let outcome = finish_auto_save(&save_controller, &current, &snapshot, &last_saved);
+                if outcome == AutoSaveOutcome::Stale && draft_is_dirty(&current, &*last_saved) {
+                    reschedule.emit(());
+                }
+            }
+            Err(message) => {
+                let current = RowFields::snapshot(&key, &value, &scope_value);
+                let outcome = fail_auto_save(&save_controller, &current, &snapshot, message);
+                if outcome == AutoSaveOutcome::Stale && draft_is_dirty(&current, &*last_saved) {
+                    reschedule.emit(());
+                }
+            }
+        }),
+    });
+}
+
 fn text_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
     Callback::from(move |e: InputEvent| {
         if let Some(target) = e.target() {
@@ -76,6 +143,25 @@ fn text_input(state: UseStateHandle<String>) -> Callback<InputEvent> {
             }
         }
     })
+}
+
+fn truncate_display(text: &str, max_len: usize) -> String {
+    if text.chars().count() <= max_len {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_len.saturating_sub(1)).collect();
+    format!("{truncated}…")
+}
+
+fn scroll_to_anchor(href: &str) {
+    let Some(id) = href.strip_prefix('#') else {
+        return;
+    };
+    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        if let Some(element) = document.get_element_by_id(id) {
+            element.scroll_into_view_with_bool(true);
+        }
+    }
 }
 
 fn copy_to_clipboard(text: &str) {
@@ -112,6 +198,8 @@ pub struct VariableRowProps {
     pub on_delete: Callback<Option<i64>>,
     #[prop_or_default]
     pub on_cancel: Option<Callback<()>>,
+    #[prop_or(false)]
+    pub show_previous_column: bool,
 }
 
 #[function_component(VariableRow)]
@@ -123,6 +211,15 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
     let save_phase = use_state(|| AutoSavePhase::Synced);
     let save_error = use_state(|| None::<String>);
     let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
+    let variable_id = use_state(|| props.model.id);
+
+    {
+        let variable_id = variable_id.clone();
+        use_effect_with(props.model.id, move |id| {
+            variable_id.set(*id);
+            || ()
+        });
+    }
 
     {
         let key = key.clone();
@@ -143,15 +240,17 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         });
     }
 
-    let schedule_save = {
+    let trigger_save_cell: Rc<RefCell<Option<Callback<bool>>>> = Rc::new(RefCell::new(None));
+    let trigger_save = {
         let key = key.clone();
         let value = value.clone();
         let scope_value = scope_value.clone();
         let last_saved = last_saved.clone();
         let save_controller = save_controller.clone();
         let on_save = props.on_save.clone();
-        let id = props.model.id;
-        Callback::from(move |_| {
+        let variable_id = variable_id.clone();
+        let reschedule_cell = trigger_save_cell.clone();
+        Callback::from(move |immediate: bool| {
             if (*key).trim().is_empty() {
                 return;
             }
@@ -161,44 +260,41 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
             let last_saved = last_saved.clone();
             let save_controller = save_controller.clone();
             let on_save = on_save.clone();
-            let controller_for_save = save_controller.clone();
-            save_controller.schedule(move || {
-                let snapshot = RowFields::snapshot(&key, &value, &scope_value);
-                if snapshot.key.is_empty() || !draft_is_dirty(&snapshot, &*last_saved) {
-                    controller_for_save.mark_saved();
-                    return;
+            let variable_id = variable_id.clone();
+            let reschedule_cell = reschedule_cell.clone();
+            let run_save = {
+                let ctx = VariableRowSaveContext {
+                    controller: save_controller.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                    scope_value: scope_value.clone(),
+                    last_saved: last_saved.clone(),
+                    variable_id: variable_id.clone(),
+                };
+                let on_save = on_save.clone();
+                let reschedule_cell = reschedule_cell.clone();
+                move || {
+                    let reschedule = Callback::from({
+                        let reschedule_cell = reschedule_cell.clone();
+                        move |_| {
+                            if let Some(trigger) = reschedule_cell.borrow().as_ref() {
+                                trigger.emit(false);
+                            }
+                        }
+                    });
+                    perform_variable_row_save(&ctx, &on_save, &reschedule);
                 }
-                let key = key.clone();
-                let value = value.clone();
-                let scope_value = scope_value.clone();
-                let last_saved = last_saved.clone();
-                let save_controller = controller_for_save.clone();
-                on_save.emit(VariableSaveAction {
-                    payload: VariableSavePayload {
-                        id,
-                        key: snapshot.key.clone(),
-                        value: snapshot.value.clone(),
-                        scope_value: snapshot.scope_value.clone(),
-                    },
-                    on_complete: Callback::from(move |result| match result {
-                        Ok(()) => {
-                            let current = RowFields::snapshot(&key, &value, &scope_value);
-                            let _ = finish_auto_save(
-                                &save_controller,
-                                &current,
-                                &snapshot,
-                                &last_saved,
-                            );
-                        }
-                        Err(message) => {
-                            let current = RowFields::snapshot(&key, &value, &scope_value);
-                            let _ = fail_auto_save(&save_controller, &current, &snapshot, message);
-                        }
-                    }),
-                });
-            });
+            };
+            if immediate {
+                save_controller.flush(run_save);
+            } else {
+                save_controller.schedule(run_save);
+            }
         })
     };
+    *trigger_save_cell.borrow_mut() = Some(trigger_save.clone());
+    let schedule_save = trigger_save.reform(|_| false);
+    let flush_save = trigger_save.reform(|_| true);
 
     let scope_select = if props.fixed_scope {
         html! {
@@ -249,6 +345,13 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         Callback::from(move |e: InputEvent| {
             text_input(value.clone()).emit(e);
             schedule_save.emit(());
+        })
+    };
+
+    let value_blur = {
+        let flush_save = flush_save.clone();
+        Callback::from(move |_: FocusEvent| {
+            flush_save.emit(());
         })
     };
 
@@ -307,10 +410,16 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                             type="text"
                             placeholder="Value"
                             value={(*value).clone()}
-                            oninput={value_input}
+                            oninput={value_input.clone()}
+                            onblur={value_blur.clone()}
                         />
                     </AutoSaveField>
                 </div>
+                if props.show_previous_column {
+                    <div class="variable-table-previous-cell" role="cell">
+                        { props.model.previous_value.as_ref().map(previous_value_cell) }
+                    </div>
+                }
                 <div class="variable-table-actions" role="cell">
                     { actions }
                 </div>
@@ -340,7 +449,8 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                     placeholder="Value"
                     rows="2"
                     value={(*value).clone()}
-                    oninput={value_input}
+                    oninput={value_input.clone()}
+                    onblur={value_blur.clone()}
                 />
             </AutoSaveField>
             if props.on_cancel.is_some() && props.model.id.is_none() {
@@ -467,48 +577,304 @@ pub fn story_scope_from_value(value: &str) -> (i64, i64) {
     )
 }
 
-fn format_variable_update_value(update: &MessageVariableUpdate) -> String {
-    if update.deleted {
-        if let Some(previous) = &update.previous_value {
-            format!("{previous} → (deleted)")
-        } else {
-            "(deleted)".to_string()
+fn chat_key_source(
+    messages: &[Message],
+    panel: &[ChatVariable],
+    before_message_id: i64,
+    key: &str,
+) -> Option<String> {
+    let mut source_message_id = MANUAL_MESSAGE_SOURCE;
+    let mut found = false;
+
+    for message in messages
+        .iter()
+        .filter(|message| message.id < before_message_id)
+    {
+        for update in &message.variable_updates {
+            if update.key == key {
+                if update.clears() {
+                    found = false;
+                } else {
+                    source_message_id = message.id;
+                    found = true;
+                }
+            }
         }
-    } else if let Some(previous) = &update.previous_value {
-        format!("{previous} → {}", update.value)
+    }
+
+    let mut panel_entries: Vec<&ChatVariable> = panel
+        .iter()
+        .filter(|variable| {
+            variable.key == key
+                && (variable.source_message_id == MANUAL_MESSAGE_SOURCE
+                    || variable.source_message_id < before_message_id)
+        })
+        .collect();
+    panel_entries.sort_by_key(|variable| variable.source_message_id);
+    if let Some(variable) = panel_entries.last() {
+        source_message_id = variable.source_message_id;
+        found = true;
+    }
+
+    if !found {
+        return None;
+    }
+
+    Some(if source_message_id == MANUAL_MESSAGE_SOURCE {
+        "#variables-panel".to_string()
     } else {
-        update.value.clone()
-    }
+        format!("#message-{source_message_id}")
+    })
 }
 
-#[derive(Properties, PartialEq)]
-pub struct VariableUpdatesAuditProps {
-    pub updates: Vec<MessageVariableUpdate>,
-}
+fn story_key_source(
+    detail: &StoryDetail,
+    panel: &[StoryVariable],
+    chapter_order: i64,
+    beat_order: i64,
+    key: &str,
+) -> Option<String> {
+    let mut source_chapter = MANUAL_STORY_SOURCE;
+    let mut source_beat = MANUAL_STORY_SOURCE;
+    let mut found = false;
 
-#[function_component(VariableUpdatesAudit)]
-pub fn variable_updates_audit(props: &VariableUpdatesAuditProps) -> Html {
-    if props.updates.is_empty() {
-        return html! {};
-    }
-
-    html! {
-        <>
-            <div class="message-variable-updates-subsection-title">{"Model changes"}</div>
-            <div class="message-variable-updates-grid" role="table">
-                <div class="message-variable-updates-grid-header" role="columnheader">{"Name"}</div>
-                <div class="message-variable-updates-grid-header" role="columnheader">{"Value"}</div>
-                { for props.updates.iter().map(|update| {
-                    html! {
-                        <>
-                            <div class="message-variable-updates-key" role="cell">{ &update.key }</div>
-                            <div class="message-variable-updates-value" role="cell">{ format_variable_update_value(update) }</div>
-                        </>
+    for chapter in detail
+        .chapters
+        .iter()
+        .filter(|chapter| chapter.sort_order < chapter_order)
+    {
+        for beat in &chapter.beats {
+            for update in &beat.variable_updates {
+                if update.key == key {
+                    if update.clears() {
+                        found = false;
+                    } else {
+                        source_chapter = chapter.sort_order;
+                        source_beat = beat.sort_order;
+                        found = true;
                     }
-                }) }
-            </div>
-        </>
+                }
+            }
+        }
     }
+
+    if let Some(chapter) = detail
+        .chapters
+        .iter()
+        .find(|chapter| chapter.sort_order == chapter_order)
+    {
+        for beat in chapter
+            .beats
+            .iter()
+            .filter(|beat| beat.sort_order < beat_order)
+        {
+            for update in &beat.variable_updates {
+                if update.key == key {
+                    if update.clears() {
+                        found = false;
+                    } else {
+                        source_chapter = chapter.sort_order;
+                        source_beat = beat.sort_order;
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut panel_entries: Vec<&StoryVariable> = panel
+        .iter()
+        .filter(|variable| {
+            variable.key == key
+                && (variable.source_chapter_order == MANUAL_STORY_SOURCE
+                    || variable.source_chapter_order < chapter_order
+                    || (variable.source_chapter_order == chapter_order
+                        && variable.source_beat_order < beat_order))
+        })
+        .collect();
+    panel_entries.sort_by(|left, right| {
+        (left.source_chapter_order, left.source_beat_order)
+            .cmp(&(right.source_chapter_order, right.source_beat_order))
+    });
+    if let Some(variable) = panel_entries.last() {
+        source_chapter = variable.source_chapter_order;
+        source_beat = variable.source_beat_order;
+        found = true;
+    }
+
+    if !found {
+        return None;
+    }
+
+    if source_chapter == MANUAL_STORY_SOURCE {
+        return Some("#story-variables-panel".to_string());
+    }
+    detail.chapters.iter().find_map(|chapter| {
+        if chapter.sort_order == source_chapter {
+            chapter
+                .beats
+                .iter()
+                .find(|beat| beat.sort_order == source_beat)
+                .map(|beat| format!("#beat-{}", beat.id))
+        } else {
+            None
+        }
+    })
+}
+
+fn previous_link_from_update(
+    update: &MessageVariableUpdate,
+    href: String,
+) -> Option<PreviousValueLink> {
+    let value = update.previous_value.as_ref()?;
+    Some(PreviousValueLink {
+        value: value.clone(),
+        label: truncate_display(value, 24),
+        href,
+    })
+}
+
+fn previous_value_cell(link: &PreviousValueLink) -> Html {
+    if link.href.is_empty() {
+        return html! {
+            <span class="variable-table-previous" title={link.value.clone()}>
+                { link.label.clone() }
+            </span>
+        };
+    }
+    let href = link.href.clone();
+    html! {
+        <a
+            class="variable-table-previous-link"
+            href={href.clone()}
+            title={link.value.clone()}
+            onclick={Callback::from(move |e: MouseEvent| {
+                e.prevent_default();
+                scroll_to_anchor(&href);
+            })}
+        >
+            { link.label.clone() }
+        </a>
+    }
+}
+
+fn merge_chat_inline_rows(
+    scoped: Vec<VariableRowModel>,
+    updates: &[MessageVariableUpdate],
+    messages: &[Message],
+    panel: &[ChatVariable],
+    message_id: i64,
+    scope_label: &str,
+) -> Vec<VariableRowModel> {
+    use std::collections::{HashMap, HashSet};
+
+    let scoped_by_key: HashMap<String, VariableRowModel> = scoped
+        .into_iter()
+        .map(|row| (row.key.clone(), row))
+        .collect();
+    let mut rows = Vec::new();
+    let mut seen = HashSet::new();
+
+    for update in updates {
+        seen.insert(update.key.clone());
+        let mut row = scoped_by_key
+            .get(&update.key)
+            .cloned()
+            .unwrap_or_else(|| VariableRowModel {
+                id: None,
+                key: update.key.clone(),
+                value: update.value.clone(),
+                scope_label: scope_label.to_string(),
+                scope_value: message_id.to_string(),
+                key_readonly: true,
+                previous_value: None,
+            });
+        if let Some(href) = chat_key_source(messages, panel, message_id, &update.key) {
+            row.previous_value = previous_link_from_update(update, href);
+        } else if let Some(value) = update.previous_value.clone() {
+            row.previous_value = Some(PreviousValueLink {
+                value: value.clone(),
+                label: truncate_display(&value, 24),
+                href: String::new(),
+            });
+        }
+        rows.push(row);
+    }
+
+    for (key, row) in scoped_by_key {
+        if seen.insert(key) {
+            rows.push(row);
+        }
+    }
+
+    rows.sort_by(|left, right| left.key.cmp(&right.key));
+    rows
+}
+
+struct StoryInlineVariableContext<'a> {
+    detail: &'a StoryDetail,
+    panel: &'a [StoryVariable],
+    chapter_order: i64,
+    beat_order: i64,
+    scope_label: &'a str,
+}
+
+fn merge_story_inline_rows(
+    scoped: Vec<VariableRowModel>,
+    updates: &[BeatVariableUpdate],
+    ctx: &StoryInlineVariableContext<'_>,
+) -> Vec<VariableRowModel> {
+    use std::collections::{HashMap, HashSet};
+
+    let scope_value = story_scope_value(ctx.chapter_order, ctx.beat_order);
+
+    let scoped_by_key: HashMap<String, VariableRowModel> = scoped
+        .into_iter()
+        .map(|row| (row.key.clone(), row))
+        .collect();
+    let mut rows = Vec::new();
+    let mut seen = HashSet::new();
+
+    for update in updates {
+        seen.insert(update.key.clone());
+        let mut row = scoped_by_key
+            .get(&update.key)
+            .cloned()
+            .unwrap_or_else(|| VariableRowModel {
+                id: None,
+                key: update.key.clone(),
+                value: update.value.clone(),
+                scope_label: ctx.scope_label.to_string(),
+                scope_value: scope_value.clone(),
+                key_readonly: true,
+                previous_value: None,
+            });
+        if let Some(href) = story_key_source(
+            ctx.detail,
+            ctx.panel,
+            ctx.chapter_order,
+            ctx.beat_order,
+            &update.key,
+        ) {
+            row.previous_value = previous_link_from_update(update, href);
+        } else if let Some(value) = update.previous_value.clone() {
+            row.previous_value = Some(PreviousValueLink {
+                value: value.clone(),
+                label: truncate_display(&value, 24),
+                href: String::new(),
+            });
+        }
+        rows.push(row);
+    }
+
+    for (key, row) in scoped_by_key {
+        if seen.insert(key) {
+            rows.push(row);
+        }
+    }
+
+    rows.sort_by(|left, right| left.key.cmp(&right.key));
+    rows
 }
 
 #[derive(Properties, PartialEq)]
@@ -557,6 +923,7 @@ pub fn chat_variable_row(
         scope_label: chat_scope_label(variable.source_message_id, messages),
         scope_value: variable.source_message_id.to_string(),
         key_readonly,
+        previous_value: None,
     }
 }
 
@@ -577,6 +944,7 @@ pub fn story_variable_row(
         ),
         scope_value,
         key_readonly,
+        previous_value: None,
     }
 }
 
@@ -585,8 +953,11 @@ pub fn make_chat_variable_handlers(
     variables: UseStateHandle<Vec<ChatVariable>>,
     on_changed: Option<Callback<()>>,
 ) -> (Callback<VariableSaveAction>, Callback<Option<i64>>) {
+    let on_changed_for_save = on_changed.clone();
+    let on_changed_for_delete = on_changed.clone();
     let on_save = {
         let variables = variables.clone();
+        let on_changed = on_changed_for_save;
         Callback::from(move |action: VariableSaveAction| {
             let payload = action.payload;
             let on_complete = action.on_complete;
@@ -601,8 +972,26 @@ pub fn make_chat_variable_handlers(
                     .find(|variable| variable.id == id)
                     .map(|variable| variable.source_message_id.to_string())
             });
+            let on_changed = on_changed.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let mut list = (*variables).clone();
+                if payload.value.is_empty() {
+                    if let Some(variable_id) = payload.id {
+                        match api::delete_variable(chat_id, variable_id).await {
+                            Ok(()) => {
+                                variables.set(remove_chat_variable(&variables, variable_id));
+                                if let Some(on_changed) = on_changed {
+                                    on_changed.emit(());
+                                }
+                                on_complete.emit(Ok(()));
+                            }
+                            Err(err) => on_complete.emit(Err(err)),
+                        }
+                    } else {
+                        on_complete.emit(Ok(()));
+                    }
+                    return;
+                }
                 if let Some(old_id) = payload.id {
                     if old_scope.as_deref() != Some(payload.scope_value.as_str()) {
                         match api::delete_variable(chat_id, old_id).await {
@@ -636,6 +1025,7 @@ pub fn make_chat_variable_handlers(
 
     let on_delete = {
         let variables = variables.clone();
+        let on_changed = on_changed_for_delete;
         Callback::from(move |variable_id: Option<i64>| {
             let Some(variable_id) = variable_id else {
                 return;
@@ -713,8 +1103,11 @@ pub fn make_story_variable_handlers(
     variables: UseStateHandle<Vec<StoryVariable>>,
     on_detail: Option<Callback<StoryDetail>>,
 ) -> (Callback<VariableSaveAction>, Callback<Option<i64>>) {
+    let on_detail_for_save = on_detail.clone();
+    let on_detail_for_delete = on_detail.clone();
     let on_save = {
         let variables = variables.clone();
+        let on_detail = on_detail_for_save;
         Callback::from(move |action: VariableSaveAction| {
             let payload = action.payload;
             let on_complete = action.on_complete;
@@ -728,8 +1121,28 @@ pub fn make_story_variable_handlers(
                         story_scope_value(variable.source_chapter_order, variable.source_beat_order)
                     })
             });
+            let on_detail = on_detail.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let mut list = (*variables).clone();
+                if payload.value.is_empty() {
+                    if let Some(variable_id) = payload.id {
+                        match api::delete_story_variable(story_id, variable_id).await {
+                            Ok(()) => {
+                                variables.set(remove_story_variable(&variables, variable_id));
+                                if let Some(on_detail) = on_detail {
+                                    if let Ok(detail) = api::get_story(story_id).await {
+                                        on_detail.emit(detail);
+                                    }
+                                }
+                                on_complete.emit(Ok(()));
+                            }
+                            Err(err) => on_complete.emit(Err(err)),
+                        }
+                    } else {
+                        on_complete.emit(Ok(()));
+                    }
+                    return;
+                }
                 if let Some(old_id) = payload.id {
                     if old_scope.as_deref() != Some(payload.scope_value.as_str()) {
                         match api::delete_story_variable(story_id, old_id).await {
@@ -764,6 +1177,7 @@ pub fn make_story_variable_handlers(
 
     let on_delete = {
         let variables = variables.clone();
+        let on_detail = on_detail_for_delete;
         Callback::from(move |variable_id: Option<i64>| {
             let Some(variable_id) = variable_id else {
                 return;
@@ -798,6 +1212,7 @@ pub fn make_story_variable_handlers(
 pub struct InlineChatVariablesProps {
     pub chat_id: i64,
     pub message_id: i64,
+    pub messages: Vec<Message>,
     pub scope_label: String,
     pub variable_updates: Vec<MessageVariableUpdate>,
     pub on_changed: Callback<()>,
@@ -835,25 +1250,36 @@ pub fn inline_chat_variables(props: &InlineChatVariablesProps) -> Html {
             scope_label: props.scope_label.clone(),
             scope_value: props.message_id.to_string(),
             key_readonly: true,
+            previous_value: None,
         })
         .collect();
+
+    let rows = merge_chat_inline_rows(
+        scoped,
+        &props.variable_updates,
+        &props.messages,
+        &variables,
+        props.message_id,
+        &props.scope_label,
+    );
 
     let (on_save, on_delete) =
         make_chat_variable_handlers(props.chat_id, variables, Some(props.on_changed.clone()));
 
-    let count = scoped.len();
+    let count = rows.len();
     let title = format!("Variables ({count})");
+    let show_previous_column = rows.iter().any(|row| row.previous_value.is_some());
 
     html! {
         <CollapsibleVariablesSection title={title} default_expanded={true}>
-            <VariableUpdatesAudit updates={props.variable_updates.clone()} />
             <VariableList
-                rows={scoped}
+                rows={rows}
                 new_scope_value={props.message_id.to_string()}
                 fixed_scope_label={Some(props.scope_label.clone())}
                 on_save={on_save}
                 on_delete={on_delete}
                 compact={true}
+                show_previous_column={show_previous_column}
             />
         </CollapsibleVariablesSection>
     }
@@ -862,6 +1288,7 @@ pub fn inline_chat_variables(props: &InlineChatVariablesProps) -> Html {
 #[derive(Properties, PartialEq)]
 pub struct InlineStoryVariablesProps {
     pub story_id: i64,
+    pub detail: StoryDetail,
     pub chapter_order: i64,
     pub beat_order: i64,
     pub scope_label: String,
@@ -906,25 +1333,39 @@ pub fn inline_story_variables(props: &InlineStoryVariablesProps) -> Html {
             scope_label: props.scope_label.clone(),
             scope_value: scope_value.clone(),
             key_readonly: true,
+            previous_value: None,
         })
         .collect();
+
+    let rows = merge_story_inline_rows(
+        scoped,
+        &props.variable_updates,
+        &StoryInlineVariableContext {
+            detail: &props.detail,
+            panel: &variables,
+            chapter_order: props.chapter_order,
+            beat_order: props.beat_order,
+            scope_label: &props.scope_label,
+        },
+    );
 
     let (on_save, on_delete) =
         make_story_variable_handlers(props.story_id, variables, Some(props.on_detail.clone()));
 
-    let count = scoped.len();
+    let count = rows.len();
     let title = format!("Variables ({count})");
+    let show_previous_column = rows.iter().any(|row| row.previous_value.is_some());
 
     html! {
         <CollapsibleVariablesSection title={title} default_expanded={true}>
-            <VariableUpdatesAudit updates={props.variable_updates.clone()} />
             <VariableList
-                rows={scoped}
+                rows={rows}
                 new_scope_value={scope_value}
                 fixed_scope_label={Some(props.scope_label.clone())}
                 on_save={on_save}
                 on_delete={on_delete}
                 compact={true}
+                show_previous_column={show_previous_column}
             />
         </CollapsibleVariablesSection>
     }
@@ -945,6 +1386,8 @@ pub struct VariableListProps {
     pub fixed_scope_label: Option<String>,
     #[prop_or(false)]
     pub compact: bool,
+    #[prop_or(false)]
+    pub show_previous_column: bool,
 }
 
 #[function_component(VariableList)]
@@ -983,19 +1426,25 @@ pub fn variable_list(props: &VariableListProps) -> Html {
     let fixed_scope = props.fixed_scope_label.is_some();
 
     if props.compact {
+        let table_class = classes!(
+            "variable-table",
+            props
+                .show_previous_column
+                .then_some("variable-table--with-previous")
+        );
         return html! {
-            <div class="variable-table" role="table">
+            <div class={table_class} role="table">
                 <div class="variable-table-header" role="row">
                     <div class="variable-table-header-cell" role="columnheader">{"Name"}</div>
                     <div class="variable-table-header-cell" role="columnheader">{"Value"}</div>
+                    if props.show_previous_column {
+                        <div class="variable-table-header-cell" role="columnheader">{"Previous"}</div>
+                    }
                     <div class="variable-table-header-cell variable-table-header-actions" role="columnheader" aria-hidden="true"></div>
                 </div>
                 { for props.rows.iter().map(|row| {
                     let model = row.clone();
-                    let row_key = model
-                        .id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| format!("new-{}", model.key));
+                    let row_key = variable_row_stable_key(&model);
                     html! {
                         <VariableRow
                             key={row_key}
@@ -1004,6 +1453,7 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                             scope_readonly={fixed_scope}
                             fixed_scope={fixed_scope}
                             compact={true}
+                            show_previous_column={props.show_previous_column}
                             on_save={props.on_save.clone()}
                             on_delete={props.on_delete.clone()}
                         />
@@ -1030,6 +1480,9 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                             />
                         </AutoSaveField>
                     </div>
+                    if props.show_previous_column {
+                        <div class="variable-table-previous-cell" role="cell" aria-hidden="true"></div>
+                    }
                     <div class="variable-table-actions" role="cell">
                         <button
                             class="btn btn-compact"
@@ -1089,10 +1542,7 @@ pub fn variable_list(props: &VariableListProps) -> Html {
             }
             { for props.rows.iter().map(|row| {
                 let model = row.clone();
-                let row_key = model
-                    .id
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| format!("new-{}", model.key));
+                let row_key = variable_row_stable_key(&model);
                 html! {
                     <VariableRow
                         key={row_key}
@@ -1193,5 +1643,140 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                 </div>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use dreamwell_types::{Story, StoryDetail};
+
+    fn empty_story_detail() -> StoryDetail {
+        let now = Utc::now();
+        StoryDetail {
+            story: Story {
+                id: 1,
+                title: "Test".to_string(),
+                premise: String::new(),
+                tone: String::new(),
+                genre: String::new(),
+                pov: String::new(),
+                length_preset: dreamwell_types::LengthPreset::Short,
+                notes: String::new(),
+                created_at: now,
+                updated_at: now,
+                active_job: None,
+                queued_jobs: 0,
+            },
+            chapters: vec![],
+        }
+    }
+
+    #[test]
+    fn merge_story_inline_rows_prefers_saved_panel_value_over_stale_update() {
+        let scoped = vec![VariableRowModel {
+            id: Some(42),
+            key: "location".to_string(),
+            value: "castle".to_string(),
+            scope_label: "Beat".to_string(),
+            scope_value: "0:0".to_string(),
+            key_readonly: true,
+            previous_value: None,
+        }];
+        let updates = vec![MessageVariableUpdate {
+            key: "location".to_string(),
+            value: "forest".to_string(),
+            previous_value: None,
+        }];
+        let ctx = StoryInlineVariableContext {
+            detail: &empty_story_detail(),
+            panel: &[],
+            chapter_order: 0,
+            beat_order: 0,
+            scope_label: "Beat",
+        };
+
+        let rows = merge_story_inline_rows(scoped, &updates, &ctx);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].value, "castle",
+            "saved panel value must win over stale beat update"
+        );
+        assert_eq!(rows[0].id, Some(42));
+    }
+
+    #[test]
+    fn merge_chat_inline_rows_prefers_saved_panel_value_over_stale_update() {
+        let scoped = vec![VariableRowModel {
+            id: Some(7),
+            key: "hp".to_string(),
+            value: "80".to_string(),
+            scope_label: "Message 1".to_string(),
+            scope_value: "5".to_string(),
+            key_readonly: true,
+            previous_value: None,
+        }];
+        let updates = vec![MessageVariableUpdate {
+            key: "hp".to_string(),
+            value: "50".to_string(),
+            previous_value: None,
+        }];
+
+        let rows = merge_chat_inline_rows(scoped, &updates, &[], &[], 5, "Message 1");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].value, "80",
+            "saved panel value must win over stale message update"
+        );
+        assert_eq!(rows[0].id, Some(7));
+    }
+
+    #[test]
+    fn merge_story_inline_rows_uses_update_value_when_not_yet_saved() {
+        let updates = vec![MessageVariableUpdate {
+            key: "mood".to_string(),
+            value: "tense".to_string(),
+            previous_value: None,
+        }];
+        let ctx = StoryInlineVariableContext {
+            detail: &empty_story_detail(),
+            panel: &[],
+            chapter_order: 0,
+            beat_order: 0,
+            scope_label: "Beat",
+        };
+
+        let rows = merge_story_inline_rows(vec![], &updates, &ctx);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, "tense");
+        assert!(rows[0].id.is_none());
+    }
+
+    #[test]
+    fn row_fields_snapshot_tracks_value_edits_for_autosave() {
+        let saved = RowFields::snapshot("location", "forest", "0:0");
+        let edited = RowFields::snapshot("location", "castle", "0:0");
+        assert!(draft_is_dirty(&edited, &saved));
+        assert!(!draft_is_dirty(&saved, &saved));
+    }
+
+    #[test]
+    fn variable_row_stable_key_survives_first_save() {
+        let mut model = VariableRowModel {
+            id: None,
+            key: "location".to_string(),
+            value: "forest".to_string(),
+            scope_label: "Beat".to_string(),
+            scope_value: "0:1".to_string(),
+            key_readonly: true,
+            previous_value: None,
+        };
+        let before = variable_row_stable_key(&model);
+        model.id = Some(42);
+        assert_eq!(before, variable_row_stable_key(&model));
     }
 }

@@ -240,6 +240,9 @@ pub async fn apply_variable_updates(
 ) -> AppResult<()> {
     for update in updates {
         match update {
+            VariableUpdate::Set { key, value } if value.is_empty() => {
+                let _ = db::delete_variable_scoped(pool, chat_id, key, message_id).await;
+            }
             VariableUpdate::Set { key, value } => {
                 db::upsert_variable(pool, chat_id, key.clone(), value.clone(), message_id).await?;
             }
@@ -262,26 +265,20 @@ pub async fn build_message_variable_updates(
     let state = crate::variable_state::chat_state_at(&messages, &panel, message_id);
     let mut result = Vec::with_capacity(updates.len());
     for update in updates {
-        match update {
-            VariableUpdate::Set { key, value } => {
-                let previous_value = state.get(key).cloned();
-                result.push(MessageVariableUpdate {
-                    key: key.clone(),
-                    value: value.clone(),
-                    previous_value,
-                    deleted: false,
-                });
-            }
-            VariableUpdate::Delete { key } => {
-                let previous_value = state.get(key).cloned();
-                result.push(MessageVariableUpdate {
-                    key: key.clone(),
-                    value: String::new(),
-                    previous_value,
-                    deleted: true,
-                });
-            }
-        }
+        let previous_value = state
+            .get(match update {
+                VariableUpdate::Set { key, .. } | VariableUpdate::Delete { key } => key,
+            })
+            .cloned();
+        let (key, value) = match update {
+            VariableUpdate::Set { key, value } => (key.clone(), value.clone()),
+            VariableUpdate::Delete { key } => (key.clone(), String::new()),
+        };
+        result.push(MessageVariableUpdate {
+            key,
+            value,
+            previous_value,
+        });
     }
     Ok(result)
 }
@@ -293,7 +290,7 @@ pub async fn revert_message_variable_updates(
     updates: &[MessageVariableUpdate],
 ) -> AppResult<()> {
     for update in updates.iter().rev() {
-        if update.deleted {
+        if update.clears() {
             if let Some(previous) = &update.previous_value {
                 db::upsert_variable(
                     pool,
@@ -713,13 +710,11 @@ mod tests {
                 key: "location".into(),
                 value: "tavern".into(),
                 previous_value: Some("forest".into()),
-                deleted: false,
             },
             MessageVariableUpdate {
                 key: "quest".into(),
                 value: String::new(),
                 previous_value: None,
-                deleted: true,
             },
         ];
         apply_variable_updates(
@@ -780,7 +775,6 @@ mod tests {
             key: "location".into(),
             value: "tavern".into(),
             previous_value: None,
-            deleted: false,
         }];
         db::finalize_message_generation(
             &pool,
@@ -849,13 +843,11 @@ mod tests {
             key: "hp".into(),
             value: "80".into(),
             previous_value: None,
-            deleted: false,
         }];
         let second_updates = vec![MessageVariableUpdate {
             key: "hp".into(),
             value: "50".into(),
             previous_value: Some("80".into()),
-            deleted: false,
         }];
         db::finalize_message_generation(&pool, first.id, "first", "", None, false, &first_updates)
             .await
