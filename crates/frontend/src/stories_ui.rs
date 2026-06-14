@@ -13,6 +13,7 @@ use crate::generation_ui::{
     generation_error_from_content, is_stale_summary_error, stale_chapters_in_story, story_notice,
     BlockGenerationStatus, GenerationButtonGroup, GenerationStatusBar, StaleChapterItem,
 };
+use crate::item_list::StoryList;
 use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::story_save::{
     draft_is_dirty, fail_auto_save, finish_auto_save, AutoSaveController, AutoSaveField,
@@ -132,26 +133,11 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     {
         let stories = stories.clone();
         let loading = loading.clone();
-        let on_navigate = props.on_navigate.clone();
-        let route = props.route.clone();
         use_effect_with((), move |_| {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(list) = api::list_stories().await {
                     stories.set(list);
                     loading.set(false);
-                    if let AppRoute::Stories { story_id: None, .. } = route {
-                        if let Some(first) = (*stories).first() {
-                            on_navigate.emit((
-                                AppRoute::Stories {
-                                    story_id: Some(first.id),
-                                    nav: StoryNav::None,
-                                    overlay: None,
-                                    sidebar: false,
-                                },
-                                false,
-                            ));
-                        }
-                    }
                 } else {
                     loading.set(false);
                 }
@@ -449,12 +435,39 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 />
             }
             <StoryEditor
+            stories={(*stories).clone()}
             detail={(*detail).clone()}
             detail_loading={*detail_loading}
             selection={selection}
             guidance={(*guidance).clone()}
             variables_enabled={props.variables_enabled}
             bump_stream={bump_stream.clone()}
+            on_select_story={Callback::from({
+                let navigate_story = navigate_story.clone();
+                move |id| {
+                    navigate_story.emit((Some(id), StoryNav::None));
+                }
+            })}
+            on_new_story={Callback::from({
+                let stories = stories.clone();
+                let navigate_story = navigate_story.clone();
+                move |_| {
+                    let stories = stories.clone();
+                    let navigate_story = navigate_story.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let payload = StoryCreate {
+                            title: format!("Story {}", stories.len() + 1),
+                            ..Default::default()
+                        };
+                        if let Ok(d) = api::create_story(&payload).await {
+                            if let Ok(list) = api::list_stories().await {
+                                stories.set(list);
+                            }
+                            navigate_story.emit((Some(d.story.id), StoryNav::Basics));
+                        }
+                    });
+                }
+            })}
             on_open_variables={Callback::from({
                 let on_navigate = props.on_navigate.clone();
                 let route = props.route.clone();
@@ -505,12 +518,15 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
 
 #[derive(Properties, PartialEq)]
 struct StoryEditorProps {
+    pub stories: Vec<Story>,
     detail: Option<StoryDetail>,
     detail_loading: bool,
     selection: StorySelection,
     guidance: String,
     variables_enabled: bool,
     bump_stream: Callback<()>,
+    on_select_story: Callback<i64>,
+    on_new_story: Callback<()>,
     on_open_variables: Callback<()>,
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
@@ -538,9 +554,28 @@ fn story_editor(props: &StoryEditorProps) -> Html {
         return html! {
             <>
                 <header class="header content-header">
-                    <h1 class="header-title">{"Select or create a story"}</h1>
+                    <h1 class="header-title">{"Stories"}</h1>
+                    if props.stories.is_empty() {
+                        <p class="header-subtitle muted">{"Create a story to start outlining chapters and beats."}</p>
+                    } else {
+                        <p class="header-subtitle muted">{"Pick a story below to continue."}</p>
+                    }
                 </header>
-                <div class="loading-screen muted" style="text-align:center;">{"Stories are built chapter by chapter, beat by beat."}</div>
+                <div class="content-scroll">
+                    if props.stories.is_empty() {
+                        <div class="empty-state muted">
+                            <p>{"No stories yet. Click New story in the sidebar to create one."}</p>
+                            <button class="btn" style="margin-top:0.75rem;" onclick={props.on_new_story.reform(|_| ())}>
+                                {"New story"}
+                            </button>
+                        </div>
+                    } else {
+                        <StoryList
+                            stories={props.stories.clone()}
+                            on_select={props.on_select_story.clone()}
+                        />
+                    }
+                </div>
             </>
         };
     };
