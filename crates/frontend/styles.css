@@ -1519,6 +1519,13 @@ input.header-title {
   margin: 1rem;
 }
 
+.main-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.5rem 1rem;
+}
+
 .scroll-list {
   max-height: 10rem;
   overflow-y: auto;
