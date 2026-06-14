@@ -846,6 +846,42 @@ input.header-title {
   word-break: break-word;
 }
 
+.message-variable-updates-subsection-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.35rem;
+}
+
+.message-variable-updates-subsection-title:not(:first-child) {
+  margin-top: 0.65rem;
+}
+
+.message-variable-updates .variable-list--compact {
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.message-variable-updates .variable-list--compact .variable-row {
+  padding: 0.5rem;
+}
+
+.message-variable-updates .variable-list--compact .variable-row-key,
+.message-variable-updates .variable-list--compact .variable-row-value {
+  font-size: 0.8125rem;
+}
+
+.message-variable-updates .variable-list--compact .variable-row-value {
+  min-height: 2.25rem;
+}
+
+.message-variable-updates .variable-list--compact .variable-row-scope {
+  font-size: 0.75rem;
+  max-width: 9rem;
+}
+
 .message {
   max-width: 85%;
   border-radius: 0.375rem;

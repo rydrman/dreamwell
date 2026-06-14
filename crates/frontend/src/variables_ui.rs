@@ -4,6 +4,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlDocument, HtmlInputElement, HtmlSelectElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
+use crate::api;
 use crate::story_save::{auto_save_field_icon, AutoSavePhase};
 
 pub const MANUAL_MESSAGE_SOURCE: i64 = -1;
@@ -342,6 +343,409 @@ pub fn story_scope_from_value(value: &str) -> (i64, i64) {
     )
 }
 
+fn format_variable_update_value(update: &MessageVariableUpdate) -> String {
+    if update.deleted {
+        if let Some(previous) = &update.previous_value {
+            format!("{previous} → (deleted)")
+        } else {
+            "(deleted)".to_string()
+        }
+    } else if let Some(previous) = &update.previous_value {
+        format!("{previous} → {}", update.value)
+    } else {
+        update.value.clone()
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct VariableUpdatesAuditProps {
+    pub updates: Vec<MessageVariableUpdate>,
+}
+
+#[function_component(VariableUpdatesAudit)]
+pub fn variable_updates_audit(props: &VariableUpdatesAuditProps) -> Html {
+    if props.updates.is_empty() {
+        return html! {};
+    }
+
+    html! {
+        <>
+            <div class="message-variable-updates-subsection-title">{"Model changes"}</div>
+            <div class="message-variable-updates-grid" role="table">
+                <div class="message-variable-updates-grid-header" role="columnheader">{"Name"}</div>
+                <div class="message-variable-updates-grid-header" role="columnheader">{"Value"}</div>
+                { for props.updates.iter().map(|update| {
+                    html! {
+                        <>
+                            <div class="message-variable-updates-key" role="cell">{ &update.key }</div>
+                            <div class="message-variable-updates-value" role="cell">{ format_variable_update_value(update) }</div>
+                        </>
+                    }
+                }) }
+            </div>
+        </>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct CollapsibleVariablesSectionProps {
+    pub title: String,
+    #[prop_or(false)]
+    pub default_expanded: bool,
+    pub children: Children,
+}
+
+#[function_component(CollapsibleVariablesSection)]
+pub fn collapsible_variables_section(props: &CollapsibleVariablesSectionProps) -> Html {
+    let expanded = use_state(|| props.default_expanded);
+
+    let toggle = {
+        let expanded = expanded.clone();
+        Callback::from(move |_| expanded.set(!*expanded))
+    };
+
+    html! {
+        <div class="message-variable-updates">
+            <button type="button" class="message-variable-updates-toggle" onclick={toggle}>
+                <span class="message-variable-updates-label">{ &props.title }</span>
+                <span class="message-variable-updates-chevron" aria-hidden="true">
+                    { if *expanded { "▾" } else { "▸" } }
+                </span>
+            </button>
+            if *expanded {
+                <div class="message-variable-updates-body">
+                    { for props.children.iter() }
+                </div>
+            }
+        </div>
+    }
+}
+
+pub fn chat_variable_row(
+    variable: &ChatVariable,
+    messages: &[Message],
+    key_readonly: bool,
+) -> VariableRowModel {
+    VariableRowModel {
+        id: Some(variable.id),
+        key: variable.key.clone(),
+        value: variable.value.clone(),
+        scope_label: chat_scope_label(variable.source_message_id, messages),
+        scope_value: variable.source_message_id.to_string(),
+        key_readonly,
+    }
+}
+
+pub fn story_variable_row(
+    variable: &StoryVariable,
+    detail: &StoryDetail,
+    key_readonly: bool,
+) -> VariableRowModel {
+    let scope_value = story_scope_value(variable.source_chapter_order, variable.source_beat_order);
+    VariableRowModel {
+        id: Some(variable.id),
+        key: variable.key.clone(),
+        value: variable.value.clone(),
+        scope_label: story_scope_label(
+            variable.source_chapter_order,
+            variable.source_beat_order,
+            detail,
+        ),
+        scope_value,
+        key_readonly,
+    }
+}
+
+pub fn make_chat_variable_handlers(
+    chat_id: i64,
+    variables: UseStateHandle<Vec<ChatVariable>>,
+    on_changed: Option<Callback<()>>,
+) -> (Callback<VariableSavePayload>, Callback<Option<i64>>) {
+    let on_save = {
+        let variables = variables.clone();
+        Callback::from(move |payload: VariableSavePayload| {
+            let variables = variables.clone();
+            let source_message_id = payload
+                .scope_value
+                .parse::<i64>()
+                .unwrap_or(MANUAL_MESSAGE_SOURCE);
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::upsert_variable(
+                    chat_id,
+                    &ChatVariableUpdate {
+                        key: payload.key,
+                        value: payload.value,
+                        source_message_id: Some(source_message_id),
+                    },
+                )
+                .await
+                {
+                    Ok(_) => {
+                        if let Ok(list) = api::get_variables(chat_id).await {
+                            variables.set(list);
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not save variable: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    let on_delete = {
+        let variables = variables.clone();
+        Callback::from(move |variable_id: Option<i64>| {
+            let Some(variable_id) = variable_id else {
+                return;
+            };
+            let variables = variables.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::delete_variable(chat_id, variable_id).await {
+                    Ok(()) => {
+                        if let Ok(list) = api::get_variables(chat_id).await {
+                            variables.set(list);
+                        }
+                        if let Some(on_changed) = on_changed {
+                            on_changed.emit(());
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not delete variable: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    (on_save, on_delete)
+}
+
+pub fn make_story_variable_handlers(
+    story_id: i64,
+    variables: UseStateHandle<Vec<StoryVariable>>,
+    on_detail: Option<Callback<StoryDetail>>,
+) -> (Callback<VariableSavePayload>, Callback<Option<i64>>) {
+    let on_save = {
+        let variables = variables.clone();
+        Callback::from(move |payload: VariableSavePayload| {
+            let variables = variables.clone();
+            let (chapter_order, beat_order) = story_scope_from_value(&payload.scope_value);
+            let old_scope = payload.id.and_then(|id| {
+                variables
+                    .iter()
+                    .find(|variable| variable.id == id)
+                    .map(|variable| {
+                        story_scope_value(variable.source_chapter_order, variable.source_beat_order)
+                    })
+            });
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Some(old_id) = payload.id {
+                    if old_scope.as_deref() != Some(payload.scope_value.as_str()) {
+                        let _ = api::delete_story_variable(story_id, old_id).await;
+                    }
+                }
+                match api::upsert_story_variable(
+                    story_id,
+                    &StoryVariableUpdate {
+                        key: payload.key,
+                        value: payload.value,
+                        source_chapter_order: Some(chapter_order),
+                        source_beat_order: Some(beat_order),
+                    },
+                )
+                .await
+                {
+                    Ok(_) => {
+                        if let Ok(list) = api::get_story_variables(story_id).await {
+                            variables.set(list);
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not save variable: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    let on_delete = {
+        let variables = variables.clone();
+        Callback::from(move |variable_id: Option<i64>| {
+            let Some(variable_id) = variable_id else {
+                return;
+            };
+            let variables = variables.clone();
+            let on_detail = on_detail.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::delete_story_variable(story_id, variable_id).await {
+                    Ok(()) => {
+                        if let Ok(list) = api::get_story_variables(story_id).await {
+                            variables.set(list);
+                        }
+                        if let Some(on_detail) = on_detail {
+                            if let Ok(detail) = api::get_story(story_id).await {
+                                on_detail.emit(detail);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not delete variable: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    (on_save, on_delete)
+}
+
+#[derive(Properties, PartialEq)]
+pub struct InlineChatVariablesProps {
+    pub chat_id: i64,
+    pub message_id: i64,
+    pub variable_updates: Vec<MessageVariableUpdate>,
+    pub on_changed: Callback<()>,
+}
+
+#[function_component(InlineChatVariables)]
+pub fn inline_chat_variables(props: &InlineChatVariablesProps) -> Html {
+    let variables = use_state(Vec::<ChatVariable>::new);
+    let refresh = (
+        props.chat_id,
+        props.message_id,
+        props.variable_updates.len(),
+    );
+
+    {
+        let variables = variables.clone();
+        use_effect_with(refresh, move |&(chat_id, _, _)| {
+            let variables = variables.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(list) = api::get_variables(chat_id).await {
+                    variables.set(list);
+                }
+            });
+            || ()
+        });
+    }
+
+    let scoped: Vec<VariableRowModel> = variables
+        .iter()
+        .filter(|variable| variable.source_message_id == props.message_id)
+        .map(|variable| VariableRowModel {
+            id: Some(variable.id),
+            key: variable.key.clone(),
+            value: variable.value.clone(),
+            scope_label: format!("Message {}", props.message_id),
+            scope_value: props.message_id.to_string(),
+            key_readonly: true,
+        })
+        .collect();
+
+    let (on_save, on_delete) =
+        make_chat_variable_handlers(props.chat_id, variables, Some(props.on_changed.clone()));
+
+    let count = scoped.len();
+    let title = format!("Variables ({count})");
+
+    html! {
+        <CollapsibleVariablesSection title={title}>
+            <VariableUpdatesAudit updates={props.variable_updates.clone()} />
+            <VariableList
+                rows={scoped}
+                new_scope_value={props.message_id.to_string()}
+                on_save={on_save}
+                on_delete={on_delete}
+                compact={true}
+            />
+        </CollapsibleVariablesSection>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct InlineStoryVariablesProps {
+    pub story_id: i64,
+    pub chapter_order: i64,
+    pub beat_order: i64,
+    pub scope_label: String,
+    pub variable_updates: Vec<BeatVariableUpdate>,
+    pub on_detail: Callback<StoryDetail>,
+}
+
+#[function_component(InlineStoryVariables)]
+pub fn inline_story_variables(props: &InlineStoryVariablesProps) -> Html {
+    let variables = use_state(Vec::<StoryVariable>::new);
+    let scope_value = story_scope_value(props.chapter_order, props.beat_order);
+    let refresh = (
+        props.story_id,
+        props.chapter_order,
+        props.beat_order,
+        props.variable_updates.len(),
+    );
+
+    {
+        let variables = variables.clone();
+        use_effect_with(refresh, move |&(story_id, _, _, _)| {
+            let variables = variables.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(list) = api::get_story_variables(story_id).await {
+                    variables.set(list);
+                }
+            });
+            || ()
+        });
+    }
+
+    let scoped: Vec<VariableRowModel> = variables
+        .iter()
+        .filter(|variable| {
+            variable.source_chapter_order == props.chapter_order
+                && variable.source_beat_order == props.beat_order
+        })
+        .map(|variable| VariableRowModel {
+            id: Some(variable.id),
+            key: variable.key.clone(),
+            value: variable.value.clone(),
+            scope_label: props.scope_label.clone(),
+            scope_value: scope_value.clone(),
+            key_readonly: true,
+        })
+        .collect();
+
+    let (on_save, on_delete) =
+        make_story_variable_handlers(props.story_id, variables, Some(props.on_detail.clone()));
+
+    let count = scoped.len();
+    let title = format!("Variables ({count})");
+
+    html! {
+        <CollapsibleVariablesSection title={title}>
+            <VariableUpdatesAudit updates={props.variable_updates.clone()} />
+            <VariableList
+                rows={scoped}
+                new_scope_value={scope_value}
+                on_save={on_save}
+                on_delete={on_delete}
+                compact={true}
+            />
+        </CollapsibleVariablesSection>
+    }
+}
+
 #[derive(Properties, PartialEq)]
 pub struct VariableListProps {
     pub rows: Vec<VariableRowModel>,
@@ -353,6 +757,8 @@ pub struct VariableListProps {
     pub new_scope_value: String,
     #[prop_or_default]
     pub description: String,
+    #[prop_or(false)]
+    pub compact: bool,
 }
 
 #[function_component(VariableList)]
@@ -383,7 +789,7 @@ pub fn variable_list(props: &VariableListProps) -> Html {
     };
 
     html! {
-        <div class="variable-list">
+        <div class={classes!("variable-list", props.compact.then_some("variable-list--compact"))}>
             if !props.description.is_empty() {
                 <p class="muted">{ &props.description }</p>
             }
