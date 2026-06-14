@@ -39,7 +39,20 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    fetch(event.request).catch(() => {
+    fetch(event.request)
+      .then((response) => {
+        const url = new URL(event.request.url);
+        if (
+          url.pathname.startsWith("/api/") &&
+          (response.status === 401 || response.status === 403)
+        ) {
+          self.clients.matchAll({ type: "window" }).then((clients) => {
+            clients.forEach((client) => client.navigate(client.url));
+          });
+        }
+        return response;
+      })
+      .catch(() => {
       if (event.request.mode === "navigate") {
         return new Response(OFFLINE_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" },
