@@ -1700,7 +1700,10 @@ fn chat_panel_overlay(props: &ChatPanelOverlayProps) -> Html {
     };
 
     html! {
-        <div class="settings-popover panel-overlay">
+        <div
+            id={if props.overlay == Overlay::Variables { "variables-panel" } else { "" }}
+            class="settings-popover panel-overlay"
+        >
             <div class="settings-header">
                 <h2>{ title }</h2>
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
@@ -2086,6 +2089,7 @@ enum MessageBubbleMode {
 #[derive(Properties, PartialEq)]
 struct MessageBubbleProps {
     message: Message,
+    messages: Vec<Message>,
     chat_id: i64,
     variable_scope_label: String,
     is_last: bool,
@@ -2369,7 +2373,9 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let failure_only = legacy_failure_only_message(&props.message);
     let show_body = !props.display_content.is_empty() && !failure_only;
     html! {
-        <div class={classes!(
+        <div
+            id={format!("message-{}", props.message.id)}
+            class={classes!(
             "message",
             role,
             (*mode == MessageBubbleMode::Edit).then_some("message--editing"),
@@ -2507,6 +2513,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                 <InlineChatVariables
                     chat_id={props.chat_id}
                     message_id={props.message.id}
+                    messages={props.messages.clone()}
                     scope_label={props.variable_scope_label.clone()}
                     variable_updates={props.message.variable_updates.clone()}
                     on_changed={props.on_changed.clone()}
@@ -2821,6 +2828,7 @@ fn message_list(props: &MessageListProps) -> Html {
                             <MessageBubble
                                 key={m.id}
                                 message={m.clone()}
+                                messages={props.messages.clone()}
                                 chat_id={chat_id}
                                 variable_scope_label={chat_scope_label(m.id, &props.messages)}
                                 is_last={is_last}

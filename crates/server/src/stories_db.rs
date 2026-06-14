@@ -1039,6 +1039,11 @@ pub async fn apply_story_variable_updates(
 ) -> AppResult<()> {
     for update in updates {
         match update {
+            crate::variables::VariableUpdate::Set { key, value } if value.is_empty() => {
+                let _ =
+                    delete_story_variable_scoped(pool, story_id, key, chapter_order, beat_order)
+                        .await;
+            }
             crate::variables::VariableUpdate::Set { key, value } => {
                 upsert_story_variable(
                     pool,
@@ -1072,26 +1077,21 @@ pub async fn build_beat_variable_updates(
     let state = crate::variable_state::story_state_at(chapters, &panel, chapter_order, beat_order);
     let mut result = Vec::with_capacity(updates.len());
     for update in updates {
-        match update {
-            crate::variables::VariableUpdate::Set { key, value } => {
-                let previous_value = state.get(key).cloned();
-                result.push(BeatVariableUpdate {
-                    key: key.clone(),
-                    value: value.clone(),
-                    previous_value,
-                    deleted: false,
-                });
-            }
-            crate::variables::VariableUpdate::Delete { key } => {
-                let previous_value = state.get(key).cloned();
-                result.push(BeatVariableUpdate {
-                    key: key.clone(),
-                    value: String::new(),
-                    previous_value,
-                    deleted: true,
-                });
-            }
-        }
+        let previous_value = state
+            .get(match update {
+                crate::variables::VariableUpdate::Set { key, .. }
+                | crate::variables::VariableUpdate::Delete { key } => key,
+            })
+            .cloned();
+        let (key, value) = match update {
+            crate::variables::VariableUpdate::Set { key, value } => (key.clone(), value.clone()),
+            crate::variables::VariableUpdate::Delete { key } => (key.clone(), String::new()),
+        };
+        result.push(BeatVariableUpdate {
+            key,
+            value,
+            previous_value,
+        });
     }
     Ok(result)
 }
@@ -1104,7 +1104,7 @@ pub async fn revert_beat_variable_updates(
     updates: &[BeatVariableUpdate],
 ) -> AppResult<()> {
     for update in updates.iter().rev() {
-        if update.deleted {
+        if update.clears() {
             if let Some(previous) = &update.previous_value {
                 upsert_story_variable(
                     pool,
@@ -1230,5 +1230,52 @@ impl From<StoryVariableRow> for StoryVariable {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
         }
+    }
+}
+
+#[cfg(test)]
+mod story_variable_tests {
+    use super::*;
+    use sqlx::SqlitePool;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        crate::db::ensure_settings(&pool).await.expect("settings");
+        pool
+    }
+
+    #[tokio::test]
+    async fn beat_scoped_story_variable_roundtrips() {
+        let pool = test_pool().await;
+        let story_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO stories (title, premise, tone, genre, pov, length_preset, notes, created_at, updated_at) VALUES ('t','','','','','short','',datetime('now'),datetime('now')) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("story");
+
+        let saved =
+            upsert_story_variable(&pool, story_id, "location".into(), "castle".into(), 0, 1)
+                .await
+                .expect("upsert");
+
+        assert_eq!(saved.value, "castle");
+        assert_eq!(saved.source_chapter_order, 0);
+        assert_eq!(saved.source_beat_order, 1);
+
+        let list = list_story_variables(&pool, story_id).await.expect("list");
+        let beat_vars: Vec<_> = list
+            .iter()
+            .filter(|variable| {
+                variable.source_chapter_order == 0 && variable.source_beat_order == 1
+            })
+            .collect();
+
+        assert_eq!(beat_vars.len(), 1);
+        assert_eq!(beat_vars[0].value, "castle");
     }
 }

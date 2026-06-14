@@ -878,6 +878,30 @@ input.header-title {
   min-width: 0;
 }
 
+.variable-table--with-previous .variable-table-header,
+.variable-table--with-previous .variable-table-row {
+  grid-template-columns: minmax(4.5rem, 22%) minmax(0, 1fr) minmax(3rem, 28%) auto;
+}
+
+.variable-table-previous-cell {
+  min-width: 0;
+}
+
+.variable-table-previous,
+.variable-table-previous-link {
+  display: block;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: var(--muted);
+  word-break: break-word;
+  text-decoration: none;
+}
+
+.variable-table-previous-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .variable-table-header {
   padding-bottom: 0.2rem;
   margin-bottom: 0.1rem;

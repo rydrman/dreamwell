@@ -121,6 +121,18 @@ impl AutoSaveController {
             save();
         }));
     }
+
+    /// Run a pending save immediately, cancelling any debounce timer.
+    pub fn flush<F>(&self, save: F)
+    where
+        F: FnOnce(),
+    {
+        if let Some(handle) = self.timeout.borrow_mut().take() {
+            drop(handle);
+        }
+        self.phase.set(AutoSavePhase::Saving);
+        save();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
