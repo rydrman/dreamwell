@@ -26,6 +26,13 @@ use crate::variables_ui::{
     InlineStoryVariables, VariableList, VariableRowModel,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum StoryViewMode {
+    #[default]
+    Outline,
+    Reading,
+}
+
 #[derive(Clone, Copy, PartialEq, Default)]
 pub enum StorySelection {
     #[default]
@@ -512,6 +519,7 @@ struct StoryEditorProps {
 
 #[function_component(StoryEditor)]
 fn story_editor(props: &StoryEditorProps) -> Html {
+    let view_mode = use_state(StoryViewMode::default);
     let stale_dialog_action = use_state(|| None::<String>);
     let queueing_stale = use_state(|| false);
 
@@ -589,6 +597,38 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                         })}
                     />
                     <div class="header-actions">
+                        <div class="view-mode-toggle" role="group" aria-label="Story view mode">
+                            <button
+                                type="button"
+                                class={classes!(
+                                    "btn",
+                                    "btn-compact",
+                                    "view-mode-btn",
+                                    (*view_mode == StoryViewMode::Outline).then_some("view-mode-btn--active"),
+                                )}
+                                onclick={{
+                                    let view_mode = view_mode.clone();
+                                    Callback::from(move |_| view_mode.set(StoryViewMode::Outline))
+                                }}
+                            >
+                                {"Outline"}
+                            </button>
+                            <button
+                                type="button"
+                                class={classes!(
+                                    "btn",
+                                    "btn-compact",
+                                    "view-mode-btn",
+                                    (*view_mode == StoryViewMode::Reading).then_some("view-mode-btn--active"),
+                                )}
+                                onclick={{
+                                    let view_mode = view_mode.clone();
+                                    Callback::from(move |_| view_mode.set(StoryViewMode::Reading))
+                                }}
+                            >
+                                {"Reading"}
+                            </button>
+                        </div>
                         if props.variables_enabled {
                             <button
                                 class="btn secondary btn-compact header-icon-btn"
@@ -598,26 +638,28 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                                 {"Variables"}
                             </button>
                         }
-                        <button
-                            class="btn secondary btn-compact header-icon-btn"
-                            title="Propose chapters from story basics"
-                            disabled={proposing_chapters}
-                            onclick={propose_chapters_action(
-                                story_id,
-                                props.guidance.clone(),
-                                props.on_detail.clone(),
-                                props.bump_stream.clone(),
-                            ).reform(|_: MouseEvent| ())}
-                        >
-                            { if proposing_chapters { "Proposing…" } else { "Propose chapters" } }
-                        </button>
-                        <button
-                            class="btn secondary btn-compact header-icon-btn"
-                            title="Add chapter manually"
-                            onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}
-                        >
-                            {"+ Chapter"}
-                        </button>
+                        if *view_mode == StoryViewMode::Outline {
+                            <button
+                                class="btn secondary btn-compact header-icon-btn"
+                                title="Propose chapters from story basics"
+                                disabled={proposing_chapters}
+                                onclick={propose_chapters_action(
+                                    story_id,
+                                    props.guidance.clone(),
+                                    props.on_detail.clone(),
+                                    props.bump_stream.clone(),
+                                ).reform(|_: MouseEvent| ())}
+                            >
+                                { if proposing_chapters { "Proposing…" } else { "Propose chapters" } }
+                            </button>
+                            <button
+                                class="btn secondary btn-compact header-icon-btn"
+                                title="Add chapter manually"
+                                onclick={add_chapter_action(story_id, props.on_detail.clone(), props.on_selection.clone())}
+                            >
+                                {"+ Chapter"}
+                            </button>
+                        }
                     </div>
                 </div>
                 <p class="header-subtitle muted">
@@ -635,18 +677,25 @@ fn story_editor(props: &StoryEditorProps) -> Html {
             if let Some(notice) = generation_notice {
                 <GenerationStatusBar notice={notice} />
             }
-            <div class="story-editor">
-                <StoryBlockList
-                    detail={detail.clone()}
-                    selection={props.selection}
-                    guidance={props.guidance.clone()}
-                    variables_enabled={props.variables_enabled}
-                    bump_stream={props.bump_stream.clone()}
-                    on_guidance={props.on_guidance.clone()}
-                    on_detail={props.on_detail.clone()}
-                    on_selection={props.on_selection.clone()}
-                    on_stale_error={on_stale_error.clone()}
-                />
+            <div class={classes!("story-editor", (*view_mode == StoryViewMode::Reading).then_some("story-editor--reading"))}>
+                if *view_mode == StoryViewMode::Reading {
+                    <StoryReadingView
+                        detail={detail.clone()}
+                        on_detail={props.on_detail.clone()}
+                    />
+                } else {
+                    <StoryBlockList
+                        detail={detail.clone()}
+                        selection={props.selection}
+                        guidance={props.guidance.clone()}
+                        variables_enabled={props.variables_enabled}
+                        bump_stream={props.bump_stream.clone()}
+                        on_guidance={props.on_guidance.clone()}
+                        on_detail={props.on_detail.clone()}
+                        on_selection={props.on_selection.clone()}
+                        on_stale_error={on_stale_error.clone()}
+                    />
+                }
             </div>
             if let Some(failed_action) = (*stale_dialog_action).clone() {
                 <StaleChaptersModal
@@ -2113,6 +2162,292 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     })
                 }} disabled={generation_active}>{"Delete beat"}</button>
             </div>
+        </div>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct StoryReadingViewProps {
+    detail: StoryDetail,
+    on_detail: Callback<StoryDetail>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct EditingBeat {
+    chapter_id: i64,
+    beat_id: i64,
+}
+
+#[function_component(StoryReadingView)]
+fn story_reading_view(props: &StoryReadingViewProps) -> Html {
+    let editing = use_state(|| None::<EditingBeat>);
+    let story_id = props.detail.story.id;
+
+    html! {
+        <article class="story-reading">
+            { for props.detail.chapters.iter().map(|chapter| {
+                let chapter_id = chapter.id;
+                let chapter_num = chapter.sort_order + 1;
+                let chapter_title = if chapter.title.is_empty() {
+                    format!("Chapter {chapter_num}")
+                } else {
+                    format!("Chapter {chapter_num}: {}", chapter.title)
+                };
+                let prose_beats: Vec<_> = chapter.beats.iter()
+                    .filter(|beat| {
+                        !beat.content.trim().is_empty()
+                            || beat.job_status.is_some_and(|s| matches!(s, JobStatus::Queued | JobStatus::Running))
+                    })
+                    .collect();
+                html! {
+                    <section key={chapter_id} class="reading-chapter">
+                        <h2 class="reading-chapter-title">{ chapter_title }</h2>
+                        if prose_beats.is_empty() {
+                            <p class="reading-chapter-empty muted">{"No prose yet."}</p>
+                        } else {
+                            { for prose_beats.iter().map(|beat| {
+                                let beat_id = beat.id;
+                                let is_editing = *editing == Some(EditingBeat { chapter_id, beat_id });
+                                html! {
+                                    <ReadingProseBlock
+                                        key={beat_id}
+                                        story_id={story_id}
+                                        chapter_id={chapter_id}
+                                        beat={(*beat).clone()}
+                                        editing={is_editing}
+                                        on_start_edit={Callback::from({
+                                            let editing = editing.clone();
+                                            move |_| editing.set(Some(EditingBeat { chapter_id, beat_id }))
+                                        })}
+                                        on_stop_edit={Callback::from({
+                                            let editing = editing.clone();
+                                            move |_| editing.set(None)
+                                        })}
+                                        on_detail={props.on_detail.clone()}
+                                    />
+                                }
+                            }) }
+                        }
+                    </section>
+                }
+            }) }
+            if props.detail.chapters.is_empty() {
+                <p class="muted reading-empty">{"No chapters yet — switch to outline mode to add some."}</p>
+            }
+        </article>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+struct ReadingProseBlockProps {
+    story_id: i64,
+    chapter_id: i64,
+    beat: StoryBeat,
+    editing: bool,
+    on_start_edit: Callback<()>,
+    on_stop_edit: Callback<()>,
+    on_detail: Callback<StoryDetail>,
+}
+
+#[function_component(ReadingProseBlock)]
+fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
+    let beat = props.beat.clone();
+    let content = use_state(|| beat.content.clone());
+    let user_edited = use_state(|| false);
+    let save_phase = use_state(|| AutoSavePhase::Synced);
+    let save_error = use_state(|| None::<String>);
+    let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
+    let last_saved = use_state(|| beat.content.clone());
+
+    {
+        let content = content.clone();
+        let user_edited = user_edited.clone();
+        let last_saved = last_saved.clone();
+        let beat = beat.clone();
+        let editing = props.editing;
+        use_effect_with((beat.id, props.editing), move |_| {
+            if !editing {
+                content.set(beat.content.clone());
+                user_edited.set(false);
+                last_saved.set(beat.content.clone());
+            }
+            || ()
+        });
+    }
+
+    let queued = matches!(beat.job_status, Some(JobStatus::Queued));
+    let streaming = matches!(beat.job_status, Some(JobStatus::Running));
+    let generation_active = queued || streaming;
+    let generation_error = generation_error_from_content(&beat.content);
+
+    let source_content = if props.editing {
+        (*content).clone()
+    } else {
+        beat.content.clone()
+    };
+
+    let prose_display = if generation_error.is_some() || (source_content.is_empty() && queued) {
+        String::new()
+    } else if streaming {
+        variables::strip_variables_for_display(&source_content, true)
+    } else {
+        variables::strip_variables_for_display(&source_content, false)
+    };
+
+    let schedule_save = {
+        let content = content.clone();
+        let last_saved = last_saved.clone();
+        let save_controller = save_controller.clone();
+        let story_id = props.story_id;
+        let chapter_id = props.chapter_id;
+        let beat_id = beat.id;
+        let on_detail = props.on_detail.clone();
+        Callback::from(move |_| {
+            let snapshot = (*content).clone();
+            if snapshot == *last_saved {
+                return;
+            }
+            let controller = save_controller.clone();
+            let content = content.clone();
+            let last_saved = last_saved.clone();
+            let controller_for_save = controller.clone();
+            let on_detail = on_detail.clone();
+            controller.schedule(move || {
+                let controller = controller_for_save.clone();
+                let content = content.clone();
+                let last_saved = last_saved.clone();
+                let snapshot = snapshot.clone();
+                let on_detail = on_detail.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let update = StoryBeatUpdate {
+                        content: Some(snapshot.clone()),
+                        title: None,
+                        synopsis: None,
+                        mechanical: None,
+                        sort_order: None,
+                    };
+                    let current = (*content).clone();
+                    match api::update_beat(story_id, chapter_id, beat_id, &update).await {
+                        Ok(detail) => {
+                            if current == snapshot {
+                                controller.mark_saved();
+                                last_saved.set(snapshot);
+                            } else {
+                                controller.mark_saved();
+                            }
+                            on_detail.emit(detail);
+                        }
+                        Err(err) => {
+                            if current == snapshot {
+                                controller.mark_failed(err);
+                            } else {
+                                controller.mark_saved();
+                            }
+                        }
+                    }
+                });
+            });
+        })
+    };
+
+    let stop_edit = {
+        let on_stop_edit = props.on_stop_edit.clone();
+        let schedule_save = schedule_save.clone();
+        Callback::from(move |_| {
+            schedule_save.emit(());
+            on_stop_edit.emit(());
+        })
+    };
+
+    if props.editing {
+        let prose_value = if *user_edited {
+            (*content).clone()
+        } else {
+            prose_display.clone()
+        };
+        return html! {
+            <div class="reading-prose reading-prose--editing">
+                <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
+                    <textarea
+                        class={classes!(
+                            "reading-prose-editor",
+                            streaming.then_some("story-prose--streaming"),
+                        )}
+                        value={prose_value}
+                        rows="8"
+                        autofocus={true}
+                        readonly={generation_active && !*user_edited}
+                        oninput={{
+                            let content = content.clone();
+                            let user_edited = user_edited.clone();
+                            let schedule_save = schedule_save.clone();
+                            Callback::from(move |e: InputEvent| {
+                                let input: HtmlInputElement = e.target_unchecked_into();
+                                user_edited.set(true);
+                                content.set(input.value());
+                                schedule_save.emit(());
+                            })
+                        }}
+                        onkeydown={{
+                            let stop_edit = stop_edit.clone();
+                            Callback::from(move |e: KeyboardEvent| {
+                                if e.key() == "Escape" {
+                                    e.prevent_default();
+                                    stop_edit.emit(());
+                                }
+                            })
+                        }}
+                        onblur={{
+                            let stop_edit = stop_edit.clone();
+                            Callback::from(move |_| stop_edit.emit(()))
+                        }}
+                    />
+                </AutoSaveField>
+                <p class="reading-prose-hint muted">{"Press Escape or click away when done."}</p>
+            </div>
+        };
+    }
+
+    let display_text = if queued && prose_display.is_empty() && generation_error.is_none() {
+        "Waiting in queue…".to_string()
+    } else if streaming && prose_display.is_empty() && generation_error.is_none() {
+        "…".to_string()
+    } else {
+        prose_display
+    };
+    let show_streaming_note = streaming && !display_text.is_empty() && generation_error.is_none();
+
+    html! {
+        <div
+            class={classes!(
+                "reading-prose",
+                streaming.then_some("reading-prose--streaming"),
+                display_text.starts_with("Waiting").then_some("reading-prose--pending"),
+            )}
+            title="Click to edit"
+            tabindex="0"
+            role="button"
+            onclick={props.on_start_edit.reform(|_| ())}
+            onkeydown={{
+                let on_start_edit = props.on_start_edit.clone();
+                Callback::from(move |e: KeyboardEvent| {
+                    if e.key() == "Enter" || e.key() == " " {
+                        e.prevent_default();
+                        on_start_edit.emit(());
+                    }
+                })
+            }}
+        >
+            { display_text }
+            if show_streaming_note {
+                <span class="reading-prose-streaming-note muted">{" Still writing…"}</span>
+            }
+            if let Some(error) = generation_error {
+                <div class="message-error" role="alert" style="margin-top:0.5rem;">
+                    <strong>{"Generation failed"}</strong>
+                    <span>{ error }</span>
+                </div>
+            }
         </div>
     }
 }
