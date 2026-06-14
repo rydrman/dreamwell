@@ -20,11 +20,10 @@ use crate::story_save::{
 };
 use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
-use crate::variable_updates_ui::VariableUpdatesBlock;
 use crate::variables;
 use crate::variables_ui::{
-    story_scope_from_value, story_scope_label, story_scope_options, story_scope_value,
-    VariableList, VariableRowModel, VariableSavePayload,
+    make_story_variable_handlers, story_scope_options, story_scope_value, story_variable_row,
+    InlineStoryVariables, VariableList, VariableRowModel,
 };
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -839,6 +838,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                             <BeatEditor
                                                 story_id={story_id}
                                                 chapter_id={ch_id}
+                                                chapter_sort_order={ch.sort_order}
                                                 beat={Some(beat.clone())}
                                                 variables_enabled={props.variables_enabled}
                                                 active_job={props.detail.story.active_job.clone()}
@@ -1664,6 +1664,7 @@ impl BeatFields {
 struct BeatEditorProps {
     story_id: i64,
     chapter_id: i64,
+    chapter_sort_order: i64,
     beat: Option<StoryBeat>,
     #[prop_or(false)]
     variables_enabled: bool,
@@ -1898,8 +1899,16 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let show_align_prose = !(*mechanical).trim().is_empty() && !(*content).trim().is_empty();
     let synopsis_ready = !(*synopsis).trim().is_empty();
     let mechanical_ready = !(*mechanical).trim().is_empty();
-    let variable_update_count = beat.variable_updates.len();
-    let show_variable_updates = props.variables_enabled && variable_update_count > 0;
+    let show_variables_section = props.variables_enabled;
+    let beat_scope_label = {
+        let chapter_num = props.chapter_sort_order + 1;
+        let beat_num = beat.sort_order + 1;
+        if beat.title.is_empty() {
+            format!("Ch {chapter_num} · Beat {beat_num}")
+        } else {
+            format!("Ch {chapter_num} · {}", beat.title)
+        }
+    };
 
     html! {
         <div class="story-form">
@@ -2036,8 +2045,15 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             />
                         </div>
                     }
-                    if show_variable_updates {
-                        <VariableUpdatesBlock updates={beat.variable_updates.clone()} />
+                    if show_variables_section {
+                        <InlineStoryVariables
+                            story_id={story_id}
+                            chapter_order={props.chapter_sort_order}
+                            beat_order={beat.sort_order}
+                            scope_label={beat_scope_label}
+                            variable_updates={beat.variable_updates.clone()}
+                            on_detail={props.on_detail.clone()}
+                        />
                     }
                 </div>
                 if queued && (*content).is_empty() && !prose_failure_only {
@@ -2176,103 +2192,28 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
     let rows: Vec<VariableRowModel> = variables
         .iter()
         .map(|variable| {
-            let scope_value =
-                story_scope_value(variable.source_chapter_order, variable.source_beat_order);
-            VariableRowModel {
-                id: Some(variable.id),
-                key: variable.key.clone(),
-                value: variable.value.clone(),
-                scope_label: detail
-                    .as_ref()
-                    .map(|detail| {
-                        story_scope_label(
-                            variable.source_chapter_order,
-                            variable.source_beat_order,
-                            detail,
-                        )
-                    })
-                    .unwrap_or_else(|| scope_value.clone()),
-                scope_value,
-                key_readonly: true,
-            }
+            detail
+                .as_ref()
+                .map(|detail| story_variable_row(variable, detail, true))
+                .unwrap_or_else(|| {
+                    let scope_value = story_scope_value(
+                        variable.source_chapter_order,
+                        variable.source_beat_order,
+                    );
+                    VariableRowModel {
+                        id: Some(variable.id),
+                        key: variable.key.clone(),
+                        value: variable.value.clone(),
+                        scope_label: scope_value.clone(),
+                        scope_value,
+                        key_readonly: true,
+                    }
+                })
         })
         .collect();
 
-    let on_save = {
-        let variables = variables.clone();
-        Callback::from(move |payload: VariableSavePayload| {
-            let variables = variables.clone();
-            let (chapter_order, beat_order) = story_scope_from_value(&payload.scope_value);
-            let old_scope = payload.id.and_then(|id| {
-                variables
-                    .iter()
-                    .find(|variable| variable.id == id)
-                    .map(|variable| {
-                        story_scope_value(variable.source_chapter_order, variable.source_beat_order)
-                    })
-            });
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Some(old_id) = payload.id {
-                    if old_scope.as_deref() != Some(payload.scope_value.as_str()) {
-                        let _ = api::delete_story_variable(story_id, old_id).await;
-                    }
-                }
-                match api::upsert_story_variable(
-                    story_id,
-                    &StoryVariableUpdate {
-                        key: payload.key,
-                        value: payload.value,
-                        source_chapter_order: Some(chapter_order),
-                        source_beat_order: Some(beat_order),
-                    },
-                )
-                .await
-                {
-                    Ok(_) => {
-                        if let Ok(list) = api::get_story_variables(story_id).await {
-                            variables.set(list);
-                        }
-                    }
-                    Err(err) => {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window
-                                .alert_with_message(&format!("Could not save variable: {err}"));
-                        }
-                    }
-                }
-            });
-        })
-    };
-
-    let on_delete = {
-        let variables = variables.clone();
-        let on_detail = props.on_detail.clone();
-        Callback::from(move |variable_id: Option<i64>| {
-            let Some(variable_id) = variable_id else {
-                return;
-            };
-            let variables = variables.clone();
-            let on_detail = on_detail.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match api::delete_story_variable(story_id, variable_id).await {
-                    Ok(()) => {
-                        if let Ok(list) = api::get_story_variables(story_id).await {
-                            variables.set(list);
-                        }
-                        if let Ok(detail) = api::get_story(story_id).await {
-                            on_detail.emit(detail);
-                        }
-                    }
-                    Err(err) => {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window
-                                .alert_with_message(&format!("Could not delete variable: {err}"));
-                        }
-                    }
-                }
-            });
-        })
-    };
+    let (on_save, on_delete) =
+        make_story_variable_handlers(story_id, variables, Some(props.on_detail.clone()));
 
     html! {
         <div class="settings-popover panel-overlay">

@@ -10,7 +10,6 @@ mod stories_ui;
 mod story_save;
 mod summary_ui;
 mod title_editor;
-mod variable_updates_ui;
 mod variables;
 mod variables_ui;
 
@@ -40,10 +39,9 @@ use summary_ui::{
     CHAT_SUMMARIZE_PLACEHOLDER,
 };
 use title_editor::TitleEditor;
-use variable_updates_ui::VariableUpdatesBlock;
 use variables_ui::{
-    chat_scope_label, chat_scope_options, VariableList, VariableRowModel, VariableSavePayload,
-    MANUAL_MESSAGE_SOURCE,
+    chat_scope_label, chat_scope_options, chat_variable_row, make_chat_variable_handlers,
+    InlineChatVariables, VariableList, VariableRowModel, MANUAL_MESSAGE_SOURCE,
 };
 use web_sys::{DomRect, Element, HtmlElement, HtmlInputElement};
 use yew::prelude::*;
@@ -2089,6 +2087,7 @@ enum MessageBubbleMode {
 struct MessageBubbleProps {
     message: Message,
     chat_id: i64,
+    variable_scope_label: String,
     is_last: bool,
     after_count: usize,
     display_content: String,
@@ -2127,9 +2126,8 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         && props.message.role == MessageRole::Assistant
         && (!props.message.thought_content.is_empty()
             || (props.message.thought_in_progress && active));
-    let show_variable_updates = props.show_variables
-        && props.message.role == MessageRole::Assistant
-        && !props.message.variable_updates.is_empty();
+    let show_variable_section =
+        props.show_variables && props.message.role == MessageRole::Assistant;
     let align_menu_end = props.message.role == MessageRole::User;
 
     {
@@ -2505,8 +2503,14 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     </div>
                 }
             }
-            if show_variable_updates {
-                <VariableUpdatesBlock updates={props.message.variable_updates.clone()} />
+            if show_variable_section {
+                <InlineChatVariables
+                    chat_id={props.chat_id}
+                    message_id={props.message.id}
+                    scope_label={props.variable_scope_label.clone()}
+                    variable_updates={props.message.variable_updates.clone()}
+                    on_changed={props.on_changed.clone()}
+                />
             }
         </div>
     }
@@ -2818,6 +2822,7 @@ fn message_list(props: &MessageListProps) -> Html {
                                 key={m.id}
                                 message={m.clone()}
                                 chat_id={chat_id}
+                                variable_scope_label={chat_scope_label(m.id, &props.messages)}
                                 is_last={is_last}
                                 after_count={after_count}
                                 display_content={display_content}
@@ -3316,78 +3321,15 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
     let scope_options = chat_scope_options(&props.messages);
     let rows: Vec<VariableRowModel> = variables
         .iter()
-        .map(|variable| VariableRowModel {
-            id: Some(variable.id),
-            key: variable.key.clone(),
-            value: variable.value.clone(),
-            scope_label: chat_scope_label(variable.source_message_id, &props.messages),
-            scope_value: variable.source_message_id.to_string(),
-            key_readonly: true,
-        })
+        .map(|variable| chat_variable_row(variable, &props.messages, true))
         .collect();
 
-    let on_save = {
-        let variables = variables.clone();
-        Callback::from(move |payload: VariableSavePayload| {
-            let variables = variables.clone();
-            let source_message_id = payload
-                .scope_value
-                .parse::<i64>()
-                .unwrap_or(MANUAL_MESSAGE_SOURCE);
-            wasm_bindgen_futures::spawn_local(async move {
-                match api::upsert_variable(
-                    chat_id,
-                    &ChatVariableUpdate {
-                        key: payload.key,
-                        value: payload.value,
-                        source_message_id: Some(source_message_id),
-                    },
-                )
-                .await
-                {
-                    Ok(_) => {
-                        if let Ok(list) = api::get_variables(chat_id).await {
-                            variables.set(list);
-                        }
-                    }
-                    Err(err) => {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window
-                                .alert_with_message(&format!("Could not save variable: {err}"));
-                        }
-                    }
-                }
-            });
-        })
-    };
-
-    let on_delete = {
-        let variables = variables.clone();
-        let on_messages_changed = props.on_messages_changed.clone();
-        Callback::from(move |variable_id: Option<i64>| {
-            let Some(variable_id) = variable_id else {
-                return;
-            };
-            let variables = variables.clone();
-            let on_messages_changed = on_messages_changed.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match api::delete_variable(chat_id, variable_id).await {
-                    Ok(()) => {
-                        if let Ok(list) = api::get_variables(chat_id).await {
-                            variables.set(list);
-                        }
-                        on_messages_changed.emit(chat_id);
-                    }
-                    Err(err) => {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window
-                                .alert_with_message(&format!("Could not delete variable: {err}"));
-                        }
-                    }
-                }
-            });
-        })
-    };
+    let on_messages_changed = props.on_messages_changed.clone();
+    let (on_save, on_delete) = make_chat_variable_handlers(
+        chat_id,
+        variables,
+        Some(Callback::from(move |_| on_messages_changed.emit(chat_id))),
+    );
 
     html! {
         <VariableList
