@@ -132,11 +132,12 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         let model = props.model.clone();
         use_effect_with(model, move |model| {
             let current = RowFields::snapshot(&key, &value, &scope_value);
-            if !draft_is_dirty(&current, &*last_saved) {
+            let model_fields = RowFields::from_model(model);
+            if !draft_is_dirty(&current, &*last_saved) && model_fields != *last_saved {
                 key.set(model.key.clone());
                 value.set(model.value.clone());
                 scope_value.set(model.scope_value.clone());
-                last_saved.set(RowFields::from_model(model));
+                last_saved.set(model_fields);
             }
             || ()
         });
@@ -151,8 +152,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         let on_save = props.on_save.clone();
         let id = props.model.id;
         Callback::from(move |_| {
-            let snapshot = RowFields::snapshot(&key, &value, &scope_value);
-            if snapshot.key.is_empty() || !draft_is_dirty(&snapshot, &*last_saved) {
+            if (*key).trim().is_empty() {
                 return;
             }
             let key = key.clone();
@@ -163,19 +163,23 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
             let on_save = on_save.clone();
             let controller_for_save = save_controller.clone();
             save_controller.schedule(move || {
-                let payload = VariableSavePayload {
-                    id,
-                    key: snapshot.key.clone(),
-                    value: snapshot.value.clone(),
-                    scope_value: snapshot.scope_value.clone(),
-                };
+                let snapshot = RowFields::snapshot(&key, &value, &scope_value);
+                if snapshot.key.is_empty() || !draft_is_dirty(&snapshot, &*last_saved) {
+                    controller_for_save.mark_saved();
+                    return;
+                }
                 let key = key.clone();
                 let value = value.clone();
                 let scope_value = scope_value.clone();
                 let last_saved = last_saved.clone();
                 let save_controller = controller_for_save.clone();
                 on_save.emit(VariableSaveAction {
-                    payload,
+                    payload: VariableSavePayload {
+                        id,
+                        key: snapshot.key.clone(),
+                        value: snapshot.value.clone(),
+                        scope_value: snapshot.scope_value.clone(),
+                    },
                     on_complete: Callback::from(move |result| match result {
                         Ok(()) => {
                             let current = RowFields::snapshot(&key, &value, &scope_value);
@@ -591,7 +595,25 @@ pub fn make_chat_variable_handlers(
                 .scope_value
                 .parse::<i64>()
                 .unwrap_or(MANUAL_MESSAGE_SOURCE);
+            let old_scope = payload.id.and_then(|id| {
+                variables
+                    .iter()
+                    .find(|variable| variable.id == id)
+                    .map(|variable| variable.source_message_id.to_string())
+            });
             wasm_bindgen_futures::spawn_local(async move {
+                let mut list = (*variables).clone();
+                if let Some(old_id) = payload.id {
+                    if old_scope.as_deref() != Some(payload.scope_value.as_str()) {
+                        match api::delete_variable(chat_id, old_id).await {
+                            Ok(()) => list.retain(|variable| variable.id != old_id),
+                            Err(err) => {
+                                on_complete.emit(Err(err));
+                                return;
+                            }
+                        }
+                    }
+                }
                 match api::upsert_variable(
                     chat_id,
                     &ChatVariableUpdate {
@@ -603,7 +625,7 @@ pub fn make_chat_variable_handlers(
                 .await
                 {
                     Ok(saved) => {
-                        variables.set(patch_chat_variable(&variables, saved));
+                        variables.set(patch_chat_variable(&list, saved));
                         on_complete.emit(Ok(()));
                     }
                     Err(err) => on_complete.emit(Err(err)),
@@ -707,10 +729,16 @@ pub fn make_story_variable_handlers(
                     })
             });
             wasm_bindgen_futures::spawn_local(async move {
+                let mut list = (*variables).clone();
                 if let Some(old_id) = payload.id {
                     if old_scope.as_deref() != Some(payload.scope_value.as_str()) {
-                        let _ = api::delete_story_variable(story_id, old_id).await;
-                        variables.set(remove_story_variable(&variables, old_id));
+                        match api::delete_story_variable(story_id, old_id).await {
+                            Ok(()) => list.retain(|variable| variable.id != old_id),
+                            Err(err) => {
+                                on_complete.emit(Err(err));
+                                return;
+                            }
+                        }
                     }
                 }
                 match api::upsert_story_variable(
@@ -725,7 +753,7 @@ pub fn make_story_variable_handlers(
                 .await
                 {
                     Ok(saved) => {
-                        variables.set(patch_story_variable(&variables, saved));
+                        variables.set(patch_story_variable(&list, saved));
                         on_complete.emit(Ok(()));
                     }
                     Err(err) => on_complete.emit(Err(err)),
