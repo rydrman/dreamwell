@@ -235,6 +235,18 @@ impl AutoSaveController {
         self.phase.set(AutoSavePhase::Saving);
         save();
     }
+
+    /// Drop any debounced save without running it.
+    pub fn cancel_pending(&self) {
+        if let Some(handle) = self.timeout.borrow_mut().take() {
+            drop(handle);
+        }
+        *self.token.borrow_mut() = self.token.borrow().next();
+        self.pending_flush.borrow_mut().take();
+        if matches!(*self.phase, AutoSavePhase::Debouncing) {
+            self.phase.set(AutoSavePhase::Synced);
+        }
+    }
 }
 
 /// Register an autosave controller for flush-on-tab-hide for the component lifetime.
