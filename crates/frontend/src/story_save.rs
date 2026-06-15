@@ -4,7 +4,7 @@ use std::rc::Rc;
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
-use crate::story_sync::{AUTOSAVE_DEBOUNCE_MS, DebounceToken};
+use crate::story_sync::{DebounceToken, AUTOSAVE_DEBOUNCE_MS};
 
 type TabFlushFn = Rc<dyn Fn()>;
 

@@ -19,7 +19,10 @@ use crate::story_save::{
     draft_is_dirty, fail_auto_save, finish_auto_save, use_autosave_tab_flush, AutoSaveController,
     AutoSaveField, AutoSaveOutcome, AutoSavePhase,
 };
-use crate::story_sync::{fetch_response_is_current, should_replace_detail_from_sse, story_list_with_detail, FetchGeneration};
+use crate::story_sync::{
+    fetch_response_is_current, should_replace_detail_from_sse, story_list_with_detail,
+    FetchGeneration,
+};
 use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
 use crate::variables;
@@ -308,10 +311,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     if should_replace_detail_from_sse(payload.active_job.as_ref()) {
                         detail_for_stream.set(Some(payload.detail.clone()));
                     }
-                    stories_for_stream.set(story_list_with_detail(
-                        &stories_for_stream,
-                        &payload.detail,
-                    ));
+                    stories_for_stream
+                        .set(story_list_with_detail(&stories_for_stream, &payload.detail));
                     if was_active && !now_active {
                         let detail_ref = detail_for_stream.clone();
                         wasm_bindgen_futures::spawn_local(async move {
@@ -2612,12 +2613,8 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                         let current = (*content).clone();
                         match api::update_beat(story_id, chapter_id, beat_id, &update).await {
                             Ok(detail) => {
-                                let _ = finish_auto_save(
-                                    &controller,
-                                    &current,
-                                    &snapshot,
-                                    &last_saved,
-                                );
+                                let _ =
+                                    finish_auto_save(&controller, &current, &snapshot, &last_saved);
                                 if sync_parent {
                                     on_detail.emit(detail);
                                 }
