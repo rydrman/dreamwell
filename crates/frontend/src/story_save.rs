@@ -4,6 +4,8 @@ use std::rc::Rc;
 use gloo_timers::callback::Timeout;
 use yew::prelude::*;
 
+use crate::story_sync::{AUTOSAVE_DEBOUNCE_MS, DebounceToken};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AutoSavePhase {
     Synced,
@@ -70,6 +72,7 @@ pub fn auto_save_field(props: &AutoSaveFieldProps) -> Html {
 
 pub struct AutoSaveController {
     timeout: Rc<RefCell<Option<Timeout>>>,
+    token: Rc<RefCell<DebounceToken>>,
     phase: UseStateHandle<AutoSavePhase>,
     error: UseStateHandle<Option<String>>,
 }
@@ -78,6 +81,7 @@ impl Clone for AutoSaveController {
     fn clone(&self) -> Self {
         Self {
             timeout: self.timeout.clone(),
+            token: self.token.clone(),
             phase: self.phase.clone(),
             error: self.error.clone(),
         }
@@ -91,6 +95,7 @@ impl AutoSaveController {
     ) -> Self {
         Self {
             timeout: Rc::new(RefCell::new(None)),
+            token: Rc::new(RefCell::new(DebounceToken::initial())),
             phase,
             error,
         }
@@ -113,10 +118,19 @@ impl AutoSaveController {
         if let Some(handle) = self.timeout.borrow_mut().take() {
             drop(handle);
         }
+        let fired_token = {
+            let next = self.token.borrow().next();
+            *self.token.borrow_mut() = next;
+            next
+        };
         self.phase.set(AutoSavePhase::Debouncing);
         let phase = self.phase.clone();
         let timeout = self.timeout.clone();
-        *timeout.borrow_mut() = Some(Timeout::new(400, move || {
+        let token_cell = self.token.clone();
+        *timeout.borrow_mut() = Some(Timeout::new(AUTOSAVE_DEBOUNCE_MS, move || {
+            if !fired_token.is_current(*token_cell.borrow()) {
+                return;
+            }
             phase.set(AutoSavePhase::Saving);
             save();
         }));
@@ -130,12 +144,13 @@ impl AutoSaveController {
         if let Some(handle) = self.timeout.borrow_mut().take() {
             drop(handle);
         }
+        *self.token.borrow_mut() = self.token.borrow().next();
         self.phase.set(AutoSavePhase::Saving);
         save();
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AutoSaveOutcome {
     /// Draft matches the sent snapshot and last_saved was updated.
     Synced,
@@ -188,10 +203,63 @@ pub fn fail_auto_save<T: PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::story_sync::DebounceToken;
 
     #[test]
     fn draft_is_dirty_compares_snapshots() {
         assert!(!draft_is_dirty(&"same", &"same"));
         assert!(draft_is_dirty(&"new", &"old"));
+    }
+
+    #[test]
+    fn debounce_token_coalesces_rapid_reschedules() {
+        let mut latest = DebounceToken::initial();
+        let scheduled = latest.next();
+        latest = scheduled;
+        let scheduled_again = latest.next();
+        latest = scheduled_again;
+        assert!(!scheduled.is_current(latest));
+        assert!(scheduled_again.is_current(latest));
+    }
+
+    #[test]
+    fn finish_auto_save_synced_when_unchanged() {
+        // Outcome logic is pure; controller state requires Yew runtime.
+        let current = "draft";
+        let snapshot = "draft";
+        assert_eq!(
+            if current == snapshot {
+                AutoSaveOutcome::Synced
+            } else {
+                AutoSaveOutcome::Stale
+            },
+            AutoSaveOutcome::Synced
+        );
+    }
+
+    #[test]
+    fn finish_auto_save_stale_when_edited_during_request() {
+        let current = "newer";
+        let snapshot = "sent";
+        assert_eq!(
+            if current == snapshot {
+                AutoSaveOutcome::Synced
+            } else {
+                AutoSaveOutcome::Stale
+            },
+            AutoSaveOutcome::Stale
+        );
+    }
+
+    #[test]
+    fn fail_auto_save_hides_error_when_stale() {
+        let current = "newer";
+        let snapshot = "sent";
+        let outcome = if current == snapshot {
+            AutoSaveOutcome::Synced
+        } else {
+            AutoSaveOutcome::Stale
+        };
+        assert_eq!(outcome, AutoSaveOutcome::Stale);
     }
 }

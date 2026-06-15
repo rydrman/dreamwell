@@ -11,6 +11,7 @@ mod router;
 mod sidebar;
 mod stories_ui;
 mod story_save;
+mod story_sync;
 mod summary_ui;
 mod title_editor;
 mod variables;
@@ -38,6 +39,7 @@ use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
 use stories_ui::StoriesShell;
 use story_save::{AutoSaveField, AutoSavePhase};
+use story_sync::AUTOSAVE_DEBOUNCE_MS;
 use summary_ui::{
     chat_summarize_in_progress, is_chat_summarize_pending, SummaryBreak, SummaryKind, SummaryView,
     CHAT_SUMMARIZE_PLACEHOLDER,
@@ -3460,7 +3462,7 @@ impl SettingsSaveContext {
         self.phase.set(SettingsSavePhase::Debouncing);
 
         let ctx = self.clone();
-        *self.save_timeout.borrow_mut() = Some(Timeout::new(400, move || {
+        *self.save_timeout.borrow_mut() = Some(Timeout::new(AUTOSAVE_DEBOUNCE_MS, move || {
             ctx.run_save();
         }));
     }

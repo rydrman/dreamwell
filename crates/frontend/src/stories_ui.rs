@@ -19,6 +19,7 @@ use crate::story_save::{
     draft_is_dirty, fail_auto_save, finish_auto_save, AutoSaveController, AutoSaveField,
     AutoSaveOutcome, AutoSavePhase,
 };
+use crate::story_sync::{fetch_response_is_current, should_replace_detail_from_sse, story_list_with_detail, FetchGeneration};
 use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
 use crate::variables;
@@ -34,7 +35,7 @@ pub enum StoryViewMode {
     Reading,
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
 pub enum StorySelection {
     #[default]
     Closed,
@@ -46,12 +47,119 @@ pub enum StorySelection {
     },
 }
 
+/// Whether toggling a block header will close (no fetch) vs open (fetch first).
+pub fn block_toggle_closes(current: StorySelection, target: StorySelection) -> bool {
+    current == target
+}
+
 fn toggle_selection(current: StorySelection, target: StorySelection) -> StorySelection {
     if current == target {
         StorySelection::Closed
     } else {
         target
     }
+}
+
+/// Fetch fresh story detail before opening an editable block.
+#[allow(clippy::too_many_arguments)]
+fn gated_block_toggle(
+    current: StorySelection,
+    target: StorySelection,
+    story_id: i64,
+    fetching: UseStateHandle<bool>,
+    fetch_gen: UseStateHandle<u64>,
+    fetch_pending: UseStateHandle<Option<StorySelection>>,
+    on_detail: Callback<StoryDetail>,
+    on_selection: Callback<StorySelection>,
+) -> Callback<()> {
+    Callback::from(move |_| {
+        if block_toggle_closes(current, target) {
+            fetch_pending.set(None);
+            on_selection.emit(toggle_selection(current, target));
+            return;
+        }
+        let generation = FetchGeneration::from_raw(*fetch_gen).bump();
+        fetch_gen.set(generation.raw());
+        fetch_pending.set(Some(target));
+        fetching.set(true);
+        let fetching = fetching.clone();
+        let fetch_gen = fetch_gen.clone();
+        let fetch_pending = fetch_pending.clone();
+        let on_detail = on_detail.clone();
+        let on_selection = on_selection.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = api::get_story(story_id).await;
+            let latest = FetchGeneration::from_raw(*fetch_gen);
+            let pending_matches = *fetch_pending == Some(target);
+            if !fetch_response_is_current(generation, latest, pending_matches) {
+                if generation.is_current(latest) {
+                    fetching.set(false);
+                }
+                return;
+            }
+            if let Ok(detail) = result {
+                on_detail.emit(detail);
+            }
+            on_selection.emit(target);
+            fetching.set(false);
+            if *fetch_pending == Some(target) {
+                fetch_pending.set(None);
+            }
+        });
+    })
+}
+
+/// Fetch latest beat content before entering reading-mode edit.
+fn begin_reading_edit(
+    story_id: i64,
+    target: EditingBeat,
+    preparing: UseStateHandle<bool>,
+    prepare_gen: UseStateHandle<u64>,
+    prepare_target: UseStateHandle<Option<EditingBeat>>,
+    on_detail: Callback<StoryDetail>,
+    on_start_edit: Callback<EditingBeat>,
+) -> Callback<()> {
+    Callback::from(move |_| {
+        let generation = FetchGeneration::from_raw(*prepare_gen).bump();
+        prepare_gen.set(generation.raw());
+        prepare_target.set(Some(target));
+        preparing.set(true);
+        let preparing = preparing.clone();
+        let prepare_gen = prepare_gen.clone();
+        let prepare_target = prepare_target.clone();
+        let on_detail = on_detail.clone();
+        let on_start_edit = on_start_edit.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = api::get_story(story_id).await;
+            let latest = FetchGeneration::from_raw(*prepare_gen);
+            let pending_matches = *prepare_target == Some(target);
+            if !fetch_response_is_current(generation, latest, pending_matches) {
+                if generation.is_current(latest) {
+                    preparing.set(false);
+                }
+                return;
+            }
+            match result {
+                Ok(detail) => {
+                    let beat_exists = detail.chapters.iter().any(|ch| {
+                        ch.id == target.chapter_id
+                            && ch.beats.iter().any(|b| b.id == target.beat_id)
+                    });
+                    on_detail.emit(detail);
+                    if beat_exists {
+                        on_start_edit.emit(target);
+                    }
+                }
+                Err(_) => {
+                    on_start_edit.emit(target);
+                }
+            }
+            preparing.set(false);
+            if *prepare_target == Some(target) {
+                prepare_target.set(None);
+            }
+        });
+    })
 }
 
 fn story_nav_from_selection(selection: StorySelection) -> StoryNav {
@@ -146,7 +254,6 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
     let detail_loading = use_state(|| false);
-    let story_refresh_generation = use_state(|| 0u32);
     let story_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let selected_story_id = story_id_from_route(&props.route);
     let selection = selection_from_story_nav(story_nav_from_route(&props.route));
@@ -171,71 +278,61 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         let stories = stories.clone();
         let detail_loading = detail_loading.clone();
         let story_stream_nudge = story_stream_nudge.clone();
-        let story_refresh_generation = *story_refresh_generation;
-        use_effect_with(
-            (selected_story_id, story_refresh_generation),
-            move |(story_id, _)| {
-                let story_id = *story_id;
-                let mut stream_holder = None::<api::StoryStream>;
-                *story_stream_nudge.borrow_mut() = None;
-                if let Some(story_id) = story_id {
-                    detail.set(None);
-                    detail_loading.set(true);
-                    let detail_for_fetch = detail.clone();
-                    let detail_loading_for_fetch = detail_loading.clone();
-                    let stories = stories.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        if let Ok(d) = api::get_story(story_id).await {
-                            detail_for_fetch.set(Some(d));
-                        }
-                        detail_loading_for_fetch.set(false);
-                    });
-                    let detail_loading_for_stream = detail_loading.clone();
-                    let detail_for_stream = detail.clone();
-                    let had_active_job = Rc::new(RefCell::new(false));
-                    let stream = api::StoryStream::new(story_id, move |payload| {
-                        detail_loading_for_stream.set(false);
-                        let was_active = *had_active_job.borrow();
-                        let now_active = payload.active_job.is_some();
-                        if now_active {
-                            *had_active_job.borrow_mut() = true;
-                        }
+        use_effect_with(selected_story_id, move |story_id| {
+            let story_id = *story_id;
+            let mut stream_holder = None::<api::StoryStream>;
+            *story_stream_nudge.borrow_mut() = None;
+            if let Some(story_id) = story_id {
+                detail.set(None);
+                detail_loading.set(true);
+                let detail_for_fetch = detail.clone();
+                let detail_loading_for_fetch = detail_loading.clone();
+                let stories = stories.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(d) = api::get_story(story_id).await {
+                        detail_for_fetch.set(Some(d));
+                    }
+                    detail_loading_for_fetch.set(false);
+                });
+                let detail_loading_for_stream = detail_loading.clone();
+                let detail_for_stream = detail.clone();
+                let stories_for_stream = stories.clone();
+                let had_active_job = Rc::new(RefCell::new(false));
+                let stream = api::StoryStream::new(story_id, move |payload| {
+                    detail_loading_for_stream.set(false);
+                    let was_active = *had_active_job.borrow();
+                    let now_active = payload.active_job.is_some();
+                    if now_active {
+                        *had_active_job.borrow_mut() = true;
+                    }
+                    if should_replace_detail_from_sse(payload.active_job.as_ref()) {
                         detail_for_stream.set(Some(payload.detail.clone()));
-                        let current = (*stories).clone();
-                        stories.set(
-                            current
-                                .into_iter()
-                                .map(|s| {
-                                    if s.id == payload.detail.story.id {
-                                        payload.detail.story.clone()
-                                    } else {
-                                        s
-                                    }
-                                })
-                                .collect(),
-                        );
-                        if was_active && !now_active {
-                            let detail_ref = detail_for_stream.clone();
-                            wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(d) = api::get_story(story_id).await {
-                                    detail_ref.set(Some(d));
-                                }
-                            });
-                            *had_active_job.borrow_mut() = false;
-                        }
-                    });
-                    *story_stream_nudge.borrow_mut() = Some(stream.nudge());
-                    stream_holder = Some(stream);
-                } else {
-                    detail.set(None);
-                    detail_loading.set(false);
-                }
-                move || {
-                    *story_stream_nudge.borrow_mut() = None;
-                    drop(stream_holder);
-                }
-            },
-        );
+                    }
+                    stories_for_stream.set(story_list_with_detail(
+                        &stories_for_stream,
+                        &payload.detail,
+                    ));
+                    if was_active && !now_active {
+                        let detail_ref = detail_for_stream.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(d) = api::get_story(story_id).await {
+                                detail_ref.set(Some(d));
+                            }
+                        });
+                        *had_active_job.borrow_mut() = false;
+                    }
+                });
+                *story_stream_nudge.borrow_mut() = Some(stream.nudge());
+                stream_holder = Some(stream);
+            } else {
+                detail.set(None);
+                detail_loading.set(false);
+            }
+            move || {
+                *story_stream_nudge.borrow_mut() = None;
+                drop(stream_holder);
+            }
+        });
     }
 
     {
@@ -306,7 +403,6 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     }
 
     {
-        let story_refresh_generation = story_refresh_generation.clone();
         let story_stream_nudge = story_stream_nudge.clone();
         let stories = stories.clone();
         let detail = detail.clone();
@@ -314,15 +410,17 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         use_effect_with((), move |_| {
             let guard = app_sync::register_scope(
                 {
-                    let story_refresh_generation = story_refresh_generation.clone();
                     let stories = stories.clone();
                     let detail = detail.clone();
                     let route = route.clone();
+                    let story_stream_nudge = story_stream_nudge.clone();
                     move |_reason| {
-                        story_refresh_generation.set(*story_refresh_generation + 1);
                         let story_id = story_id_from_route(&route);
                         let stories = stories.clone();
                         let detail = detail.clone();
+                        if let Some(nudge) = story_stream_nudge.borrow().clone() {
+                            nudge.resume();
+                        }
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(list) = api::list_stories().await {
                                 stories.set(list);
@@ -372,8 +470,24 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     };
 
     let bump_stream = {
-        let story_refresh_generation = story_refresh_generation.clone();
-        Callback::from(move |_| story_refresh_generation.set(*story_refresh_generation + 1))
+        let story_stream_nudge = story_stream_nudge.clone();
+        let detail = detail.clone();
+        let stories = stories.clone();
+        Callback::from(move |_| {
+            if let Some(nudge) = story_stream_nudge.borrow().clone() {
+                nudge.reconnect();
+            }
+            if let Some(story_id) = selected_story_id {
+                let detail = detail.clone();
+                let stories = stories.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(d) = api::get_story(story_id).await {
+                        stories.set(story_list_with_detail(&stories, &d));
+                        detail.set(Some(d));
+                    }
+                });
+            }
+        })
     };
 
     html! {
@@ -802,6 +916,9 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
     let story_id = props.detail.story.id;
     let active_job = props.detail.story.active_job.as_ref();
     let current_selection = props.selection;
+    let block_fetching = use_state(|| false);
+    let block_fetch_gen = use_state(|| 0u64);
+    let block_fetch_pending = use_state(|| None::<StorySelection>);
 
     html! {
         <div class="story-blocks">
@@ -810,9 +927,17 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                     label={"Story basics".to_string()}
                     subtitle={props.detail.story.title.clone()}
                     open={props.selection == StorySelection::Basics}
-                    on_toggle={props.on_selection.reform(move |_| {
-                        toggle_selection(current_selection, StorySelection::Basics)
-                    })}
+                    loading={*block_fetching}
+                    on_toggle={gated_block_toggle(
+                        current_selection,
+                        StorySelection::Basics,
+                        story_id,
+                        block_fetching.clone(),
+                        block_fetch_gen.clone(),
+                        block_fetch_pending.clone(),
+                        props.on_detail.clone(),
+                        props.on_selection.clone(),
+                    )}
                 />
                 if props.selection == StorySelection::Basics {
                     <div class="story-block-body">
@@ -865,9 +990,17 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                             open={ch_open}
                             status_badge={chapter_status}
                             summary_stale={summary_stale}
-                            on_toggle={props.on_selection.reform(move |_| {
-                                toggle_selection(current_selection, chapter_target)
-                            })}
+                            loading={*block_fetching}
+                            on_toggle={gated_block_toggle(
+                                current_selection,
+                                chapter_target,
+                                story_id,
+                                block_fetching.clone(),
+                                block_fetch_gen.clone(),
+                                block_fetch_pending.clone(),
+                                props.on_detail.clone(),
+                                props.on_selection.clone(),
+                            )}
                         />
                         if ch_open {
                             <div class="story-block-body">
@@ -907,9 +1040,17 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                         open={beat_open}
                                         indent={true}
                                         status_badge={beat_status}
-                                        on_toggle={props.on_selection.reform(move |_| {
-                                            toggle_selection(current_selection, beat_target)
-                                        })}
+                                        loading={*block_fetching}
+                                        on_toggle={gated_block_toggle(
+                                            current_selection,
+                                            beat_target,
+                                            story_id,
+                                            block_fetching.clone(),
+                                            block_fetch_gen.clone(),
+                                            block_fetch_pending.clone(),
+                                            props.on_detail.clone(),
+                                            props.on_selection.clone(),
+                                        )}
                                     />
                                     if beat_open {
                                         <div class={classes!(
@@ -1208,6 +1349,8 @@ struct StoryBlockHeaderProps {
     status_badge: Option<BlockGenerationStatus>,
     #[prop_or(false)]
     summary_stale: bool,
+    #[prop_or(false)]
+    loading: bool,
     on_toggle: Callback<()>,
 }
 
@@ -1220,12 +1363,17 @@ fn story_block_header(props: &StoryBlockHeaderProps) -> Html {
                 "story-block-header",
                 props.open.then_some("open"),
                 props.indent.then_some("indented"),
+                props.loading.then_some("story-block-header--loading"),
             )}
+            disabled={props.loading}
             onclick={props.on_toggle.reform(|_| ())}
         >
             <span class="story-block-chevron">{ if props.open { "▾" } else { "▸" } }</span>
             <span class="story-block-label">{ &props.label }</span>
             <span class="story-block-subtitle muted">{ &props.subtitle }</span>
+            if props.loading {
+                <span class="story-block-loading muted" aria-label="Loading latest content">{"…"}</span>
+            }
             if props.summary_stale {
                 <span
                     class="story-block-stale-warning"
@@ -2283,7 +2431,7 @@ struct StoryReadingViewProps {
     on_detail: Callback<StoryDetail>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct EditingBeat {
     chapter_id: i64,
     beat_id: i64,
@@ -2292,7 +2440,15 @@ struct EditingBeat {
 #[function_component(StoryReadingView)]
 fn story_reading_view(props: &StoryReadingViewProps) -> Html {
     let editing = use_state(|| None::<EditingBeat>);
+    let edit_preparing = use_state(|| false);
+    let edit_prepare_gen = use_state(|| 0u64);
+    let edit_prepare_target = use_state(|| None::<EditingBeat>);
     let story_id = props.detail.story.id;
+
+    let on_start_edit = {
+        let editing = editing.clone();
+        Callback::from(move |target: EditingBeat| editing.set(Some(target)))
+    };
 
     html! {
         <article class="story-reading">
@@ -2318,7 +2474,10 @@ fn story_reading_view(props: &StoryReadingViewProps) -> Html {
                         } else {
                             { for prose_beats.iter().map(|beat| {
                                 let beat_id = beat.id;
-                                let is_editing = *editing == Some(EditingBeat { chapter_id, beat_id });
+                                let beat_target = EditingBeat { chapter_id, beat_id };
+                                let is_editing = *editing == Some(beat_target);
+                                let is_preparing = *edit_preparing
+                                    && *edit_prepare_target == Some(beat_target);
                                 html! {
                                     <ReadingProseBlock
                                         key={beat_id}
@@ -2326,10 +2485,16 @@ fn story_reading_view(props: &StoryReadingViewProps) -> Html {
                                         chapter_id={chapter_id}
                                         beat={(*beat).clone()}
                                         editing={is_editing}
-                                        on_start_edit={Callback::from({
-                                            let editing = editing.clone();
-                                            move |_| editing.set(Some(EditingBeat { chapter_id, beat_id }))
-                                        })}
+                                        edit_preparing={is_preparing}
+                                        on_request_edit={begin_reading_edit(
+                                            story_id,
+                                            beat_target,
+                                            edit_preparing.clone(),
+                                            edit_prepare_gen.clone(),
+                                            edit_prepare_target.clone(),
+                                            props.on_detail.clone(),
+                                            on_start_edit.clone(),
+                                        )}
                                         on_stop_edit={Callback::from({
                                             let editing = editing.clone();
                                             move |_| editing.set(None)
@@ -2355,7 +2520,9 @@ struct ReadingProseBlockProps {
     chapter_id: i64,
     beat: StoryBeat,
     editing: bool,
-    on_start_edit: Callback<()>,
+    #[prop_or(false)]
+    edit_preparing: bool,
+    on_request_edit: Callback<()>,
     on_stop_edit: Callback<()>,
     on_detail: Callback<StoryDetail>,
 }
@@ -2414,7 +2581,7 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         let beat_id = beat.id;
         let on_detail = props.on_detail.clone();
         Callback::from(
-            move |(immediate, snapshot_override): (bool, Option<String>)| {
+            move |(immediate, snapshot_override, sync_parent): (bool, Option<String>, bool)| {
                 let snapshot = snapshot_override.unwrap_or_else(|| (*content).clone());
                 if snapshot == *last_saved {
                     return;
@@ -2441,20 +2608,18 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                         let current = (*content).clone();
                         match api::update_beat(story_id, chapter_id, beat_id, &update).await {
                             Ok(detail) => {
-                                if current == snapshot {
-                                    controller.mark_saved();
-                                    last_saved.set(snapshot);
-                                } else {
-                                    controller.mark_saved();
+                                let _ = finish_auto_save(
+                                    &controller,
+                                    &current,
+                                    &snapshot,
+                                    &last_saved,
+                                );
+                                if sync_parent {
+                                    on_detail.emit(detail);
                                 }
-                                on_detail.emit(detail);
                             }
                             Err(err) => {
-                                if current == snapshot {
-                                    controller.mark_failed(err);
-                                } else {
-                                    controller.mark_saved();
-                                }
+                                let _ = fail_auto_save(&controller, &current, &snapshot, err);
                             }
                         }
                     });
@@ -2467,8 +2632,8 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
             },
         )
     };
-    let schedule_save = trigger_save.reform(|_| (false, None));
-    let flush_save = trigger_save.reform(|_| (true, None));
+    let schedule_save = trigger_save.reform(|text: String| (false, Some(text), false));
+    let flush_save = trigger_save.reform(|text: Option<String>| (true, text, true));
 
     let stop_edit = {
         let content = content.clone();
@@ -2477,9 +2642,9 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         Callback::from(move |dom_content: Option<String>| {
             if let Some(text) = dom_content {
                 content.set(text.clone());
-                flush_save.emit((true, Some(text)));
+                flush_save.emit(Some(text));
             } else {
-                flush_save.emit((true, None));
+                flush_save.emit(None);
             }
             on_stop_edit.emit(());
         })
@@ -2512,7 +2677,7 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                                 let text = input.value();
                                 user_edited.set(true);
                                 content.set(text.clone());
-                                schedule_save.emit((false, Some(text)));
+                                schedule_save.emit(text);
                             })
                         }}
                         onkeydown={{
@@ -2539,7 +2704,9 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         };
     }
 
-    let display_text = if queued && prose_display.is_empty() && generation_error.is_none() {
+    let display_text = if props.edit_preparing {
+        "Loading latest…".to_string()
+    } else if queued && prose_display.is_empty() && generation_error.is_none() {
         "Waiting in queue…".to_string()
     } else if streaming && prose_display.is_empty() && generation_error.is_none() {
         "…".to_string()
@@ -2554,17 +2721,18 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                 "reading-prose",
                 streaming.then_some("reading-prose--streaming"),
                 display_text.starts_with("Waiting").then_some("reading-prose--pending"),
+                props.edit_preparing.then_some("reading-prose--preparing"),
             )}
             title="Click to edit"
             tabindex="0"
             role="button"
-            onclick={props.on_start_edit.reform(|_| ())}
+            onclick={props.on_request_edit.reform(|_| ())}
             onkeydown={{
-                let on_start_edit = props.on_start_edit.clone();
+                let on_request_edit = props.on_request_edit.clone();
                 Callback::from(move |e: KeyboardEvent| {
                     if e.key() == "Enter" || e.key() == " " {
                         e.prevent_default();
-                        on_start_edit.emit(());
+                        on_request_edit.emit(());
                     }
                 })
             }}
@@ -2702,5 +2870,41 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                 />
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggle_selection_opens_target_when_closed() {
+        assert_eq!(
+            toggle_selection(StorySelection::Closed, StorySelection::Basics),
+            StorySelection::Basics
+        );
+    }
+
+    #[test]
+    fn toggle_selection_closes_when_already_open() {
+        assert_eq!(
+            toggle_selection(StorySelection::Basics, StorySelection::Basics),
+            StorySelection::Closed
+        );
+    }
+
+    #[test]
+    fn block_toggle_closes_when_target_matches() {
+        assert!(block_toggle_closes(
+            StorySelection::Chapter(3),
+            StorySelection::Chapter(3)
+        ));
+        assert!(!block_toggle_closes(
+            StorySelection::Closed,
+            StorySelection::Beat {
+                chapter_id: 1,
+                beat_id: 2
+            }
+        ));
     }
 }
