@@ -221,11 +221,18 @@ button {
   justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
+  flex-shrink: 0;
 }
 
 .settings-header h2 {
   margin: 0;
   font-size: 1rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-header .btn {
+  flex-shrink: 0;
 }
 
 .settings-model-row {
@@ -332,12 +339,17 @@ button {
 .panel-overlay {
   display: flex;
   flex-direction: column;
+  height: min(42rem, calc(100dvh - 4rem));
+  max-height: calc(100dvh - 4rem);
+  overflow: hidden;
 }
 
 .panel-overlay-body {
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .app-shell {
@@ -2239,8 +2251,34 @@ input.header-title {
 
   .settings-popover {
     width: calc(100vw - 1.5rem);
-    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - 2rem);
     padding: 0.875rem;
+    overflow-x: hidden;
+  }
+
+  .settings-popover.panel-overlay {
+    height: calc(100dvh - 2rem);
+    max-height: calc(100dvh - 2rem);
+  }
+
+  .variable-row-header {
+    flex-wrap: wrap;
+  }
+
+  .variable-row-key {
+    flex: 1 1 calc(100% - 5rem);
+    min-width: 0;
+  }
+
+  .variable-row-scope,
+  .variable-row-scope-select {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+
+  .variable-row-actions {
+    flex: 0 0 auto;
+    margin-left: auto;
   }
 
   .settings-model-row {
