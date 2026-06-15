@@ -178,6 +178,7 @@ pub fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StoryBeatOutline => "Beat outline",
         JobType::StoryProposeBeats => "Propose beats",
         JobType::StoryBeatProse => "Beat prose",
+        JobType::StoryBeatProseContinue => "Continue prose",
         JobType::StoryBeatMechanical => "Beat mechanical",
         JobType::StoryBeatProseRecheck => "Prose align",
         JobType::StoryChapterSummarize => "Chapter summarize",
