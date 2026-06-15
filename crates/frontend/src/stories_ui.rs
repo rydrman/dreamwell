@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use dreamwell_types::*;
+use gloo_timers::callback::Timeout;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -112,6 +113,25 @@ fn story_nav_from_route(route: &AppRoute) -> StoryNav {
     }
 }
 
+fn selection_anchor_id(selection: StorySelection) -> Option<String> {
+    match selection {
+        StorySelection::Closed => None,
+        StorySelection::Basics => Some("story-basics".to_string()),
+        StorySelection::Chapter(id) => Some(format!("chapter-{id}")),
+        StorySelection::Beat { beat_id, .. } => Some(format!("beat-{beat_id}")),
+    }
+}
+
+fn scroll_to_story_anchor(anchor_id: &str) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(element) = document.get_element_by_id(anchor_id) else {
+        return;
+    };
+    element.scroll_into_view_with_bool(true);
+}
+
 #[derive(Properties, PartialEq)]
 pub struct StoriesShellProps {
     pub route: AppRoute,
@@ -151,12 +171,11 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         let stories = stories.clone();
         let detail_loading = detail_loading.clone();
         let story_stream_nudge = story_stream_nudge.clone();
-        let route = props.route.clone();
         let story_refresh_generation = *story_refresh_generation;
         use_effect_with(
-            (route.clone(), story_refresh_generation),
-            move |(route, _)| {
-                let story_id = story_id_from_route(route);
+            (selected_story_id, story_refresh_generation),
+            move |(story_id, _)| {
+                let story_id = *story_id;
                 let mut stream_holder = None::<api::StoryStream>;
                 *story_stream_nudge.borrow_mut() = None;
                 if let Some(story_id) = story_id {
@@ -498,6 +517,23 @@ fn story_editor(props: &StoryEditorProps) -> Html {
     let stale_dialog_action = use_state(|| None::<String>);
     let queueing_stale = use_state(|| false);
 
+    {
+        let selection = props.selection;
+        let detail_loading = props.detail_loading;
+        let story_loaded = props.detail.is_some();
+        use_effect_with(
+            (selection, detail_loading, story_loaded),
+            move |(selection, detail_loading, story_loaded)| {
+                if !*detail_loading && *story_loaded {
+                    if let Some(anchor_id) = selection_anchor_id(*selection) {
+                        Timeout::new(0, move || scroll_to_story_anchor(&anchor_id)).forget();
+                    }
+                }
+                || ()
+            },
+        );
+    }
+
     if props.detail_loading {
         return html! {
             <>
@@ -769,47 +805,49 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
 
     html! {
         <div class="story-blocks">
-            <StoryBlockHeader
-                label={"Story basics".to_string()}
-                subtitle={props.detail.story.title.clone()}
-                open={props.selection == StorySelection::Basics}
-                on_toggle={props.on_selection.reform(move |_| {
-                    toggle_selection(current_selection, StorySelection::Basics)
-                })}
-            />
-            if props.selection == StorySelection::Basics {
-                <div class="story-block-body">
-                    <StoryBasicsForm
-                        story={props.detail.story.clone()}
-                        on_detail={props.on_detail.clone()}
-                    />
-                    <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
-                        {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
-                    </p>
-                    <GenerationButtonGroup
-                        label="Propose chapters"
-                        loading_label="Proposing chapters…"
-                        disabled={props.detail.story.active_job.as_ref().is_some_and(|job| {
-                            job.job_type == JobType::StoryProposeChapters
-                                && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                        })}
-                        busy={props.detail.story.active_job.as_ref().is_some_and(|job| {
-                            job.job_type == JobType::StoryProposeChapters
-                                && matches!(job.status, JobStatus::Queued | JobStatus::Running)
-                        })}
-                        guidance={props.guidance.clone()}
-                        guidance_title="Guidance for proposal"
-                        guidance_placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
-                        on_guidance={props.on_guidance.clone()}
-                        on_generate={propose_chapters_action(
-                            story_id,
-                            props.guidance.clone(),
-                            props.on_detail.clone(),
-                            props.bump_stream.clone(),
-                        )}
-                    />
-                </div>
-            }
+            <div id="story-basics">
+                <StoryBlockHeader
+                    label={"Story basics".to_string()}
+                    subtitle={props.detail.story.title.clone()}
+                    open={props.selection == StorySelection::Basics}
+                    on_toggle={props.on_selection.reform(move |_| {
+                        toggle_selection(current_selection, StorySelection::Basics)
+                    })}
+                />
+                if props.selection == StorySelection::Basics {
+                    <div class="story-block-body">
+                        <StoryBasicsForm
+                            story={props.detail.story.clone()}
+                            on_detail={props.on_detail.clone()}
+                        />
+                        <p class="muted" style="font-size:0.85rem;margin-top:0.75rem;">
+                            {"Propose chapters reviews your story and returns a full chapter list — it may add, remove, reorder, or rewrite chapters. Existing beat prose is noted in the prompt but may be replaced."}
+                        </p>
+                        <GenerationButtonGroup
+                            label="Propose chapters"
+                            loading_label="Proposing chapters…"
+                            disabled={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                job.job_type == JobType::StoryProposeChapters
+                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                            })}
+                            busy={props.detail.story.active_job.as_ref().is_some_and(|job| {
+                                job.job_type == JobType::StoryProposeChapters
+                                    && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+                            })}
+                            guidance={props.guidance.clone()}
+                            guidance_title="Guidance for proposal"
+                            guidance_placeholder="Optional notes for the AI — e.g. keep chapter 2 as-is, add a flashback chapter…"
+                            on_guidance={props.on_guidance.clone()}
+                            on_generate={propose_chapters_action(
+                                story_id,
+                                props.guidance.clone(),
+                                props.on_detail.clone(),
+                                props.bump_stream.clone(),
+                            )}
+                        />
+                    </div>
+                }
+            </div>
 
             { for props.detail.chapters.iter().map(|ch| {
                 let ch_id = ch.id;
@@ -820,7 +858,7 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                 let summary_stale = chapter_summary_stale(ch);
                 let chapter_target = StorySelection::Chapter(ch_id);
                 html! {
-                    <div key={ch_id} class="story-chapter-block">
+                    <div key={ch_id} id={format!("chapter-{ch_id}")} class="story-chapter-block">
                         <StoryBlockHeader
                             label={ch_label}
                             subtitle={ch_subtitle}
