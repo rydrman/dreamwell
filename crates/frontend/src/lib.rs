@@ -1,6 +1,7 @@
 mod api;
 mod app_sync;
 mod auth;
+mod auto_grow;
 mod generation_ui;
 mod install;
 mod item_list;

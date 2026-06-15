@@ -1627,10 +1627,14 @@ input.header-title {
 
 .variable-row-value {
   width: 100%;
-  min-height: 3rem;
-  resize: vertical;
   white-space: pre-wrap;
   box-sizing: border-box;
+}
+
+#story-variables-panel .variable-row-value {
+  resize: none;
+  overflow: hidden;
+  field-sizing: content;
 }
 
 .variable-row .field-autosave-wrap {
@@ -1865,7 +1869,6 @@ input.header-title {
 }
 
 .prose-editor {
-  min-height: 16rem;
   line-height: 1.6;
 }
 
@@ -1989,7 +1992,6 @@ input.header-title {
 
 .reading-prose-editor {
   width: 100%;
-  min-height: 12rem;
   line-height: 1.75;
   font: inherit;
   font-size: 1.05rem;
@@ -1997,7 +1999,14 @@ input.header-title {
   border: 1px solid var(--border);
   border-radius: 0.375rem;
   background: var(--surface);
-  resize: vertical;
+}
+
+.story-editor textarea,
+.reading-prose-editor,
+#story-variables-panel textarea {
+  resize: none;
+  overflow: hidden;
+  field-sizing: content;
 }
 
 .reading-prose-hint {
