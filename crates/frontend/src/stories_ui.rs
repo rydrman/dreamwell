@@ -8,6 +8,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::app_sync;
+use crate::auto_grow::container_input_callback;
 use crate::generation_ui::{
     beat_block_status, chapter_block_status, chapter_has_substantial_prose, chapter_summary_stale,
     generation_error_from_content, is_stale_summary_error, stale_chapters_in_story, story_notice,
@@ -30,6 +31,7 @@ use crate::variables_ui::{
     make_story_variable_handlers, story_scope_options, story_scope_value, story_variable_row,
     InlineStoryVariables, VariableList, VariableRowModel,
 };
+use crate::{use_fit_textarea, use_fit_textareas_in};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum StoryViewMode {
@@ -757,6 +759,17 @@ fn story_editor(props: &StoryEditorProps) -> Html {
 
     let stale_chapters = stale_chapters_in_story(&detail);
 
+    let editor_ref = use_node_ref();
+    use_fit_textareas_in!(
+        &editor_ref,
+        (
+            props.selection,
+            *view_mode,
+            detail.story.id,
+            detail.chapters.len()
+        )
+    );
+
     html! {
         <>
             <header class="header content-header">
@@ -869,7 +882,11 @@ fn story_editor(props: &StoryEditorProps) -> Html {
             if let Some(notice) = generation_notice {
                 <GenerationStatusBar notice={notice} />
             }
-            <div class={classes!("story-editor", (*view_mode == StoryViewMode::Reading).then_some("story-editor--reading"))}>
+            <div
+                ref={editor_ref}
+                class={classes!("story-editor", (*view_mode == StoryViewMode::Reading).then_some("story-editor--reading"))}
+                oninput={container_input_callback()}
+            >
                 if *view_mode == StoryViewMode::Reading {
                     <StoryReadingView
                         detail={detail.clone()}
@@ -1536,8 +1553,18 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
         })
     };
 
+    let form_ref = use_node_ref();
+    use_fit_textareas_in!(
+        &form_ref,
+        (
+            draft.premise.len(),
+            draft.notes.len(),
+            draft.tracked_details.len()
+        )
+    );
+
     html! {
-        <div class="story-form">
+        <div class="story-form" ref={form_ref}>
             <label class="field"><span class="muted">{"Title"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                     <input type="text" value={draft.title.clone()} oninput={{
@@ -1555,7 +1582,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Premise"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={draft.premise.clone()} rows="3" oninput={{
+                    <textarea value={draft.premise.clone()} rows="1" oninput={{
                         let draft = draft.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1641,7 +1668,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Notes"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={draft.notes.clone()} rows="2" oninput={{
+                    <textarea value={draft.notes.clone()} rows="1" oninput={{
                         let draft = draft.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1658,7 +1685,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                     <textarea
                         value={draft.tracked_details.clone()}
-                        rows="3"
+                        rows="1"
                         placeholder="Important details to keep consistent — e.g. protagonist name, key objects, relationships"
                         oninput={{
                         let draft = draft.clone();
@@ -1822,8 +1849,11 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
     let summary_stale = chapter_summary_stale(&chapter);
     let on_stale_error = props.on_stale_error.clone();
 
+    let form_ref = use_node_ref();
+    use_fit_textareas_in!(&form_ref, ((*synopsis).len(),));
+
     html! {
-        <div class="story-form">
+        <div class="story-form" ref={form_ref}>
             <label class="field"><span class="muted">{"Title"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                     <input type="text" value={(*title).clone()} oninput={{
@@ -1839,7 +1869,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Synopsis"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={(*synopsis).clone()} rows="5" oninput={{
+                    <textarea value={(*synopsis).clone()} rows="1" oninput={{
                         let synopsis = synopsis.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -2248,8 +2278,19 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         }
     };
 
+    let beat_form_ref = use_node_ref();
+    use_fit_textareas_in!(
+        &beat_form_ref,
+        (
+            (*title).clone(),
+            (*synopsis).clone(),
+            (*mechanical).clone(),
+            prose_value.clone()
+        )
+    );
+
     html! {
-        <div class="story-form">
+        <div class="story-form" ref={beat_form_ref}>
             <label class="field"><span class="muted">{"Title"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                     <input type="text" value={(*title).clone()} oninput={{
@@ -2265,7 +2306,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Synopsis"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={(*synopsis).clone()} rows="3" oninput={{
+                    <textarea value={(*synopsis).clone()} rows="1" oninput={{
                         let synopsis = synopsis.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -2300,7 +2341,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                     <textarea
                         value={(*mechanical).clone()}
-                        rows="6"
+                        rows="1"
                         placeholder="Bullet list of what happens in this beat…"
                         readonly={mechanical_generating}
                         oninput={{
@@ -2367,7 +2408,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             )}
                             value={prose_value}
                             placeholder={prose_placeholder}
-                            rows="12"
+                            rows="1"
                             readonly={generation_active && !*user_edited_prose}
                             oninput={{
                                 let content = content.clone();
@@ -2697,22 +2738,26 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         })
     };
 
+    let prose_ref = use_node_ref();
+    let prose_value = if *user_edited {
+        (*content).clone()
+    } else {
+        prose_display.clone()
+    };
+    use_fit_textarea!(&prose_ref, prose_value.clone());
+
     if props.editing {
-        let prose_value = if *user_edited {
-            (*content).clone()
-        } else {
-            prose_display.clone()
-        };
         return html! {
             <div class="reading-prose reading-prose--editing">
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                     <textarea
+                        ref={prose_ref}
                         class={classes!(
                             "reading-prose-editor",
                             streaming.then_some("story-prose--streaming"),
                         )}
                         value={prose_value}
-                        rows="8"
+                        rows="1"
                         autofocus={true}
                         readonly={generation_active && !*user_edited}
                         oninput={{
@@ -2897,11 +2942,15 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
         })
         .collect();
 
+    let panel_ref = use_node_ref();
+    let variable_count = variables.len();
+    use_fit_textareas_in!(&panel_ref, (variable_count, rows.len()));
+
     let (on_save, on_delete) =
         make_story_variable_handlers(story_id, variables, Some(props.on_detail.clone()));
 
     html! {
-        <div id="story-variables-panel" class="settings-popover panel-overlay">
+        <div id="story-variables-panel" class="settings-popover panel-overlay" ref={panel_ref} oninput={container_input_callback()}>
             <div class="settings-header">
                 <h2>{"Variables"}</h2>
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
