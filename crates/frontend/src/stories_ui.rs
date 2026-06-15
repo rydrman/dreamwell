@@ -63,7 +63,7 @@ fn toggle_selection(current: StorySelection, target: StorySelection) -> StorySel
     }
 }
 
-/// Fetch fresh story detail before opening an editable block.
+/// Open the block immediately, then refresh story detail from the server.
 #[allow(clippy::too_many_arguments)]
 fn gated_block_toggle(
     current: StorySelection,
@@ -81,6 +81,7 @@ fn gated_block_toggle(
             on_selection.emit(toggle_selection(current, target));
             return;
         }
+        on_selection.emit(target);
         let generation = FetchGeneration::from_raw(*fetch_gen).bump();
         fetch_gen.set(generation.raw());
         fetch_pending.set(Some(target));
@@ -89,21 +90,17 @@ fn gated_block_toggle(
         let fetch_gen = fetch_gen.clone();
         let fetch_pending = fetch_pending.clone();
         let on_detail = on_detail.clone();
-        let on_selection = on_selection.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let result = api::get_story(story_id).await;
             let latest = FetchGeneration::from_raw(*fetch_gen);
             let pending_matches = *fetch_pending == Some(target);
             if !fetch_response_is_current(generation, latest, pending_matches) {
-                if generation.is_current(latest) {
-                    fetching.set(false);
-                }
+                fetching.set(false);
                 return;
             }
             if let Ok(detail) = result {
                 on_detail.emit(detail);
             }
-            on_selection.emit(target);
             fetching.set(false);
             if *fetch_pending == Some(target) {
                 fetch_pending.set(None);
