@@ -8,7 +8,7 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::app_sync;
-use crate::auto_grow::container_input_callback;
+use crate::auto_grow::{container_input_callback, fit_textareas_in, fit_textareas_in_when_ready};
 use crate::generation_ui::{
     beat_block_status, beat_editor_locked, beat_has_generation_job, chapter_block_status,
     chapter_editor_locked, chapter_has_substantial_prose, chapter_summary_stale,
@@ -692,8 +692,20 @@ fn story_editor(props: &StoryEditorProps) -> Html {
     let view_mode = use_state(StoryViewMode::default);
     let stale_dialog_action = use_state(|| None::<String>);
     let queueing_stale = use_state(|| false);
+    let editor_ref = use_node_ref();
+    use_fit_textareas_in!(
+        &editor_ref,
+        (
+            props.selection,
+            *view_mode,
+            props.detail.as_ref().map(|d| d.story.id),
+            props.detail.as_ref().map(|d| d.chapters.len()).unwrap_or(0),
+            props.detail_loading,
+        )
+    );
 
     {
+        let editor_ref = editor_ref.clone();
         let selection = props.selection;
         let detail_loading = props.detail_loading;
         let story_loaded = props.detail.is_some();
@@ -701,9 +713,18 @@ fn story_editor(props: &StoryEditorProps) -> Html {
             (selection, detail_loading, story_loaded),
             move |(selection, detail_loading, story_loaded)| {
                 if !*detail_loading && *story_loaded {
-                    if let Some(anchor_id) = selection_anchor_id(*selection) {
-                        Timeout::new(0, move || scroll_to_story_anchor(&anchor_id)).forget();
-                    }
+                    let editor_ref = editor_ref.clone();
+                    let selection = *selection;
+                    Timeout::new(0, move || {
+                        if let Some(anchor_id) = selection_anchor_id(selection) {
+                            scroll_to_story_anchor(&anchor_id);
+                        }
+                        if let Some(root) = editor_ref.cast::<web_sys::Element>() {
+                            fit_textareas_in(&root);
+                            fit_textareas_in_when_ready(root);
+                        }
+                    })
+                    .forget();
                 }
                 || ()
             },
@@ -771,17 +792,6 @@ fn story_editor(props: &StoryEditorProps) -> Html {
     };
 
     let stale_chapters = stale_chapters_in_story(&detail);
-
-    let editor_ref = use_node_ref();
-    use_fit_textareas_in!(
-        &editor_ref,
-        (
-            props.selection,
-            *view_mode,
-            detail.story.id,
-            detail.chapters.len()
-        )
-    );
 
     html! {
         <>
@@ -2369,6 +2379,8 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     };
 
     let beat_form_ref = use_node_ref();
+    let prose_textarea_ref = use_node_ref();
+    use_fit_textarea!(&prose_textarea_ref, prose_value.clone());
     use_fit_textareas_in!(
         &beat_form_ref,
         (
@@ -2492,6 +2504,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                 <div class="prose-editor-wrap">
                     <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
                         <textarea
+                            ref={prose_textarea_ref}
                             class={classes!(
                                 "prose-editor",
                                 streaming.then_some("story-prose--streaming"),
