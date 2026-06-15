@@ -82,6 +82,21 @@ fn display_beat_prose(settings: &dreamwell_types::Settings, text: &str, streamin
     }
 }
 
+/// Join existing beat prose with newly generated continuation text.
+///
+/// Ensures exactly one blank line between the prior text and the new prose,
+/// regardless of trailing whitespace on the base or leading whitespace from the model.
+fn append_prose_continuation(base: &str, continuation: &str) -> String {
+    let base = base.trim_end();
+    let continuation = continuation.trim_start();
+    match (base.is_empty(), continuation.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => continuation.to_string(),
+        (false, true) => format!("{base}\n\n"),
+        (false, false) => format!("{base}\n\n{continuation}"),
+    }
+}
+
 fn thought_timing(
     parsed: &crate::thoughts::ParsedThoughts,
     thought_started_at: &mut Option<Instant>,
@@ -1308,7 +1323,7 @@ async fn run_beat_prose_generation_attempt(
                 accumulated.push_str(&piece);
                 let new_display = display_beat_prose(settings, &accumulated, true);
                 let display = if append_base.is_some() {
-                    format!("{base}{new_display}")
+                    append_prose_continuation(base, &new_display)
                 } else {
                     new_display
                 };
@@ -1339,7 +1354,7 @@ async fn run_beat_prose_generation_attempt(
         ));
     }
     let display = if append_base.is_some() {
-        format!("{base}{new_display}")
+        append_prose_continuation(base, &new_display)
     } else {
         new_display
     };
@@ -1574,4 +1589,37 @@ pub async fn enqueue_story_generation(
 ) -> AppResult<dreamwell_types::Job> {
     queue.wake();
     Ok(job)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_prose_continuation;
+
+    #[test]
+    fn append_prose_continuation_inserts_single_blank_line() {
+        assert_eq!(
+            append_prose_continuation("She walked in.", "She bought bread."),
+            "She walked in.\n\nShe bought bread."
+        );
+    }
+
+    #[test]
+    fn append_prose_continuation_normalizes_trailing_and_leading_whitespace() {
+        assert_eq!(
+            append_prose_continuation("She walked in.\n\n\n", "\n\nShe bought bread."),
+            "She walked in.\n\nShe bought bread."
+        );
+    }
+
+    #[test]
+    fn append_prose_continuation_handles_empty_continuation() {
+        assert_eq!(
+            append_prose_continuation("She walked in.", ""),
+            "She walked in.\n\n"
+        );
+        assert_eq!(
+            append_prose_continuation("", "She bought bread."),
+            "She bought bread."
+        );
+    }
 }
