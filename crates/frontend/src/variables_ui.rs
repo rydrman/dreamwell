@@ -204,6 +204,8 @@ pub struct VariableRowProps {
     pub on_cancel: Option<Callback<()>>,
     #[prop_or(false)]
     pub show_previous_column: bool,
+    #[prop_or(false)]
+    pub readonly: bool,
 }
 
 #[function_component(VariableRow)]
@@ -217,6 +219,16 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
     let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
     use_autosave_tab_flush(save_controller.clone());
     let variable_id = use_state(|| props.model.id);
+
+    {
+        let save_controller = save_controller.clone();
+        use_effect_with(props.readonly, move |readonly| {
+            if *readonly {
+                save_controller.cancel_pending();
+            }
+            || ()
+        });
+    }
 
     {
         let variable_id = variable_id.clone();
@@ -350,12 +362,16 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         }
     };
 
-    let key_disabled = props.model.key_readonly || props.model.id.is_some();
+    let row_readonly = props.readonly;
+    let key_disabled = row_readonly || props.model.key_readonly || props.model.id.is_some();
 
     let key_input = {
         let key = key.clone();
         let schedule_save = schedule_save.clone();
         Callback::from(move |e: InputEvent| {
+            if row_readonly {
+                return;
+            }
             text_input(key.clone()).emit(e);
             schedule_save.emit(());
         })
@@ -368,6 +384,9 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         let variable_id = variable_id.clone();
         let trigger_save = trigger_save.clone();
         Callback::from(move |e: InputEvent| {
+            if row_readonly {
+                return;
+            }
             let Some(target) = e.target() else {
                 return;
             };
@@ -392,6 +411,9 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         let value = value.clone();
         let flush_save = flush_save.clone();
         Callback::from(move |e: FocusEvent| {
+            if row_readonly {
+                return;
+            }
             if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
                 value.set(input.value());
             } else if let Some(textarea) = e.target_dyn_into::<HtmlTextAreaElement>() {
@@ -417,6 +439,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                 <button
                     class="btn secondary btn-compact variable-row-icon-btn text-danger"
                     title="Delete"
+                    disabled={row_readonly}
                     onclick={props.on_delete.reform(move |_| Some(id))}
                 >
                     {"✕"}
@@ -455,6 +478,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                             class="variable-table-value"
                             type="text"
                             placeholder="Value"
+                            readonly={row_readonly}
                             value={(*value).clone()}
                             oninput={value_input.clone()}
                             onblur={value_blur.clone()}
@@ -494,6 +518,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                     class="variable-row-value"
                     placeholder="Value"
                     rows="2"
+                    readonly={row_readonly}
                     value={(*value).clone()}
                     oninput={value_input.clone()}
                     onblur={value_blur.clone()}
@@ -1339,6 +1364,8 @@ pub struct InlineStoryVariablesProps {
     pub beat_order: i64,
     pub scope_label: String,
     pub variable_updates: Vec<BeatVariableUpdate>,
+    #[prop_or(false)]
+    pub readonly: bool,
     pub on_detail: Callback<StoryDetail>,
 }
 
@@ -1408,6 +1435,7 @@ pub fn inline_story_variables(props: &InlineStoryVariablesProps) -> Html {
                 rows={rows}
                 new_scope_value={scope_value}
                 fixed_scope_label={Some(props.scope_label.clone())}
+                readonly={props.readonly}
                 on_save={on_save}
                 on_delete={on_delete}
                 compact={true}
@@ -1432,6 +1460,8 @@ pub struct VariableListProps {
     pub fixed_scope_label: Option<String>,
     #[prop_or(false)]
     pub compact: bool,
+    #[prop_or(false)]
+    pub readonly: bool,
     #[prop_or(false)]
     pub show_previous_column: bool,
 }
@@ -1499,12 +1529,14 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                             scope_readonly={fixed_scope}
                             fixed_scope={fixed_scope}
                             compact={true}
+                            readonly={props.readonly}
                             show_previous_column={props.show_previous_column}
                             on_save={props.on_save.clone()}
                             on_delete={props.on_delete.clone()}
                         />
                     }
                 }) }
+                if !props.readonly {
                 <div class="variable-table-row variable-table-row--new" role="row">
                     <div class="variable-table-key-cell" role="cell">
                         <input
@@ -1574,6 +1606,7 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                         </button>
                     </div>
                 </div>
+                }
                 if let Some(label) = props.fixed_scope_label.as_ref() {
                     <div class="variable-table-scope muted">{ format!("Scope: {label}") }</div>
                 }
@@ -1597,11 +1630,13 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                         scope_readonly={fixed_scope}
                         fixed_scope={fixed_scope}
                         compact={false}
+                        readonly={props.readonly}
                         on_save={props.on_save.clone()}
                         on_delete={props.on_delete.clone()}
                     />
                 }
             }) }
+            if !props.readonly {
             <div class="variable-row variable-row--new">
                 <div class="variable-row-header">
                     <input
@@ -1688,6 +1723,7 @@ pub fn variable_list(props: &VariableListProps) -> Html {
                     </button>
                 </div>
             </div>
+            }
         </div>
     }
 }

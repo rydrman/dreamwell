@@ -252,6 +252,40 @@ pub fn beat_block_status(beat: &StoryBeat) -> Option<BlockGenerationStatus> {
     }
 }
 
+pub fn job_is_queued_or_running(status: JobStatus) -> bool {
+    matches!(status, JobStatus::Queued | JobStatus::Running)
+}
+
+pub fn beat_has_generation_job(beat: &StoryBeat) -> bool {
+    beat.job_status.is_some_and(job_is_queued_or_running)
+}
+
+pub fn active_job_for_beat(active_job: Option<&Job>, beat_id: i64) -> Option<&Job> {
+    active_job.filter(|job| job.beat_id == Some(beat_id) && job_is_queued_or_running(job.status))
+}
+
+/// Whether beat editor fields should be read-only (queued or running job on this beat).
+pub fn beat_editor_locked(beat: &StoryBeat, active_job: Option<&Job>) -> bool {
+    beat_has_generation_job(beat) || active_job_for_beat(active_job, beat.id).is_some()
+}
+
+pub fn chapter_editor_locked(chapter_id: i64, active_job: Option<&Job>) -> bool {
+    active_job.is_some_and(|job| {
+        job_is_queued_or_running(job.status)
+            && job.chapter_id == Some(chapter_id)
+            && matches!(
+                job.job_type,
+                JobType::StoryProposeBeats | JobType::StoryChapterSummarize
+            )
+    })
+}
+
+pub fn story_basics_locked(active_job: Option<&Job>) -> bool {
+    active_job.is_some_and(|job| {
+        job.job_type == JobType::StoryProposeChapters && job_is_queued_or_running(job.status)
+    })
+}
+
 pub fn chapter_has_substantial_prose(chapter: &StoryChapter) -> bool {
     chapter
         .beats
@@ -664,5 +698,67 @@ mod tests {
             "Chapter 2 prose summary is stale — summarize it before working on later chapters"
         ));
         assert!(!is_stale_summary_error("network error"));
+    }
+
+    fn sample_beat(job_status: Option<JobStatus>) -> StoryBeat {
+        serde_json::from_value(serde_json::json!({
+            "id": 20,
+            "chapter_id": 10,
+            "title": "Beat",
+            "synopsis": "",
+            "content": "",
+            "sort_order": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "job_status": job_status
+        }))
+        .expect("beat")
+    }
+
+    #[test]
+    fn beat_editor_locked_when_beat_job_status_active() {
+        let beat = sample_beat(Some(JobStatus::Queued));
+        assert!(beat_editor_locked(&beat, None));
+    }
+
+    #[test]
+    fn beat_editor_locked_when_active_job_targets_beat() {
+        let beat = sample_beat(None);
+        let job: Job = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "job_type": "story_beat_mechanical",
+            "story_id": 1,
+            "beat_id": 20,
+            "guidance_notes": "",
+            "status": "running",
+            "position": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .expect("job");
+        assert!(beat_editor_locked(&beat, Some(&job)));
+    }
+
+    #[test]
+    fn chapter_editor_locked_for_propose_beats() {
+        let job = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "job_type": "story_propose_beats",
+            "story_id": 1,
+            "chapter_id": 10,
+            "guidance_notes": "",
+            "status": "running",
+            "position": 0,
+            "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .expect("job");
+        assert!(chapter_editor_locked(10, Some(&job)));
+        assert!(!chapter_editor_locked(11, Some(&job)));
+    }
+
+    #[test]
+    fn story_basics_locked_during_propose_chapters() {
+        let job = sample_job(JobStatus::Queued, JobType::StoryProposeChapters);
+        assert!(story_basics_locked(Some(&job)));
+        assert!(!story_basics_locked(None));
     }
 }

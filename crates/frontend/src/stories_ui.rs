@@ -10,9 +10,11 @@ use crate::api;
 use crate::app_sync;
 use crate::auto_grow::container_input_callback;
 use crate::generation_ui::{
-    beat_block_status, chapter_block_status, chapter_has_substantial_prose, chapter_summary_stale,
-    generation_error_from_content, is_stale_summary_error, stale_chapters_in_story, story_notice,
-    BlockGenerationStatus, GenerationButtonGroup, GenerationStatusBar, StaleChapterItem,
+    beat_block_status, beat_editor_locked, beat_has_generation_job, chapter_block_status,
+    chapter_editor_locked, chapter_has_substantial_prose, chapter_summary_stale,
+    generation_error_from_content, is_stale_summary_error, stale_chapters_in_story,
+    story_basics_locked, story_notice, BlockGenerationStatus, GenerationButtonGroup,
+    GenerationStatusBar, StaleChapterItem,
 };
 use crate::item_list::StoryList;
 use crate::router::{AppRoute, Overlay, StoryNav};
@@ -192,10 +194,21 @@ fn begin_reading_edit(
             }
             match result {
                 Ok(detail) => {
-                    let beat_exists = detail.chapters.iter().any(|ch| {
-                        ch.id == target.chapter_id
-                            && ch.beats.iter().any(|b| b.id == target.beat_id)
+                    let beat = detail.chapters.iter().find_map(|ch| {
+                        if ch.id != target.chapter_id {
+                            return None;
+                        }
+                        ch.beats.iter().find(|b| b.id == target.beat_id)
                     });
+                    if beat.is_some_and(beat_has_generation_job) {
+                        on_detail.emit(detail);
+                        preparing.set(false);
+                        if *prepare_target == Some(target) {
+                            prepare_target.set(None);
+                        }
+                        return;
+                    }
+                    let beat_exists = beat.is_some();
                     on_detail.emit(detail);
                     if beat_exists {
                         on_start_edit.emit(target);
@@ -1071,6 +1084,10 @@ fn story_block_list(props: &StoryBlockListProps) -> Html {
                                 <ChapterEditor
                                     story_id={story_id}
                                     chapter={Some(ch.clone())}
+                                    chapter_locked={chapter_editor_locked(
+                                        ch_id,
+                                        props.detail.story.active_job.as_ref(),
+                                    )}
                                     proposing_beats={props.detail.story.active_job.as_ref().is_some_and(|job| {
                                         job.job_type == JobType::StoryProposeBeats
                                             && job.chapter_id == Some(ch_id)
@@ -1510,11 +1527,29 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
         });
     }
 
+    let basics_locked = story_basics_locked(props.story.active_job.as_ref());
+    let save_blocked = use_state(|| Rc::new(RefCell::new(basics_locked)));
+    {
+        let save_blocked = (*save_blocked).clone();
+        let save_controller = save_controller.clone();
+        use_effect_with(basics_locked, move |locked| {
+            *save_blocked.borrow_mut() = *locked;
+            if *locked {
+                save_controller.cancel_pending();
+            }
+            || ()
+        });
+    }
+
     let schedule_save = {
         let draft = draft.clone();
         let last_saved = last_saved.clone();
         let save_controller = save_controller.clone();
+        let save_blocked = (*save_blocked).clone();
         Callback::from(move |_| {
+            if *save_blocked.borrow() {
+                return;
+            }
             let snapshot = (*draft).clone();
             if !draft_is_dirty(&snapshot, &*last_saved) {
                 return;
@@ -1522,8 +1557,13 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
             let controller = save_controller.clone();
             let draft = draft.clone();
             let last_saved = last_saved.clone();
+            let save_blocked = save_blocked.clone();
             let controller_for_save = controller.clone();
             controller.schedule(move || {
+                if *save_blocked.borrow() {
+                    controller_for_save.mark_saved();
+                    return;
+                }
                 let controller = controller_for_save.clone();
                 let draft = draft.clone();
                 let last_saved = last_saved.clone();
@@ -1567,7 +1607,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
         <div class="story-form" ref={form_ref}>
             <label class="field"><span class="muted">{"Title"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <input type="text" value={draft.title.clone()} oninput={{
+                    <input type="text" value={draft.title.clone()} readonly={basics_locked} oninput={{
                         let draft = draft.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1582,7 +1622,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Premise"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={draft.premise.clone()} rows="1" oninput={{
+                    <textarea value={draft.premise.clone()} rows="1" readonly={basics_locked} oninput={{
                         let draft = draft.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1598,7 +1638,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
                 <label class="field"><span class="muted">{"Tone"}</span>
                     <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                        <input type="text" value={draft.tone.clone()} oninput={{
+                        <input type="text" value={draft.tone.clone()} readonly={basics_locked} oninput={{
                             let draft = draft.clone();
                             let schedule_save = schedule_save.clone();
                             Callback::from(move |e: InputEvent| {
@@ -1613,7 +1653,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                 </label>
                 <label class="field"><span class="muted">{"Genre"}</span>
                     <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                        <input type="text" value={draft.genre.clone()} oninput={{
+                        <input type="text" value={draft.genre.clone()} readonly={basics_locked} oninput={{
                             let draft = draft.clone();
                             let schedule_save = schedule_save.clone();
                             Callback::from(move |e: InputEvent| {
@@ -1629,7 +1669,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
             </div>
             <label class="field"><span class="muted">{"POV"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <input type="text" value={draft.pov.clone()} placeholder="e.g. third person limited" oninput={{
+                    <input type="text" value={draft.pov.clone()} placeholder="e.g. third person limited" readonly={basics_locked} oninput={{
                         let draft = draft.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1643,7 +1683,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                 </AutoSaveField>
             </label>
             <label class="field"><span class="muted">{"Length"}</span>
-                <select onchange={{
+                <select disabled={basics_locked} onchange={{
                     let draft = draft.clone();
                     let schedule_save = schedule_save.clone();
                     Callback::from(move |e: Event| {
@@ -1668,7 +1708,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Notes"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={draft.notes.clone()} rows="1" oninput={{
+                    <textarea value={draft.notes.clone()} rows="1" readonly={basics_locked} oninput={{
                         let draft = draft.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1686,6 +1726,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
                     <textarea
                         value={draft.tracked_details.clone()}
                         rows="1"
+                        readonly={basics_locked}
                         placeholder="Important details to keep consistent — e.g. protagonist name, key objects, relationships"
                         oninput={{
                         let draft = draft.clone();
@@ -1757,6 +1798,8 @@ struct ChapterEditorProps {
     story_id: i64,
     chapter: Option<StoryChapter>,
     #[prop_or(false)]
+    chapter_locked: bool,
+    #[prop_or(false)]
     proposing_beats: bool,
     #[prop_or(false)]
     summarizing_chapter: bool,
@@ -1793,14 +1836,34 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
         });
     }
 
+    let story_id = props.story_id;
+    let chapter_id = chapter.id;
+    let proposing_beats = props.proposing_beats;
+    let summarizing_chapter = props.summarizing_chapter;
+    let chapter_locked = props.chapter_locked;
+    let save_blocked = use_state(|| Rc::new(RefCell::new(chapter_locked)));
+    {
+        let save_blocked = (*save_blocked).clone();
+        let save_controller = save_controller.clone();
+        use_effect_with(chapter_locked, move |locked| {
+            *save_blocked.borrow_mut() = *locked;
+            if *locked {
+                save_controller.cancel_pending();
+            }
+            || ()
+        });
+    }
+
     let schedule_save = {
         let title = title.clone();
         let synopsis = synopsis.clone();
         let last_saved = last_saved.clone();
         let save_controller = save_controller.clone();
-        let story_id = props.story_id;
-        let chapter_id = chapter.id;
+        let save_blocked = (*save_blocked).clone();
         Callback::from(move |_| {
+            if *save_blocked.borrow() {
+                return;
+            }
             let snapshot = ((*title).clone(), (*synopsis).clone());
             if !draft_is_dirty(&snapshot, &*last_saved) {
                 return;
@@ -1809,8 +1872,13 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
             let title = title.clone();
             let synopsis = synopsis.clone();
             let last_saved = last_saved.clone();
+            let save_blocked = save_blocked.clone();
             let controller_for_save = controller.clone();
             controller.schedule(move || {
+                if *save_blocked.borrow() {
+                    controller_for_save.mark_saved();
+                    return;
+                }
                 let controller = controller_for_save.clone();
                 let title = title.clone();
                 let synopsis = synopsis.clone();
@@ -1842,10 +1910,6 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
         })
     };
 
-    let story_id = props.story_id;
-    let chapter_id = chapter.id;
-    let proposing_beats = props.proposing_beats;
-    let summarizing_chapter = props.summarizing_chapter;
     let summary_stale = chapter_summary_stale(&chapter);
     let on_stale_error = props.on_stale_error.clone();
 
@@ -1856,7 +1920,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
         <div class="story-form" ref={form_ref}>
             <label class="field"><span class="muted">{"Title"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <input type="text" value={(*title).clone()} oninput={{
+                    <input type="text" value={(*title).clone()} readonly={chapter_locked} oninput={{
                         let title = title.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1869,7 +1933,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Synopsis"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={(*synopsis).clone()} rows="1" oninput={{
+                    <textarea value={(*synopsis).clone()} rows="1" readonly={chapter_locked} oninput={{
                         let synopsis = synopsis.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -1945,7 +2009,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
                 )}
             />
             <div class="story-actions">
-                <button class="btn secondary" onclick={{
+                <button class="btn secondary" disabled={proposing_beats} onclick={{
                     let on_detail = props.on_detail.clone();
                     Callback::from(move |_| {
                         let on_detail = on_detail.clone();
@@ -2107,6 +2171,23 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let generation_active = queued || streaming;
     let beat_job_active =
         generation_active || mechanical_generating || aligning_prose || rechecking_variables;
+    let fields_locked = beat_editor_locked(&beat, props.active_job.as_ref());
+    let save_blocked = use_state(|| Rc::new(RefCell::new(fields_locked)));
+    {
+        let save_blocked = (*save_blocked).clone();
+        let save_controller = save_controller.clone();
+        let user_edited_prose = user_edited_prose.clone();
+        let user_edited_mechanical = user_edited_mechanical.clone();
+        use_effect_with(fields_locked, move |locked| {
+            *save_blocked.borrow_mut() = *locked;
+            if *locked {
+                save_controller.cancel_pending();
+                user_edited_prose.set(false);
+                user_edited_mechanical.set(false);
+            }
+            || ()
+        });
+    }
 
     {
         let content = content.clone();
@@ -2128,9 +2209,9 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         let user_edited_mechanical = user_edited_mechanical.clone();
         let server_mechanical = beat.mechanical.clone();
         use_effect_with(
-            (beat.id, server_mechanical.clone()),
-            move |(_, server_mechanical)| {
-                if !*user_edited_mechanical {
+            (beat.id, server_mechanical.clone(), fields_locked),
+            move |(_, server_mechanical, fields_locked)| {
+                if *fields_locked || !*user_edited_mechanical {
                     mechanical.set(server_mechanical.clone());
                 }
                 || ()
@@ -2154,7 +2235,11 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         let last_saved = last_saved.clone();
         let save_controller = save_controller.clone();
         let reschedule_cell = schedule_save_cell.clone();
+        let save_blocked = (*save_blocked).clone();
         Callback::from(move |include_content: bool| {
+            if *save_blocked.borrow() {
+                return;
+            }
             let save_content = include_content && !prose_generating && !prose_continuing;
             let snapshot = BeatFields {
                 title: (*title).clone(),
@@ -2174,7 +2259,12 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
             let reschedule_cell = reschedule_cell.clone();
             let controller_for_save = controller.clone();
             let saved_content = save_content;
+            let save_blocked = save_blocked.clone();
             controller.schedule(move || {
+                if *save_blocked.borrow() {
+                    controller_for_save.mark_saved();
+                    return;
+                }
                 let controller = controller_for_save.clone();
                 let title = title.clone();
                 let synopsis = synopsis.clone();
@@ -2293,7 +2383,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         <div class="story-form" ref={beat_form_ref}>
             <label class="field"><span class="muted">{"Title"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <input type="text" value={(*title).clone()} oninput={{
+                    <input type="text" value={(*title).clone()} readonly={fields_locked} oninput={{
                         let title = title.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -2306,7 +2396,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
             </label>
             <label class="field"><span class="muted">{"Synopsis"}</span>
                 <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
-                    <textarea value={(*synopsis).clone()} rows="1" oninput={{
+                    <textarea value={(*synopsis).clone()} rows="1" readonly={fields_locked} oninput={{
                         let synopsis = synopsis.clone();
                         let schedule_save = schedule_save.clone();
                         Callback::from(move |e: InputEvent| {
@@ -2343,7 +2433,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                         value={(*mechanical).clone()}
                         rows="1"
                         placeholder="Bullet list of what happens in this beat…"
-                        readonly={mechanical_generating}
+                        readonly={fields_locked}
                         oninput={{
                         let mechanical = mechanical.clone();
                         let user_edited_mechanical = user_edited_mechanical.clone();
@@ -2409,7 +2499,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             value={prose_value}
                             placeholder={prose_placeholder}
                             rows="1"
-                            readonly={generation_active && !*user_edited_prose}
+                            readonly={fields_locked}
                             oninput={{
                                 let content = content.clone();
                                 let user_edited_prose = user_edited_prose.clone();
@@ -2454,6 +2544,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                             beat_order={beat.sort_order}
                             scope_label={beat_scope_label}
                             variable_updates={beat.variable_updates.clone()}
+                            readonly={fields_locked}
                             on_detail={props.on_detail.clone()}
                         />
                     }
@@ -2650,6 +2741,34 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
     let generation_active = queued || streaming;
     let generation_error = generation_error_from_content(&beat.content);
 
+    let save_blocked = use_state(|| Rc::new(RefCell::new(generation_active)));
+    {
+        let save_blocked = (*save_blocked).clone();
+        let save_controller = save_controller.clone();
+        let user_edited = user_edited.clone();
+        use_effect_with(generation_active, move |active| {
+            *save_blocked.borrow_mut() = *active;
+            if *active {
+                save_controller.cancel_pending();
+                user_edited.set(false);
+            }
+            || ()
+        });
+    }
+
+    {
+        let on_stop_edit = props.on_stop_edit.clone();
+        let save_controller = save_controller.clone();
+        let editing = props.editing;
+        use_effect_with((generation_active, editing), move |(active, editing)| {
+            if *active && *editing {
+                save_controller.cancel_pending();
+                on_stop_edit.emit(());
+            }
+            || ()
+        });
+    }
+
     let source_content = if props.editing {
         (*content).clone()
     } else {
@@ -2672,8 +2791,12 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         let chapter_id = props.chapter_id;
         let beat_id = beat.id;
         let on_detail = props.on_detail.clone();
+        let save_blocked = (*save_blocked).clone();
         Callback::from(
             move |(immediate, snapshot_override, sync_parent): (bool, Option<String>, bool)| {
+                if *save_blocked.borrow() {
+                    return;
+                }
                 let snapshot = snapshot_override.unwrap_or_else(|| (*content).clone());
                 if snapshot == *last_saved {
                     return;
@@ -2683,7 +2806,11 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                 let last_saved = last_saved.clone();
                 let controller_for_save = controller.clone();
                 let on_detail = on_detail.clone();
+                let save_blocked = save_blocked.clone();
                 let run_save = move || {
+                    if *save_blocked.borrow() {
+                        return;
+                    }
                     let controller = controller_for_save.clone();
                     let content = content.clone();
                     let last_saved = last_saved.clone();
@@ -2727,7 +2854,12 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         let content = content.clone();
         let on_stop_edit = props.on_stop_edit.clone();
         let flush_save = flush_save.clone();
+        let save_blocked = (*save_blocked).clone();
         Callback::from(move |dom_content: Option<String>| {
+            if *save_blocked.borrow() {
+                on_stop_edit.emit(());
+                return;
+            }
             if let Some(text) = dom_content {
                 content.set(text.clone());
                 flush_save.emit(Some(text));
@@ -2759,7 +2891,7 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                         value={prose_value}
                         rows="1"
                         autofocus={true}
-                        readonly={generation_active && !*user_edited}
+                        readonly={generation_active}
                         oninput={{
                             let content = content.clone();
                             let user_edited = user_edited.clone();
