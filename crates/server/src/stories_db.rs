@@ -912,6 +912,41 @@ pub async fn prepare_generate_prose(
     .await
 }
 
+pub async fn prepare_continue_prose(
+    pool: &SqlitePool,
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    payload: &GenerateRequest,
+) -> AppResult<Job> {
+    ensure_beat_generation_allowed(pool, story_id, chapter_id).await?;
+    let beat = get_beat(pool, story_id, chapter_id, beat_id).await?;
+    if beat.mechanical.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "Generate a mechanical beat plan before continuing prose",
+        ));
+    }
+    if beat.content.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "Write or generate some prose before continuing",
+        ));
+    }
+    if has_active_beat_job(pool, beat_id).await? {
+        return Err(AppError::bad_request(
+            "Wait for the current beat job to finish before continuing prose",
+        ));
+    }
+    enqueue_story_job(
+        pool,
+        JobType::StoryBeatProseContinue,
+        story_id,
+        Some(chapter_id),
+        Some(beat_id),
+        payload.guidance_notes.clone(),
+    )
+    .await
+}
+
 pub async fn list_story_variables(
     pool: &SqlitePool,
     story_id: i64,

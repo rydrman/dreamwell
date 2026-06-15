@@ -26,6 +26,7 @@ pub enum JobType {
     StoryBeatOutline,
     StoryProposeBeats,
     StoryBeatProse,
+    StoryBeatProseContinue,
     StoryBeatMechanical,
     StoryBeatProseRecheck,
     StoryChapterSummarize,

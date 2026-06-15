@@ -15,9 +15,9 @@ use crate::inference::{chat_completion, stream_chat_completion};
 use crate::message_followups::{enqueue_chat_followups, ChatGenerationComplete};
 use crate::prompts::build_messages_for_inference;
 use crate::story_prompts::{
-    build_beat_outline_messages, build_beat_prose_messages, build_chapter_outline_messages,
-    build_propose_beats_messages, build_propose_chapters_messages, parse_beats_proposal_json,
-    parse_chapters_proposal_json, parse_outline_json,
+    build_beat_outline_messages, build_beat_prose_continue_messages, build_beat_prose_messages,
+    build_chapter_outline_messages, build_propose_beats_messages, build_propose_chapters_messages,
+    parse_beats_proposal_json, parse_chapters_proposal_json, parse_outline_json,
 };
 use crate::summarize::{
     enqueue_regenerate_summary_for_chat, enqueue_summarize_for_chat, run_summarize_job,
@@ -388,7 +388,9 @@ async fn run_job(
         JobType::StoryProposeBeats => {
             run_story_propose_beats(pool, job_id, &job, &settings, token).await
         }
-        JobType::StoryBeatProse => run_story_beat_prose(pool, job_id, &job, &settings, token).await,
+        JobType::StoryBeatProse | JobType::StoryBeatProseContinue => {
+            run_story_beat_prose(pool, job_id, &job, &settings, token).await
+        }
         JobType::StoryBeatMechanical => {
             run_story_beat_mechanical_handler(pool, job_id, &job, &settings, token).await
         }
@@ -441,6 +443,7 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
                 }
             }
         }
+        JobType::StoryBeatProseContinue => {}
         JobType::ChatSummarize => {
             remove_summarize_marker(pool, job).await?;
         }
@@ -483,6 +486,7 @@ async fn fail_job(
                     .await?;
             }
         }
+        JobType::StoryBeatProseContinue => {}
         JobType::ChatSummarize => {
             remove_summarize_marker(pool, job).await?;
         }
@@ -1149,6 +1153,7 @@ async fn run_story_beat_prose(
     let beat_id = job
         .beat_id
         .ok_or_else(|| AppError::internal("prose job missing beat_id"))?;
+    let continuing = job.job_type == JobType::StoryBeatProseContinue;
 
     let detail = db::get_story_detail(pool, story_id).await?;
     let chapter = detail
@@ -1161,6 +1166,13 @@ async fn run_story_beat_prose(
         .iter()
         .find(|b| b.id == beat_id)
         .ok_or_else(|| AppError::internal("beat not found"))?;
+
+    let append_base = continuing.then(|| beat.content.clone());
+    let existing_variable_updates = if continuing {
+        beat.variable_updates.clone()
+    } else {
+        Vec::new()
+    };
 
     let variables = if settings.variables_enabled {
         crate::story_variables::variables_for_beat_generation(
@@ -1175,15 +1187,27 @@ async fn run_story_beat_prose(
         Vec::new()
     };
 
-    let messages = build_beat_prose_messages(
-        &detail.story,
-        &detail.chapters,
-        chapter,
-        beat,
-        &job.guidance_notes,
-        &variables,
-        settings.variables_enabled,
-    );
+    let messages = if continuing {
+        build_beat_prose_continue_messages(
+            &detail.story,
+            &detail.chapters,
+            chapter,
+            beat,
+            &job.guidance_notes,
+            &variables,
+            settings.variables_enabled,
+        )
+    } else {
+        build_beat_prose_messages(
+            &detail.story,
+            &detail.chapters,
+            chapter,
+            beat,
+            &job.guidance_notes,
+            &variables,
+            settings.variables_enabled,
+        )
+    };
 
     let max_attempts = generation_max_retries();
     let mut last_error = "model returned no text".to_string();
@@ -1201,7 +1225,8 @@ async fn run_story_beat_prose(
                 error = %last_error,
                 "retrying beat prose generation"
             );
-            db::update_beat_content(pool, beat_id, "").await?;
+            let restore = append_base.as_deref().unwrap_or("");
+            db::update_beat_content(pool, beat_id, restore).await?;
             if wait_for_generation_retry(attempt, &token).await {
                 return cancel_job_record(pool, job).await;
             }
@@ -1216,6 +1241,8 @@ async fn run_story_beat_prose(
             beat_id,
             settings,
             &messages,
+            append_base.as_deref(),
+            &existing_variable_updates,
             &token,
         )
         .await?
@@ -1227,6 +1254,9 @@ async fn run_story_beat_prose(
             BeatProseOutcome::Retryable(message) => {
                 last_error = message;
                 if attempt == max_attempts {
+                    if let Some(base) = &append_base {
+                        db::update_beat_content(pool, beat_id, base).await?;
+                    }
                     fail_job(pool, job_id, job, &last_error).await?;
                     return Ok(());
                 }
@@ -1249,8 +1279,11 @@ async fn run_beat_prose_generation_attempt(
     beat_id: i64,
     settings: &dreamwell_types::Settings,
     messages: &[serde_json::Value],
+    append_base: Option<&str>,
+    existing_variable_updates: &[dreamwell_types::BeatVariableUpdate],
     token: &CancellationToken,
 ) -> AppResult<BeatProseOutcome> {
+    let base = append_base.unwrap_or("");
     let mut stream = match stream_chat_completion(
         &settings.inference_url,
         &settings.model,
@@ -1273,13 +1306,21 @@ async fn run_beat_prose_generation_attempt(
         match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
-                let display = display_beat_prose(settings, &accumulated, true);
+                let new_display = display_beat_prose(settings, &accumulated, true);
+                let display = if append_base.is_some() {
+                    format!("{base}{new_display}")
+                } else {
+                    new_display
+                };
                 db::update_beat_content(pool, beat_id, &display).await?;
                 db::touch_story(pool, story_id).await?;
             }
             Err(err) => {
                 if accumulated.is_empty() {
                     return Ok(BeatProseOutcome::Retryable(err.to_string()));
+                }
+                if let Some(base) = append_base {
+                    db::update_beat_content(pool, beat_id, base).await?;
                 }
                 db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
                 return Ok(BeatProseOutcome::Failed);
@@ -1291,12 +1332,17 @@ async fn run_beat_prose_generation_attempt(
         return Ok(BeatProseOutcome::Cancelled);
     }
 
-    let display = display_beat_prose(settings, &accumulated, false);
-    if display.trim().is_empty() {
+    let new_display = display_beat_prose(settings, &accumulated, false);
+    if new_display.trim().is_empty() {
         return Ok(BeatProseOutcome::Retryable(
             "model returned no text".to_string(),
         ));
     }
+    let display = if append_base.is_some() {
+        format!("{base}{new_display}")
+    } else {
+        new_display
+    };
 
     if settings.variables_enabled {
         let parsed = crate::variables::parse_variable_updates(&accumulated);
@@ -1328,13 +1374,25 @@ async fn run_beat_prose_generation_attempt(
                 &meaningful,
             )
             .await?;
+            let mut variable_updates = existing_variable_updates.to_vec();
+            variable_updates.extend(beat_updates);
             db::finalize_beat_prose(
                 pool,
                 story_id,
                 chapter_order,
                 beat_id,
                 &display,
-                &beat_updates,
+                &variable_updates,
+            )
+            .await?;
+        } else if append_base.is_some() {
+            db::finalize_beat_prose(
+                pool,
+                story_id,
+                chapter_order,
+                beat_id,
+                &display,
+                existing_variable_updates,
             )
             .await?;
         } else {

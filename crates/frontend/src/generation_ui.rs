@@ -105,6 +105,7 @@ pub fn job_running_label(job_type: JobType) -> &'static str {
         JobType::StoryProposeChapters => "proposing chapters…",
         JobType::StoryProposeBeats => "proposing beats…",
         JobType::StoryBeatProse => "writing prose…",
+        JobType::StoryBeatProseContinue => "continuing prose…",
         JobType::StoryBeatMechanical => "building mechanical plan…",
         JobType::StoryBeatProseRecheck => "aligning prose…",
         JobType::StoryChapterOutline => "outlining chapter…",
@@ -209,7 +210,9 @@ pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
                 JobType::StoryChapterSummarize => {
                     GenerationPhase::Summarizing(SummaryKind::ChapterProse)
                 }
-                JobType::StoryBeatProse => GenerationPhase::Writing,
+                JobType::StoryBeatProse | JobType::StoryBeatProseContinue => {
+                    GenerationPhase::Writing
+                }
                 _ => GenerationPhase::ProposingOutline,
             };
             Some(GenerationNotice::Running(phase))

@@ -637,6 +637,20 @@ pub async fn generate_prose(
     .await
 }
 
+pub async fn continue_prose(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance_notes: &str,
+) -> Result<StoryDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{story_id}/chapters/{chapter_id}/beats/{beat_id}/continue-prose"),
+        &serde_json::json!({ "guidance_notes": guidance_notes }),
+    )
+    .await
+}
+
 pub async fn summarize_chapter_prose(
     story_id: i64,
     chapter_id: i64,
