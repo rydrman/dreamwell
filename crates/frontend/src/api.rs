@@ -18,6 +18,7 @@ struct ReconnectingEventSource {
     source: RefCell<Option<EventSource>>,
     timeout: RefCell<Option<Timeout>>,
     stopped: RefCell<bool>,
+    paused: RefCell<bool>,
     attempt: RefCell<u32>,
 }
 
@@ -29,6 +30,7 @@ impl ReconnectingEventSource {
             source: RefCell::new(None),
             timeout: RefCell::new(None),
             stopped: RefCell::new(false),
+            paused: RefCell::new(false),
             attempt: RefCell::new(0),
         });
         inner.connect();
@@ -36,7 +38,7 @@ impl ReconnectingEventSource {
     }
 
     fn connect(self: &Rc<Self>) {
-        if *self.stopped.borrow() {
+        if *self.stopped.borrow() || *self.paused.borrow() {
             return;
         }
         self.close_source();
@@ -95,7 +97,7 @@ impl ReconnectingEventSource {
     }
 
     fn schedule_reconnect(self: &Rc<Self>) {
-        if *self.stopped.borrow() {
+        if *self.stopped.borrow() || *self.paused.borrow() {
             return;
         }
         self.timeout.borrow_mut().take();
@@ -108,14 +110,14 @@ impl ReconnectingEventSource {
     }
 
     fn schedule_idle_reconnect(self: &Rc<Self>) {
-        if *self.stopped.borrow() {
+        if *self.stopped.borrow() || *self.paused.borrow() {
             return;
         }
         self.schedule_reconnect_after(IDLE_RECONNECT_MS);
     }
 
     fn schedule_reconnect_after(self: &Rc<Self>, delay_ms: u32) {
-        if *self.stopped.borrow() {
+        if *self.stopped.borrow() || *self.paused.borrow() {
             return;
         }
         self.timeout.borrow_mut().take();
@@ -126,17 +128,18 @@ impl ReconnectingEventSource {
         *self.timeout.borrow_mut() = Some(timeout);
     }
 
-    fn reconnect(self: &Rc<Self>) {
+    fn stop(&self) {
+        *self.stopped.borrow_mut() = true;
+        *self.paused.borrow_mut() = false;
+        self.timeout.borrow_mut().take();
+        self.close_source();
+    }
+
+    fn pause(self: &Rc<Self>) {
         if *self.stopped.borrow() {
             return;
         }
-        *self.attempt.borrow_mut() = 0;
-        self.timeout.borrow_mut().take();
-        self.connect();
-    }
-
-    fn stop(&self) {
-        *self.stopped.borrow_mut() = true;
+        *self.paused.borrow_mut() = true;
         self.timeout.borrow_mut().take();
         self.close_source();
     }
@@ -461,8 +464,8 @@ pub struct StreamNudge {
 }
 
 impl StreamNudge {
-    pub fn reconnect(&self) {
-        ReconnectingEventSource::reconnect(&self.inner);
+    pub fn pause(&self) {
+        ReconnectingEventSource::pause(&self.inner);
     }
 }
 

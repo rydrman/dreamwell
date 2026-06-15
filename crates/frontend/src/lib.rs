@@ -1,4 +1,5 @@
 mod api;
+mod app_sync;
 mod auth;
 mod generation_ui;
 mod install;
@@ -29,7 +30,7 @@ use dreamwell_types::*;
 use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
 };
-use gloo_timers::callback::{Interval, Timeout};
+use gloo_timers::callback::Timeout;
 use install::InstallSettings;
 use item_list::ChatList;
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
@@ -533,83 +534,57 @@ fn app() -> Html {
     }
 
     {
+        let refresh_generation = refresh_generation.clone();
+        let chat_stream_nudge = chat_stream_nudge.clone();
         let chats = chats.clone();
         let archived_chats = archived_chats.clone();
         let queue = queue.clone();
-        let chat_stream_nudge = chat_stream_nudge.clone();
+        let stories = stories.clone();
         use_effect_with((), move |_| {
-            let chats = chats.clone();
-            let archived_chats = archived_chats.clone();
-            let queue = queue.clone();
-            let chat_stream_nudge = chat_stream_nudge.clone();
-            let resume: Rc<dyn Fn()> = Rc::new(move || {
-                if let Some(nudge) = chat_stream_nudge.borrow().clone() {
-                    nudge.reconnect();
-                }
-                let chats = chats.clone();
-                let archived_chats = archived_chats.clone();
-                let queue = queue.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(status) = api::get_queue().await {
-                        queue.set(Some(status));
-                    }
-                    if let Ok(list) = api::list_chats().await {
-                        publish_chats(&chats, list);
-                    }
-                    if let Ok(list) = api::list_archived_chats().await {
-                        publish_archived_chats(&archived_chats, list);
-                    }
-                });
-            });
-
-            let resume_visibility = resume.clone();
-            let visibility_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                if web_sys::window()
-                    .and_then(|window| window.document())
-                    .is_some_and(|document| {
-                        document.visibility_state() == web_sys::VisibilityState::Visible
-                    })
+            let guard = app_sync::register_scope(
                 {
-                    resume_visibility();
-                }
-            }) as Box<dyn FnMut(_)>);
-
-            let document = web_sys::window().and_then(|window| window.document());
-            if let Some(document) = document.as_ref() {
-                let _ = document.add_event_listener_with_callback(
-                    "visibilitychange",
-                    visibility_callback.as_ref().unchecked_ref(),
-                );
-            }
-
-            let resume_online = resume.clone();
-            let online_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                resume_online();
-            }) as Box<dyn FnMut(_)>);
-
-            let window = web_sys::window();
-            if let Some(window) = window.as_ref() {
-                let _ = window.add_event_listener_with_callback(
-                    "online",
-                    online_callback.as_ref().unchecked_ref(),
-                );
-            }
-
-            move || {
-                if let Some(document) = document.as_ref() {
-                    let _ = document.remove_event_listener_with_callback(
-                        "visibilitychange",
-                        visibility_callback.as_ref().unchecked_ref(),
-                    );
-                }
-                if let Some(window) = window.as_ref() {
-                    let _ = window.remove_event_listener_with_callback(
-                        "online",
-                        online_callback.as_ref().unchecked_ref(),
-                    );
-                }
-            }
+                    let refresh_generation = refresh_generation.clone();
+                    let chats = chats.clone();
+                    let archived_chats = archived_chats.clone();
+                    let queue = queue.clone();
+                    let stories = stories.clone();
+                    move |_reason| {
+                        refresh_generation.set(*refresh_generation + 1);
+                        let queue = queue.clone();
+                        let chats = chats.clone();
+                        let archived_chats = archived_chats.clone();
+                        let stories = stories.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(status) = api::get_queue().await {
+                                queue.set(Some(status));
+                            }
+                            if let Ok(list) = api::list_chats().await {
+                                publish_chats(&chats, list);
+                            }
+                            if let Ok(list) = api::list_archived_chats().await {
+                                publish_archived_chats(&archived_chats, list);
+                            }
+                            if let Ok(list) = api::list_stories().await {
+                                stories.set(list);
+                            }
+                        });
+                    }
+                },
+                {
+                    let chat_stream_nudge = chat_stream_nudge.clone();
+                    move || {
+                        if let Some(nudge) = chat_stream_nudge.borrow().clone() {
+                            nudge.pause();
+                        }
+                    }
+                },
+            );
+            move || drop(guard)
         });
+    }
+
+    {
+        use_effect_with((), move |_| app_sync::install_lifecycle());
     }
 
     let load_messages_for_chat = {
@@ -687,7 +662,7 @@ fn app() -> Html {
             } else {
                 3000
             };
-            let handle = Interval::new(poll_ms, move || {
+            let tick = Rc::new(move || {
                 let queue = queue.clone();
                 let chats = chats.clone();
                 let archived_chats = archived_chats.clone();
@@ -747,7 +722,7 @@ fn app() -> Html {
                     }
                 });
             });
-            move || drop(handle)
+            app_sync::start_poll(poll_ms, tick)
         });
     }
 
