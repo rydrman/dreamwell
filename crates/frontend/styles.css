@@ -1634,7 +1634,6 @@ input.header-title {
 #story-variables-panel .variable-row-value {
   resize: none;
   overflow: hidden;
-  field-sizing: content;
 }
 
 .variable-row .field-autosave-wrap {
@@ -2006,7 +2005,6 @@ input.header-title {
 #story-variables-panel textarea {
   resize: none;
   overflow: hidden;
-  field-sizing: content;
 }
 
 .reading-prose-hint {
