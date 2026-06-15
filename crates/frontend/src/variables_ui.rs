@@ -7,8 +7,8 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::story_save::{
-    draft_is_dirty, fail_auto_save, finish_auto_save, AutoSaveController, AutoSaveField,
-    AutoSaveOutcome, AutoSavePhase,
+    draft_is_dirty, fail_auto_save, finish_auto_save, use_autosave_tab_flush, AutoSaveController,
+    AutoSaveField, AutoSaveOutcome, AutoSavePhase,
 };
 
 pub const MANUAL_MESSAGE_SOURCE: i64 = -1;
@@ -215,6 +215,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
     let save_phase = use_state(|| AutoSavePhase::Synced);
     let save_error = use_state(|| None::<String>);
     let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
+    use_autosave_tab_flush(save_controller.clone());
     let variable_id = use_state(|| props.model.id);
 
     {

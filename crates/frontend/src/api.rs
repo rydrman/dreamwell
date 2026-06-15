@@ -143,6 +143,23 @@ impl ReconnectingEventSource {
         self.timeout.borrow_mut().take();
         self.close_source();
     }
+
+    fn reconnect(self: &Rc<Self>) {
+        if *self.stopped.borrow() || *self.paused.borrow() {
+            return;
+        }
+        self.attempt.replace(0);
+        self.connect();
+    }
+
+    fn resume(self: &Rc<Self>) {
+        if *self.stopped.borrow() {
+            return;
+        }
+        *self.paused.borrow_mut() = false;
+        self.attempt.replace(0);
+        self.connect();
+    }
 }
 
 fn api_request(method: &str, path: &str) -> RequestBuilder {
@@ -466,6 +483,16 @@ pub struct StreamNudge {
 impl StreamNudge {
     pub fn pause(&self) {
         ReconnectingEventSource::pause(&self.inner);
+    }
+
+    /// Reconnect without tearing down the surrounding UI state.
+    pub fn reconnect(&self) {
+        ReconnectingEventSource::reconnect(&self.inner);
+    }
+
+    /// Resume after tab hide; clears the paused flag and opens a new connection.
+    pub fn resume(&self) {
+        ReconnectingEventSource::resume(&self.inner);
     }
 }
 
