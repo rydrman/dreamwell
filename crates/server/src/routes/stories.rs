@@ -60,6 +60,10 @@ pub fn router() -> Router<AppState> {
             post(generate_prose),
         )
         .route(
+            "/:id/chapters/:chapter_id/beats/:beat_id/continue-prose",
+            post(continue_prose),
+        )
+        .route(
             "/:id/chapters/:chapter_id/beats/:beat_id/align-prose",
             post(align_beat_prose),
         )
@@ -226,6 +230,16 @@ async fn generate_prose(
     Json(payload): Json<GenerateRequest>,
 ) -> AppResult<Json<StoryDetail>> {
     let job = db::prepare_generate_prose(&state.pool, id, chapter_id, beat_id, &payload).await?;
+    enqueue_story_generation(&state.queue, job).await?;
+    Ok(Json(db::get_story_detail(&state.pool, id).await?))
+}
+
+async fn continue_prose(
+    State(state): State<AppState>,
+    Path((id, chapter_id, beat_id)): Path<(i64, i64, i64)>,
+    Json(payload): Json<GenerateRequest>,
+) -> AppResult<Json<StoryDetail>> {
+    let job = db::prepare_continue_prose(&state.pool, id, chapter_id, beat_id, &payload).await?;
     enqueue_story_generation(&state.queue, job).await?;
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }

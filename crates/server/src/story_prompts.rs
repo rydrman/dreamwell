@@ -347,6 +347,89 @@ pub fn build_beat_prose_messages(
     ]
 }
 
+pub fn build_beat_prose_continue_messages(
+    story: &Story,
+    chapters: &[StoryChapter],
+    chapter: &StoryChapter,
+    beat: &StoryBeat,
+    guidance: &str,
+    variables: &[(String, String)],
+    variables_enabled: bool,
+) -> Vec<Value> {
+    let prior_chapters = prior_chapter_context(chapters, chapter.sort_order);
+    let prior_beats = prior_beat_synopses(&chapter.beats, beat.sort_order);
+    let prior_prose = prior_beat_prose(&chapter.beats, beat.sort_order);
+    let mut user = format!(
+        "Continue the prose for beat {} from where it left off.\n\n\
+         Beat title: {}\n\
+         Mechanical beat plan:\n{}\n\n\
+         Scope: Continue covering what the mechanical plan lists, in order. \
+         Pick up after the existing prose below — do not repeat or rewrite text already written. \
+         Stop when this beat ends — do not advance into later beats or resolve plot points reserved for them. \
+         The beat synopsis and chapter synopsis below are background context for tone and direction only — not a checklist.\n\n\
+         Beat synopsis (background): {}\n\
+         Chapter synopsis (background — may describe later beats): {}",
+        beat.sort_order + 1,
+        beat.title,
+        beat.mechanical.trim(),
+        beat.synopsis,
+        chapter.synopsis
+    );
+    if !prior_prose.is_empty() {
+        user.push_str(
+            "\n\nPrior beats in this chapter (written prose — canonical; match names, facts, and events):\n",
+        );
+        user.push_str(&prior_prose);
+    }
+    if !prior_chapters.is_empty() {
+        user.push_str("\n\nPrior chapters (compressed summaries when available):\n");
+        user.push_str(&prior_chapters);
+    }
+    if !prior_beats.is_empty() {
+        user.push_str(
+            "\n\nPrior beats in this chapter (synopses — written prose above takes precedence):\n",
+        );
+        user.push_str(&prior_beats);
+    }
+    user.push_str("\n\nExisting prose for this beat (continue directly from the end):\n");
+    user.push_str(beat.content.trim());
+    if !guidance.trim().is_empty() {
+        user.push_str("\n\nGuidance from the author:\n");
+        user.push_str(guidance.trim());
+    }
+    user.push_str(
+        "\n\nWrite only the new narrative prose to append. No headings, labels, meta commentary, or repetition of existing text.",
+    );
+
+    let variables_text = crate::story_variables::format_story_variables(variables);
+    let mut system = format!(
+        "You are a fiction writer. Match the story tone and POV. \
+         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
+        story_basics(story)
+    );
+    if !variables_text.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&variables_text);
+    }
+    let tracked_text = crate::story_variables::format_tracked_details(&story.tracked_details);
+    if !tracked_text.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&tracked_text);
+    }
+    if variables_enabled {
+        system.push_str("\n\n");
+        system.push_str(crate::story_variables::story_variables_instruction());
+    }
+
+    vec![
+        serde_json::json!({
+            "role": "system",
+            "content": system,
+        }),
+        serde_json::json!({ "role": "user", "content": user }),
+    ]
+}
+
 fn chapter_snapshot(chapter: &StoryChapter, index: usize) -> String {
     let beat_count = chapter.beats.len();
     let prose_beats = chapter
@@ -738,5 +821,36 @@ mod tests {
         assert!(system.contains(r#"<var key="baker_name">Tomas</var>"#));
         assert!(system.contains("Important details to track"));
         assert!(system.contains("silver locket"));
+    }
+
+    #[test]
+    fn beat_prose_continue_prompt_includes_existing_prose_and_append_instruction() {
+        let chapter = sample_chapter(
+            0,
+            vec![sample_beat(
+                0,
+                "Market",
+                "She buys bread.",
+                "She walked into the market.",
+            )],
+        );
+        let mut beat = chapter.beats[0].clone();
+        beat.mechanical = "- She haggles for bread.\n- She leaves with a loaf.".to_string();
+        let messages = build_beat_prose_continue_messages(
+            &sample_story(),
+            &[chapter.clone()],
+            &chapter,
+            &beat,
+            "",
+            &[],
+            false,
+        );
+        let user = messages[1]["content"].as_str().unwrap();
+
+        assert!(user.contains("Continue the prose for beat 1"));
+        assert!(user.contains("Existing prose for this beat"));
+        assert!(user.contains("She walked into the market."));
+        assert!(user.contains("do not repeat or rewrite text already written"));
+        assert!(user.contains("Write only the new narrative prose to append"));
     }
 }

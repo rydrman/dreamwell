@@ -1082,6 +1082,34 @@ fn generate_prose_action(
     })
 }
 
+fn continue_prose_action(
+    story_id: i64,
+    chapter_id: i64,
+    beat_id: i64,
+    guidance: String,
+    on_detail: Callback<StoryDetail>,
+    bump_stream: Callback<()>,
+    on_stale_error: Callback<String>,
+) -> Callback<()> {
+    Callback::from(move |_| {
+        let on_detail = on_detail.clone();
+        let bump_stream = bump_stream.clone();
+        let notes = guidance.clone();
+        let on_stale_error = on_stale_error.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::continue_prose(story_id, chapter_id, beat_id, &notes).await {
+                Ok(d) => {
+                    on_detail.emit(d);
+                    bump_stream.emit(());
+                }
+                Err(err) => {
+                    alert_story_action_error("continue prose", err, Some(on_stale_error.clone()))
+                }
+            }
+        });
+    })
+}
+
 fn recheck_beat_variables_action(
     story_id: i64,
     chapter_id: i64,
@@ -1787,6 +1815,11 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
             && job.beat_id == Some(beat.id)
             && matches!(job.status, JobStatus::Queued | JobStatus::Running)
     });
+    let prose_continuing = props.active_job.as_ref().is_some_and(|job| {
+        job.job_type == JobType::StoryBeatProseContinue
+            && job.beat_id == Some(beat.id)
+            && matches!(job.status, JobStatus::Queued | JobStatus::Running)
+    });
     let mechanical_generating = props.active_job.as_ref().is_some_and(|job| {
         job.job_type == JobType::StoryBeatMechanical
             && job.beat_id == Some(beat.id)
@@ -1856,7 +1889,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
         let save_controller = save_controller.clone();
         let reschedule_cell = schedule_save_cell.clone();
         Callback::from(move |include_content: bool| {
-            let save_content = include_content && !prose_generating;
+            let save_content = include_content && !prose_generating && !prose_continuing;
             let snapshot = BeatFields {
                 title: (*title).clone(),
                 synopsis: (*synopsis).clone(),
@@ -1967,6 +2000,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let show_align_prose = !(*mechanical).trim().is_empty() && !(*content).trim().is_empty();
     let synopsis_ready = !(*synopsis).trim().is_empty();
     let mechanical_ready = !(*mechanical).trim().is_empty();
+    let prose_ready = !(*content).trim().is_empty();
     let show_variables_section = props.variables_enabled;
     let beat_scope_label = {
         let chapter_num = props.chapter_sort_order + 1;
@@ -2046,25 +2080,47 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     }} />
                 </AutoSaveField>
             </label>
-            <GenerationButtonGroup
-                label="Generate prose"
-                loading_label="Generating prose…"
-                disabled={!mechanical_ready || beat_job_active}
-                busy={prose_generating}
-                guidance={props.guidance.clone()}
-                guidance_title="Guidance for generation"
-                guidance_placeholder="Optional notes for the AI…"
-                on_guidance={props.on_guidance.clone()}
-                on_generate={generate_prose_action(
-                    story_id,
-                    chapter_id,
-                    beat_id,
-                    props.guidance.clone(),
-                    props.on_detail.clone(),
-                    props.bump_stream.clone(),
-                    on_stale_error.clone(),
-                )}
-            />
+            <div class="generation-btn-row">
+                <GenerationButtonGroup
+                    label="Generate prose"
+                    loading_label="Generating prose…"
+                    disabled={!mechanical_ready || beat_job_active}
+                    busy={prose_generating}
+                    guidance={props.guidance.clone()}
+                    guidance_title="Guidance for generation"
+                    guidance_placeholder="Optional notes for the AI…"
+                    on_guidance={props.on_guidance.clone()}
+                    on_generate={generate_prose_action(
+                        story_id,
+                        chapter_id,
+                        beat_id,
+                        props.guidance.clone(),
+                        props.on_detail.clone(),
+                        props.bump_stream.clone(),
+                        on_stale_error.clone(),
+                    )}
+                />
+                <GenerationButtonGroup
+                    label="Continue prose"
+                    loading_label="Continuing prose…"
+                    secondary={true}
+                    disabled={!mechanical_ready || !prose_ready || beat_job_active}
+                    busy={prose_continuing}
+                    guidance={props.guidance.clone()}
+                    guidance_title="Guidance for generation"
+                    guidance_placeholder="Optional notes for the AI…"
+                    on_guidance={props.on_guidance.clone()}
+                    on_generate={continue_prose_action(
+                        story_id,
+                        chapter_id,
+                        beat_id,
+                        props.guidance.clone(),
+                        props.on_detail.clone(),
+                        props.bump_stream.clone(),
+                        on_stale_error.clone(),
+                    )}
+                />
+            </div>
             <label class="field"><span class="muted">{"Prose"}</span>
                 <div class="prose-editor-wrap">
                     <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
