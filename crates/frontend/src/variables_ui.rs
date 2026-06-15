@@ -94,9 +94,13 @@ fn perform_variable_row_save(
     ctx: &VariableRowSaveContext,
     on_save: &Callback<VariableSaveAction>,
     reschedule: &Callback<()>,
+    snapshot_override: Option<RowFields>,
 ) {
-    let snapshot = RowFields::snapshot(&ctx.key, &ctx.value, &ctx.scope_value);
-    if snapshot.key.is_empty() || !draft_is_dirty(&snapshot, &*ctx.last_saved) {
+    let snapshot = snapshot_override
+        .unwrap_or_else(|| RowFields::snapshot(&ctx.key, &ctx.value, &ctx.scope_value));
+    let wants_deletion = snapshot.value.is_empty() && ctx.variable_id.is_some();
+    if snapshot.key.is_empty() || (!wants_deletion && !draft_is_dirty(&snapshot, &*ctx.last_saved))
+    {
         ctx.controller.mark_saved();
         return;
     }
@@ -240,7 +244,14 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         });
     }
 
-    let trigger_save_cell: Rc<RefCell<Option<Callback<bool>>>> = Rc::new(RefCell::new(None));
+    #[derive(Clone)]
+    struct TriggerSaveArgs {
+        immediate: bool,
+        snapshot: Option<RowFields>,
+    }
+
+    let trigger_save_cell: Rc<RefCell<Option<Callback<TriggerSaveArgs>>>> =
+        Rc::new(RefCell::new(None));
     let trigger_save = {
         let key = key.clone();
         let value = value.clone();
@@ -250,7 +261,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         let on_save = props.on_save.clone();
         let variable_id = variable_id.clone();
         let reschedule_cell = trigger_save_cell.clone();
-        Callback::from(move |immediate: bool| {
+        Callback::from(move |args: TriggerSaveArgs| {
             if (*key).trim().is_empty() {
                 return;
             }
@@ -262,6 +273,7 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
             let on_save = on_save.clone();
             let variable_id = variable_id.clone();
             let reschedule_cell = reschedule_cell.clone();
+            let snapshot_override = args.snapshot;
             let run_save = {
                 let ctx = VariableRowSaveContext {
                     controller: save_controller.clone(),
@@ -278,14 +290,17 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
                         let reschedule_cell = reschedule_cell.clone();
                         move |_| {
                             if let Some(trigger) = reschedule_cell.borrow().as_ref() {
-                                trigger.emit(false);
+                                trigger.emit(TriggerSaveArgs {
+                                    immediate: false,
+                                    snapshot: None,
+                                });
                             }
                         }
                     });
-                    perform_variable_row_save(&ctx, &on_save, &reschedule);
+                    perform_variable_row_save(&ctx, &on_save, &reschedule, snapshot_override);
                 }
             };
-            if immediate {
+            if args.immediate {
                 save_controller.flush(run_save);
             } else {
                 save_controller.schedule(run_save);
@@ -293,8 +308,14 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
         })
     };
     *trigger_save_cell.borrow_mut() = Some(trigger_save.clone());
-    let schedule_save = trigger_save.reform(|_| false);
-    let flush_save = trigger_save.reform(|_| true);
+    let schedule_save = trigger_save.reform(|_| TriggerSaveArgs {
+        immediate: false,
+        snapshot: None,
+    });
+    let flush_save = trigger_save.reform(|_| TriggerSaveArgs {
+        immediate: true,
+        snapshot: None,
+    });
 
     let scope_select = if props.fixed_scope {
         html! {
@@ -340,17 +361,41 @@ pub fn variable_row(props: &VariableRowProps) -> Html {
     };
 
     let value_input = {
+        let key = key.clone();
         let value = value.clone();
-        let schedule_save = schedule_save.clone();
+        let scope_value = scope_value.clone();
+        let variable_id = variable_id.clone();
+        let trigger_save = trigger_save.clone();
         Callback::from(move |e: InputEvent| {
-            text_input(value.clone()).emit(e);
-            schedule_save.emit(());
+            let Some(target) = e.target() else {
+                return;
+            };
+            let new_value = if let Ok(input) = target.clone().dyn_into::<HtmlInputElement>() {
+                input.value()
+            } else if let Ok(textarea) = target.dyn_into::<HtmlTextAreaElement>() {
+                textarea.value()
+            } else {
+                return;
+            };
+            value.set(new_value.clone());
+            let snapshot = RowFields::snapshot(&key, &new_value, &scope_value);
+            let immediate = variable_id.is_some() && snapshot.value.is_empty();
+            trigger_save.emit(TriggerSaveArgs {
+                immediate,
+                snapshot: Some(snapshot),
+            });
         })
     };
 
     let value_blur = {
+        let value = value.clone();
         let flush_save = flush_save.clone();
-        Callback::from(move |_: FocusEvent| {
+        Callback::from(move |e: FocusEvent| {
+            if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
+                value.set(input.value());
+            } else if let Some(textarea) = e.target_dyn_into::<HtmlTextAreaElement>() {
+                value.set(textarea.value());
+            }
             flush_save.emit(());
         })
     };
@@ -1763,6 +1808,13 @@ mod tests {
         let edited = RowFields::snapshot("location", "castle", "0:0");
         assert!(draft_is_dirty(&edited, &saved));
         assert!(!draft_is_dirty(&saved, &saved));
+    }
+
+    #[test]
+    fn cleared_value_is_dirty_against_saved_content() {
+        let saved = RowFields::snapshot("hp", "100", "manual");
+        let cleared = RowFields::snapshot("hp", "", "manual");
+        assert!(draft_is_dirty(&cleared, &saved));
     }
 
     #[test]
