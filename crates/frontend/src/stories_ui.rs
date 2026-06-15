@@ -2,12 +2,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use dreamwell_types::*;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
+use crate::app_sync;
 use crate::generation_ui::{
     beat_block_status, chapter_block_status, chapter_has_substantial_prose, chapter_summary_stale,
     generation_error_from_content, is_stale_summary_error, stale_chapters_in_story, story_notice,
@@ -127,6 +126,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     let guidance = use_state(String::new);
     let loading = use_state(|| true);
     let detail_loading = use_state(|| false);
+    let story_refresh_generation = use_state(|| 0u32);
     let story_stream_nudge = use_mut_ref(|| None::<api::StreamNudge>);
     let selected_story_id = story_id_from_route(&props.route);
     let selection = selection_from_story_nav(story_nav_from_route(&props.route));
@@ -152,67 +152,71 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
         let detail_loading = detail_loading.clone();
         let story_stream_nudge = story_stream_nudge.clone();
         let route = props.route.clone();
-        use_effect_with(route.clone(), move |route| {
-            let story_id = story_id_from_route(route);
-            let mut stream_holder = None::<api::StoryStream>;
-            *story_stream_nudge.borrow_mut() = None;
-            if let Some(story_id) = story_id {
-                detail.set(None);
-                detail_loading.set(true);
-                let detail_for_fetch = detail.clone();
-                let detail_loading_for_fetch = detail_loading.clone();
-                let stories = stories.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(d) = api::get_story(story_id).await {
-                        detail_for_fetch.set(Some(d));
-                    }
-                    detail_loading_for_fetch.set(false);
-                });
-                let detail_loading_for_stream = detail_loading.clone();
-                let detail_for_stream = detail.clone();
-                let had_active_job = Rc::new(RefCell::new(false));
-                let stream = api::StoryStream::new(story_id, move |payload| {
-                    detail_loading_for_stream.set(false);
-                    let was_active = *had_active_job.borrow();
-                    let now_active = payload.active_job.is_some();
-                    if now_active {
-                        *had_active_job.borrow_mut() = true;
-                    }
-                    detail_for_stream.set(Some(payload.detail.clone()));
-                    let current = (*stories).clone();
-                    stories.set(
-                        current
-                            .into_iter()
-                            .map(|s| {
-                                if s.id == payload.detail.story.id {
-                                    payload.detail.story.clone()
-                                } else {
-                                    s
-                                }
-                            })
-                            .collect(),
-                    );
-                    if was_active && !now_active {
-                        let detail_ref = detail_for_stream.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(d) = api::get_story(story_id).await {
-                                detail_ref.set(Some(d));
-                            }
-                        });
-                        *had_active_job.borrow_mut() = false;
-                    }
-                });
-                *story_stream_nudge.borrow_mut() = Some(stream.nudge());
-                stream_holder = Some(stream);
-            } else {
-                detail.set(None);
-                detail_loading.set(false);
-            }
-            move || {
+        let story_refresh_generation = *story_refresh_generation;
+        use_effect_with(
+            (route.clone(), story_refresh_generation),
+            move |(route, _)| {
+                let story_id = story_id_from_route(route);
+                let mut stream_holder = None::<api::StoryStream>;
                 *story_stream_nudge.borrow_mut() = None;
-                drop(stream_holder);
-            }
-        });
+                if let Some(story_id) = story_id {
+                    detail.set(None);
+                    detail_loading.set(true);
+                    let detail_for_fetch = detail.clone();
+                    let detail_loading_for_fetch = detail_loading.clone();
+                    let stories = stories.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Ok(d) = api::get_story(story_id).await {
+                            detail_for_fetch.set(Some(d));
+                        }
+                        detail_loading_for_fetch.set(false);
+                    });
+                    let detail_loading_for_stream = detail_loading.clone();
+                    let detail_for_stream = detail.clone();
+                    let had_active_job = Rc::new(RefCell::new(false));
+                    let stream = api::StoryStream::new(story_id, move |payload| {
+                        detail_loading_for_stream.set(false);
+                        let was_active = *had_active_job.borrow();
+                        let now_active = payload.active_job.is_some();
+                        if now_active {
+                            *had_active_job.borrow_mut() = true;
+                        }
+                        detail_for_stream.set(Some(payload.detail.clone()));
+                        let current = (*stories).clone();
+                        stories.set(
+                            current
+                                .into_iter()
+                                .map(|s| {
+                                    if s.id == payload.detail.story.id {
+                                        payload.detail.story.clone()
+                                    } else {
+                                        s
+                                    }
+                                })
+                                .collect(),
+                        );
+                        if was_active && !now_active {
+                            let detail_ref = detail_for_stream.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(d) = api::get_story(story_id).await {
+                                    detail_ref.set(Some(d));
+                                }
+                            });
+                            *had_active_job.borrow_mut() = false;
+                        }
+                    });
+                    *story_stream_nudge.borrow_mut() = Some(stream.nudge());
+                    stream_holder = Some(stream);
+                } else {
+                    detail.set(None);
+                    detail_loading.set(false);
+                }
+                move || {
+                    *story_stream_nudge.borrow_mut() = None;
+                    drop(stream_holder);
+                }
+            },
+        );
     }
 
     {
@@ -283,86 +287,45 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     }
 
     {
-        let stories = stories.clone();
+        let story_refresh_generation = story_refresh_generation.clone();
         let story_stream_nudge = story_stream_nudge.clone();
-        use_effect_with((), move |_| {
-            let stories = stories.clone();
-            let story_stream_nudge = story_stream_nudge.clone();
-            let resume: Rc<dyn Fn()> = Rc::new(move || {
-                if let Some(nudge) = story_stream_nudge.borrow().clone() {
-                    nudge.reconnect();
-                }
-                let stories = stories.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(list) = api::list_stories().await {
-                        stories.set(list);
-                    }
-                });
-            });
-
-            let resume_visibility = resume.clone();
-            let visibility_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                if web_sys::window()
-                    .and_then(|window| window.document())
-                    .is_some_and(|document| {
-                        document.visibility_state() == web_sys::VisibilityState::Visible
-                    })
-                {
-                    resume_visibility();
-                }
-            }) as Box<dyn FnMut(_)>);
-
-            let document = web_sys::window().and_then(|window| window.document());
-            if let Some(document) = document.as_ref() {
-                let _ = document.add_event_listener_with_callback(
-                    "visibilitychange",
-                    visibility_callback.as_ref().unchecked_ref(),
-                );
-            }
-
-            let resume_online = resume.clone();
-            let online_callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                resume_online();
-            }) as Box<dyn FnMut(_)>);
-
-            let window = web_sys::window();
-            if let Some(window) = window.as_ref() {
-                let _ = window.add_event_listener_with_callback(
-                    "online",
-                    online_callback.as_ref().unchecked_ref(),
-                );
-            }
-
-            move || {
-                if let Some(document) = document.as_ref() {
-                    let _ = document.remove_event_listener_with_callback(
-                        "visibilitychange",
-                        visibility_callback.as_ref().unchecked_ref(),
-                    );
-                }
-                if let Some(window) = window.as_ref() {
-                    let _ = window.remove_event_listener_with_callback(
-                        "online",
-                        online_callback.as_ref().unchecked_ref(),
-                    );
-                }
-            }
-        });
-    }
-
-    {
         let stories = stories.clone();
+        let detail = detail.clone();
+        let route = props.route.clone();
         use_effect_with((), move |_| {
-            let stories = stories.clone();
-            let handle = gloo_timers::callback::Interval::new(3000, move || {
-                let stories = stories.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(list) = api::list_stories().await {
-                        stories.set(list);
+            let guard = app_sync::register_scope(
+                {
+                    let story_refresh_generation = story_refresh_generation.clone();
+                    let stories = stories.clone();
+                    let detail = detail.clone();
+                    let route = route.clone();
+                    move |_reason| {
+                        story_refresh_generation.set(*story_refresh_generation + 1);
+                        let story_id = story_id_from_route(&route);
+                        let stories = stories.clone();
+                        let detail = detail.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(list) = api::list_stories().await {
+                                stories.set(list);
+                            }
+                            if let Some(story_id) = story_id {
+                                if let Ok(d) = api::get_story(story_id).await {
+                                    detail.set(Some(d));
+                                }
+                            }
+                        });
                     }
-                });
-            });
-            move || drop(handle)
+                },
+                {
+                    let story_stream_nudge = story_stream_nudge.clone();
+                    move || {
+                        if let Some(nudge) = story_stream_nudge.borrow().clone() {
+                            nudge.pause();
+                        }
+                    }
+                },
+            );
+            move || drop(guard)
         });
     }
 
@@ -390,12 +353,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
     };
 
     let bump_stream = {
-        let story_stream_nudge = story_stream_nudge.clone();
-        Callback::from(move |_| {
-            if let Some(nudge) = story_stream_nudge.borrow().clone() {
-                nudge.reconnect();
-            }
-        })
+        let story_refresh_generation = story_refresh_generation.clone();
+        Callback::from(move |_| story_refresh_generation.set(*story_refresh_generation + 1))
     };
 
     html! {
