@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use dreamwell_types::*;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::api;
@@ -2367,7 +2367,7 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         variables::strip_variables_for_display(&source_content, false)
     };
 
-    let schedule_save = {
+    let trigger_save = {
         let content = content.clone();
         let last_saved = last_saved.clone();
         let save_controller = save_controller.clone();
@@ -2375,59 +2375,74 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
         let chapter_id = props.chapter_id;
         let beat_id = beat.id;
         let on_detail = props.on_detail.clone();
-        Callback::from(move |_| {
-            let snapshot = (*content).clone();
-            if snapshot == *last_saved {
-                return;
-            }
-            let controller = save_controller.clone();
-            let content = content.clone();
-            let last_saved = last_saved.clone();
-            let controller_for_save = controller.clone();
-            let on_detail = on_detail.clone();
-            controller.schedule(move || {
-                let controller = controller_for_save.clone();
+        Callback::from(
+            move |(immediate, snapshot_override): (bool, Option<String>)| {
+                let snapshot = snapshot_override.unwrap_or_else(|| (*content).clone());
+                if snapshot == *last_saved {
+                    return;
+                }
+                let controller = save_controller.clone();
                 let content = content.clone();
                 let last_saved = last_saved.clone();
-                let snapshot = snapshot.clone();
+                let controller_for_save = controller.clone();
                 let on_detail = on_detail.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    let update = StoryBeatUpdate {
-                        content: Some(snapshot.clone()),
-                        title: None,
-                        synopsis: None,
-                        mechanical: None,
-                        sort_order: None,
-                    };
-                    let current = (*content).clone();
-                    match api::update_beat(story_id, chapter_id, beat_id, &update).await {
-                        Ok(detail) => {
-                            if current == snapshot {
-                                controller.mark_saved();
-                                last_saved.set(snapshot);
-                            } else {
-                                controller.mark_saved();
+                let run_save = move || {
+                    let controller = controller_for_save.clone();
+                    let content = content.clone();
+                    let last_saved = last_saved.clone();
+                    let snapshot = snapshot.clone();
+                    let on_detail = on_detail.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let update = StoryBeatUpdate {
+                            content: Some(snapshot.clone()),
+                            title: None,
+                            synopsis: None,
+                            mechanical: None,
+                            sort_order: None,
+                        };
+                        let current = (*content).clone();
+                        match api::update_beat(story_id, chapter_id, beat_id, &update).await {
+                            Ok(detail) => {
+                                if current == snapshot {
+                                    controller.mark_saved();
+                                    last_saved.set(snapshot);
+                                } else {
+                                    controller.mark_saved();
+                                }
+                                on_detail.emit(detail);
                             }
-                            on_detail.emit(detail);
-                        }
-                        Err(err) => {
-                            if current == snapshot {
-                                controller.mark_failed(err);
-                            } else {
-                                controller.mark_saved();
+                            Err(err) => {
+                                if current == snapshot {
+                                    controller.mark_failed(err);
+                                } else {
+                                    controller.mark_saved();
+                                }
                             }
                         }
-                    }
-                });
-            });
-        })
+                    });
+                };
+                if immediate {
+                    controller.flush(run_save);
+                } else {
+                    controller.schedule(run_save);
+                }
+            },
+        )
     };
+    let schedule_save = trigger_save.reform(|_| (false, None));
+    let flush_save = trigger_save.reform(|_| (true, None));
 
     let stop_edit = {
+        let content = content.clone();
         let on_stop_edit = props.on_stop_edit.clone();
-        let schedule_save = schedule_save.clone();
-        Callback::from(move |_| {
-            schedule_save.emit(());
+        let flush_save = flush_save.clone();
+        Callback::from(move |dom_content: Option<String>| {
+            if let Some(text) = dom_content {
+                content.set(text.clone());
+                flush_save.emit((true, Some(text)));
+            } else {
+                flush_save.emit((true, None));
+            }
             on_stop_edit.emit(());
         })
     };
@@ -2456,9 +2471,10 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                             let schedule_save = schedule_save.clone();
                             Callback::from(move |e: InputEvent| {
                                 let input: HtmlInputElement = e.target_unchecked_into();
+                                let text = input.value();
                                 user_edited.set(true);
-                                content.set(input.value());
-                                schedule_save.emit(());
+                                content.set(text.clone());
+                                schedule_save.emit((false, Some(text)));
                             })
                         }}
                         onkeydown={{
@@ -2466,13 +2482,17 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
                             Callback::from(move |e: KeyboardEvent| {
                                 if e.key() == "Escape" {
                                     e.prevent_default();
-                                    stop_edit.emit(());
+                                    let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                    stop_edit.emit(Some(input.value()));
                                 }
                             })
                         }}
                         onblur={{
                             let stop_edit = stop_edit.clone();
-                            Callback::from(move |_| stop_edit.emit(()))
+                            Callback::from(move |e: FocusEvent| {
+                                let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                stop_edit.emit(Some(input.value()));
+                            })
                         }}
                     />
                 </AutoSaveField>
