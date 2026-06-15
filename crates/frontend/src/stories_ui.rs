@@ -16,8 +16,8 @@ use crate::generation_ui::{
 use crate::item_list::StoryList;
 use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::story_save::{
-    draft_is_dirty, fail_auto_save, finish_auto_save, AutoSaveController, AutoSaveField,
-    AutoSaveOutcome, AutoSavePhase,
+    draft_is_dirty, fail_auto_save, finish_auto_save, use_autosave_tab_flush, AutoSaveController,
+    AutoSaveField, AutoSaveOutcome, AutoSavePhase,
 };
 use crate::story_sync::{fetch_response_is_current, should_replace_detail_from_sse, story_list_with_detail, FetchGeneration};
 use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
@@ -1431,6 +1431,7 @@ fn story_basics_form(props: &StoryBasicsFormProps) -> Html {
     let save_phase = use_state(|| AutoSavePhase::Synced);
     let save_error = use_state(|| None::<String>);
     let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
+    use_autosave_tab_flush(save_controller.clone());
     let last_saved = use_state(|| StoryBasics::from(props.story.clone()));
 
     {
@@ -1702,6 +1703,7 @@ fn chapter_editor(props: &ChapterEditorProps) -> Html {
     let save_phase = use_state(|| AutoSavePhase::Synced);
     let save_error = use_state(|| None::<String>);
     let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
+    use_autosave_tab_flush(save_controller.clone());
     let last_saved = use_state(|| (chapter.title.clone(), chapter.synopsis.clone()));
 
     {
@@ -1973,6 +1975,7 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
     let save_phase = use_state(|| AutoSavePhase::Synced);
     let save_error = use_state(|| None::<String>);
     let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
+    use_autosave_tab_flush(save_controller.clone());
     let last_saved = use_state(|| BeatFields::from_beat(&beat));
 
     {
@@ -2535,6 +2538,7 @@ fn reading_prose_block(props: &ReadingProseBlockProps) -> Html {
     let save_phase = use_state(|| AutoSavePhase::Synced);
     let save_error = use_state(|| None::<String>);
     let save_controller = AutoSaveController::new(save_phase.clone(), save_error.clone());
+    use_autosave_tab_flush(save_controller.clone());
     let last_saved = use_state(|| beat.content.clone());
 
     {

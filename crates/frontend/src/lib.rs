@@ -1701,6 +1701,14 @@ fn settings_overlay(props: &SettingsOverlayProps) -> Html {
         });
     }
 
+    {
+        let save_ctx = save_ctx.clone();
+        use_effect_with((), move |_| {
+            let guard = story_save::register_autosave_tab_flush(move || save_ctx.flush_pending());
+            move || drop(guard)
+        });
+    }
+
     html! {
         <div class="settings-popover panel-overlay">
             <div class="settings-header">
@@ -3415,6 +3423,13 @@ impl PartialEq for SettingsSaveContext {
 }
 
 impl SettingsSaveContext {
+    fn flush_pending(&self) {
+        if matches!(*self.phase, SettingsSavePhase::Debouncing) && self.is_dirty() {
+            self.cancel_debounce();
+            self.run_save();
+        }
+    }
+
     fn load_from(&self, settings: Settings) {
         *self.draft_ref.borrow_mut() = Some(settings.clone());
         self.draft.set(Some(settings.clone()));

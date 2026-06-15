@@ -119,6 +119,7 @@ pub fn reconcile(reason: ResumeReason) {
 
 /// Pause background sync for all registered scopes (e.g. when the tab is hidden).
 pub fn pause_all() {
+    crate::story_save::flush_all_pending_autosaves();
     REGISTRY.with(|registry| {
         for scope in &registry.borrow().scopes {
             (scope.pause)();
