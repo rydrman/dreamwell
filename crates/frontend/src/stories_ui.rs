@@ -38,7 +38,7 @@ pub enum StoryViewMode {
     Reading,
 }
 
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum StorySelection {
     #[default]
     Closed,
@@ -63,6 +63,48 @@ fn toggle_selection(current: StorySelection, target: StorySelection) -> StorySel
     }
 }
 
+/// Result of clicking a story block header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockToggleAction {
+    Close { selection: StorySelection },
+    Open { selection: StorySelection },
+}
+
+/// Pure click handler for outline block headers.
+pub fn block_toggle_action(current: StorySelection, target: StorySelection) -> BlockToggleAction {
+    if block_toggle_closes(current, target) {
+        BlockToggleAction::Close {
+            selection: toggle_selection(current, target),
+        }
+    } else {
+        BlockToggleAction::Open { selection: target }
+    }
+}
+
+/// What to do when a background detail fetch finishes for an opened block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockFetchCompletion {
+    pub apply_detail: bool,
+    pub clear_fetching: bool,
+    pub clear_pending: bool,
+}
+
+pub fn block_fetch_completion(
+    started: FetchGeneration,
+    latest: FetchGeneration,
+    pending: Option<StorySelection>,
+    target: StorySelection,
+    fetch_ok: bool,
+) -> BlockFetchCompletion {
+    let pending_matches = pending == Some(target);
+    let current = fetch_response_is_current(started, latest, pending_matches);
+    BlockFetchCompletion {
+        apply_detail: current && fetch_ok,
+        clear_fetching: true,
+        clear_pending: current && pending_matches,
+    }
+}
+
 /// Open the block immediately, then refresh story detail from the server.
 #[allow(clippy::too_many_arguments)]
 fn gated_block_toggle(
@@ -75,37 +117,44 @@ fn gated_block_toggle(
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
 ) -> Callback<()> {
-    Callback::from(move |_| {
-        if block_toggle_closes(current, target) {
+    Callback::from(move |_| match block_toggle_action(current, target) {
+        BlockToggleAction::Close { selection } => {
             fetch_pending.set(None);
-            on_selection.emit(toggle_selection(current, target));
-            return;
+            on_selection.emit(selection);
         }
-        on_selection.emit(target);
-        let generation = FetchGeneration::from_raw(*fetch_gen).bump();
-        fetch_gen.set(generation.raw());
-        fetch_pending.set(Some(target));
-        fetching.set(true);
-        let fetching = fetching.clone();
-        let fetch_gen = fetch_gen.clone();
-        let fetch_pending = fetch_pending.clone();
-        let on_detail = on_detail.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = api::get_story(story_id).await;
-            let latest = FetchGeneration::from_raw(*fetch_gen);
-            let pending_matches = *fetch_pending == Some(target);
-            if !fetch_response_is_current(generation, latest, pending_matches) {
-                fetching.set(false);
-                return;
-            }
-            if let Ok(detail) = result {
-                on_detail.emit(detail);
-            }
-            fetching.set(false);
-            if *fetch_pending == Some(target) {
-                fetch_pending.set(None);
-            }
-        });
+        BlockToggleAction::Open { selection } => {
+            on_selection.emit(selection);
+            let generation = FetchGeneration::from_raw(*fetch_gen).bump();
+            fetch_gen.set(generation.raw());
+            fetch_pending.set(Some(target));
+            fetching.set(true);
+            let fetching = fetching.clone();
+            let fetch_gen = fetch_gen.clone();
+            let fetch_pending = fetch_pending.clone();
+            let on_detail = on_detail.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = api::get_story(story_id).await;
+                let latest = FetchGeneration::from_raw(*fetch_gen);
+                let completion = block_fetch_completion(
+                    generation,
+                    latest,
+                    *fetch_pending,
+                    target,
+                    result.is_ok(),
+                );
+                if completion.apply_detail {
+                    if let Ok(detail) = result {
+                        on_detail.emit(detail);
+                    }
+                }
+                if completion.clear_fetching {
+                    fetching.set(false);
+                }
+                if completion.clear_pending {
+                    fetch_pending.set(None);
+                }
+            });
+        }
     })
 }
 
@@ -2904,5 +2953,86 @@ mod tests {
                 beat_id: 2
             }
         ));
+    }
+
+    #[test]
+    fn block_toggle_action_opens_beat_immediately_without_waiting_for_fetch() {
+        let beat = StorySelection::Beat {
+            chapter_id: 1,
+            beat_id: 2,
+        };
+        assert_eq!(
+            block_toggle_action(StorySelection::Closed, beat),
+            BlockToggleAction::Open { selection: beat }
+        );
+    }
+
+    #[test]
+    fn block_toggle_action_closes_open_block_without_fetch() {
+        assert_eq!(
+            block_toggle_action(StorySelection::Basics, StorySelection::Basics),
+            BlockToggleAction::Close {
+                selection: StorySelection::Closed
+            }
+        );
+    }
+
+    #[test]
+    fn block_fetch_completion_applies_detail_when_fetch_is_current() {
+        let target = StorySelection::Beat {
+            chapter_id: 1,
+            beat_id: 2,
+        };
+        let generation = FetchGeneration::from_raw(1);
+        let completion = block_fetch_completion(generation, generation, Some(target), target, true);
+        assert_eq!(
+            completion,
+            BlockFetchCompletion {
+                apply_detail: true,
+                clear_fetching: true,
+                clear_pending: true,
+            }
+        );
+    }
+
+    #[test]
+    fn block_fetch_completion_clears_fetching_when_stale_but_skips_detail() {
+        let target = StorySelection::Beat {
+            chapter_id: 1,
+            beat_id: 2,
+        };
+        let started = FetchGeneration::from_raw(1);
+        let latest = FetchGeneration::from_raw(2);
+        let completion = block_fetch_completion(started, latest, Some(target), target, true);
+        assert_eq!(
+            completion,
+            BlockFetchCompletion {
+                apply_detail: false,
+                clear_fetching: true,
+                clear_pending: false,
+            }
+        );
+    }
+
+    #[test]
+    fn block_fetch_completion_clears_fetching_when_pending_mismatch() {
+        let target = StorySelection::Beat {
+            chapter_id: 1,
+            beat_id: 2,
+        };
+        let other = StorySelection::Beat {
+            chapter_id: 1,
+            beat_id: 3,
+        };
+        let generation = FetchGeneration::from_raw(1);
+        let completion = block_fetch_completion(generation, generation, Some(other), target, true);
+        assert_eq!(
+            completion,
+            BlockFetchCompletion {
+                apply_detail: false,
+                clear_fetching: true,
+                clear_pending: false,
+            }
+        );
     }
 }
