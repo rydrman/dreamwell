@@ -7,4 +7,5 @@ crates/frontend/dist/
 .DS_Store
 backend/
 frontend/node_modules/
+scripts/node_modules/
 frontend/dist/
