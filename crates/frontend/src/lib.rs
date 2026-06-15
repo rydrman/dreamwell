@@ -1629,7 +1629,10 @@ fn mode_bar(props: &ModeBarProps) -> Html {
                             {"☰"}
                         </button>
                     }
-                    <span class="mode-bar-title">{"Dreamwell"}</span>
+                    <div class="mode-bar-brand">
+                        <span class="mode-bar-title">{"Dreamwell"}</span>
+                        <BuildInfo />
+                    </div>
                 </div>
                 <div class="mode-bar-actions">
                     <TopBarQueueButton
@@ -3862,7 +3865,6 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             </label>
             <InstallSettings />
             <NotificationSettings />
-            <BuildInfo />
         </div>
     }
 }
@@ -3884,7 +3886,7 @@ fn build_info() -> Html {
     }
 
     match (*sha).clone() {
-        Some(sha) => html! { <p class="build-info muted">{ sha }</p> },
+        Some(sha) => html! { <span class="mode-bar-version muted">{ sha }</span> },
         None => html! {},
     }
 }

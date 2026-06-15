@@ -74,9 +74,24 @@ button {
   min-width: 0;
 }
 
+.mode-bar-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
 .mode-bar-title {
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.mode-bar-version {
+  font-size: 0.7rem;
+  font-weight: 400;
+  opacity: 0.6;
+  letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .mode-bar-actions {
@@ -1510,13 +1525,6 @@ input.header-title {
 .muted {
   color: var(--muted);
   font-size: 0.875rem;
-}
-
-.build-info {
-  margin-top: 1.25rem;
-  font-size: 0.75rem;
-  text-align: right;
-  opacity: 0.65;
 }
 
 .text-danger {
