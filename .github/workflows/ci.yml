@@ -46,5 +46,15 @@ jobs:
       - name: test
         run: make test
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: e2e
+        run: |
+          npx --prefix e2e playwright install chromium
+          make e2e
+
       - name: build
-        run: make build
+        run: make build-front

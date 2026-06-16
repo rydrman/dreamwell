@@ -15,6 +15,15 @@ pub fn messages_stale_vs_chat(messages: &[Message], chat: &Chat) -> bool {
     messages_show_active_job(messages) && chat.active_job.is_none()
 }
 
+/// Apply SSE message updates for live generation or benign idle snapshots.
+/// Completion transitions are handled by REST refetch, not this guard.
+pub fn should_apply_messages_from_sse(payload_messages: &[Message], payload_chat: &Chat) -> bool {
+    if payload_chat.active_job.is_some() {
+        return true;
+    }
+    !messages_stale_vs_chat(payload_messages, payload_chat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +98,42 @@ mod tests {
         let messages = vec![assistant_message(None)];
         let chat = sample_chat(None);
         assert!(!messages_stale_vs_chat(&messages, &chat));
+    }
+
+    #[test]
+    fn sse_apply_while_active_job() {
+        let job = Job {
+            id: 1,
+            job_type: JobType::ChatMessage,
+            status: JobStatus::Running,
+            chat_id: Some(1),
+            message_id: Some(1),
+            story_id: None,
+            chapter_id: None,
+            beat_id: None,
+            guidance_notes: String::new(),
+            error: None,
+            position: 0,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+        };
+        let messages = vec![assistant_message(Some(JobStatus::Running))];
+        let chat = sample_chat(Some(job));
+        assert!(should_apply_messages_from_sse(&messages, &chat));
+    }
+
+    #[test]
+    fn sse_apply_idle_completed_snapshot() {
+        let messages = vec![assistant_message(None)];
+        let chat = sample_chat(None);
+        assert!(should_apply_messages_from_sse(&messages, &chat));
+    }
+
+    #[test]
+    fn sse_reject_stale_idle_echo() {
+        let messages = vec![assistant_message(Some(JobStatus::Running))];
+        let chat = sample_chat(None);
+        assert!(!should_apply_messages_from_sse(&messages, &chat));
     }
 }

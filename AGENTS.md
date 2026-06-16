@@ -6,7 +6,13 @@ Before committing any changes, run:
 make validate
 ```
 
-This runs `fmt-check`, `clippy`, and `test` — the same checks as CI. All three must pass.
+This runs `fmt-check`, `clippy`, `test` (Rust unit/integration), and `e2e` (Playwright tab-resume tests) — the same checks as CI.
+
+For a fast Rust-only loop during development:
+
+```bash
+make test
+```
 
 If formatting fails, run `make fmt` and re-run `make validate`.
 

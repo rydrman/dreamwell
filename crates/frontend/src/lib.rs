@@ -9,8 +9,10 @@ mod item_list;
 mod markdown;
 mod notifications;
 mod queue_ui;
+mod resume_policy;
 mod router;
 mod sidebar;
+mod sse_client;
 mod stories_ui;
 mod story_save;
 mod story_sync;
@@ -29,7 +31,7 @@ thread_local! {
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
-use chat_sync::messages_stale_vs_chat;
+use chat_sync::{messages_stale_vs_chat, should_apply_messages_from_sse};
 use dreamwell_types::*;
 use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
@@ -556,10 +558,9 @@ fn app() -> Html {
                         if now_active {
                             *had_active_job.borrow_mut() = true;
                         }
-                        messages.set(payload.messages.clone());
-                        messages_loading.set(false);
+                        let job_just_finished = was_active && !now_active;
                         update_chat_in_list(&chats, payload.chat.clone());
-                        if was_active && !now_active {
+                        if job_just_finished {
                             spawn_gated_messages_fetch(
                                 chat_id,
                                 &messages,
@@ -568,6 +569,9 @@ fn app() -> Html {
                                 false,
                             );
                             *had_active_job.borrow_mut() = false;
+                        } else if should_apply_messages_from_sse(&payload.messages, &payload.chat) {
+                            messages.set(payload.messages.clone());
+                            messages_loading.set(false);
                         }
                     });
                     *chat_stream_nudge.borrow_mut() = Some(stream.nudge());
@@ -606,9 +610,13 @@ fn app() -> Html {
                     let messages = messages.clone();
                     let messages_loading = messages_loading.clone();
                     let messages_fetch_gen = messages_fetch_gen.clone();
-                    move |_reason| {
+                    move |ctx| {
                         if let Some(nudge) = chat_stream_nudge.borrow().clone() {
-                            nudge.resume();
+                            if ctx.force() {
+                                nudge.reconnect();
+                            } else {
+                                nudge.resume();
+                            }
                         }
                         if let Some(chat_id) = chat_id_from_route(&router.route()) {
                             spawn_gated_messages_fetch(

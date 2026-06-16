@@ -68,7 +68,7 @@ async fn main() {
         sse_poll_interval_ms: config.sse_poll_interval_ms,
     };
 
-    let api = Router::new()
+    let mut api = Router::new()
         .route(
             "/health",
             axum::routing::get(|| async {
@@ -82,8 +82,13 @@ async fn main() {
         .nest("/chats", routes::chats::router())
         .nest("/jobs", routes::jobs::router())
         .nest("/stories", routes::stories::router())
-        .nest("/settings", routes::settings::router())
-        .with_state(state);
+        .nest("/settings", routes::settings::router());
+
+    if std::env::var("DREAMWELL_E2E").is_ok_and(|v| v == "1") {
+        api = api.nest("/e2e", routes::e2e_seed::router());
+    }
+
+    let api = api.with_state(state);
 
     let index = config.static_dir.join("index.html");
     let static_service = ServeDir::new(&config.static_dir).not_found_service(ServeFile::new(index));

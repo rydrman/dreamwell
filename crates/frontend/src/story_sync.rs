@@ -69,6 +69,11 @@ pub fn should_replace_detail_from_sse(active_job: Option<&Job>) -> bool {
     active_job.is_some()
 }
 
+/// Open story detail still shows an active job, but the sidebar row no longer does.
+pub fn detail_stale_vs_story_list(detail: &StoryDetail, story: &Story) -> bool {
+    detail.story.active_job.is_some() && story.active_job.is_none()
+}
+
 /// Merge server story metadata into the sidebar list without touching detail.
 pub fn story_list_with_detail(stories: &[Story], detail: &StoryDetail) -> Vec<Story> {
     stories
@@ -155,6 +160,32 @@ mod tests {
         let job = sample_job();
         assert!(should_replace_detail_from_sse(Some(&job)));
         assert!(!should_replace_detail_from_sse(None));
+    }
+
+    #[test]
+    fn detail_stale_when_sidebar_job_cleared() {
+        let mut detail_story = sample_story(1, "Detail");
+        detail_story.active_job = Some(sample_job());
+        let detail = StoryDetail {
+            story: detail_story,
+            chapters: vec![],
+        };
+        let list_story = sample_story(1, "List");
+        assert!(detail_stale_vs_story_list(&detail, &list_story));
+    }
+
+    #[test]
+    fn detail_fresh_when_sidebar_job_matches() {
+        let job = sample_job();
+        let mut detail_story = sample_story(1, "Detail");
+        detail_story.active_job = Some(job.clone());
+        let detail = StoryDetail {
+            story: detail_story,
+            chapters: vec![],
+        };
+        let mut list_story = sample_story(1, "List");
+        list_story.active_job = Some(job);
+        assert!(!detail_stale_vs_story_list(&detail, &list_story));
     }
 
     #[test]
