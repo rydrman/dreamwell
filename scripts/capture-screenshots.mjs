@@ -34,7 +34,7 @@ await shot("02-hamburger-menu", "/chats/1", async (p) => {
 });
 await shot("03-character-modal", "/chats/1/character");
 await shot("04-variables-modal", "/chats/1/variables");
-await shot("05-settings-modal", "/chats/1/settings");
+await shot("05-settings-page", "/settings");
 await shot("06-stories-main", "/stories/1");
 await shot("07-mobile-chats", "/chats/1", async (p) => {
   await p.setViewport({ width: 390, height: 844, isMobile: true });

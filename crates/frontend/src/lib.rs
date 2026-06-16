@@ -108,8 +108,8 @@ fn update_mobile_sidebar_inset(
     let inset = match mode {
         AppMode::Chats if chrome_visible => topbar_height + header_height,
         AppMode::Chats => 0.0,
-        AppMode::Stories | AppMode::Queue if scroll_y > 0.0 => header_height,
-        AppMode::Stories | AppMode::Queue => topbar_height + header_height,
+        AppMode::Stories | AppMode::Queue | AppMode::Settings if scroll_y > 0.0 => header_height,
+        AppMode::Stories | AppMode::Queue | AppMode::Settings => topbar_height + header_height,
     };
 
     set_app_layout_var(layout, "--sidebar-inset-top", &format!("{inset}px"));
@@ -818,15 +818,12 @@ fn app() -> Html {
 
     let open_queue = {
         let navigate = navigate.clone();
-        Callback::from(move |_| navigate.emit((AppRoute::Queue { overlay: None }, true)))
+        Callback::from(move |_| navigate.emit((AppRoute::Queue, true)))
     };
 
     let open_settings = {
         let navigate = navigate.clone();
-        let route = route.clone();
-        Callback::from(move |_| {
-            navigate.emit((route.clone().with_overlay(Overlay::Settings), true));
-        })
+        Callback::from(move |_| navigate.emit((AppRoute::Settings, true)))
     };
 
     let toggle_sidebar = {
@@ -882,72 +879,75 @@ fn app() -> Html {
                     overlay: None,
                     sidebar: false,
                 },
-                AppMode::Queue => AppRoute::Queue { overlay: None },
+                AppMode::Queue => AppRoute::Queue,
+                AppMode::Settings => AppRoute::Settings,
             };
             navigate.emit((next, true));
         })
     };
 
-    if mode == AppMode::Queue {
+    if mode == AppMode::Queue || mode == AppMode::Settings {
         return html! {
             <div class="app-layout">
                 <ModeBar
                     mode={mode}
                     queue={(*queue).clone()}
-                    settings_open={route.overlay() == Some(Overlay::Settings)}
                     show_sidebar_toggle={false}
                     sidebar_open={false}
                     on_toggle_sidebar={toggle_sidebar.clone()}
                     on_open_settings={open_settings.clone()}
                     on_open_queue={open_queue.clone()}
-                    on_close_overlay={close_overlay.clone()}
                 />
-                if route.overlay() == Some(Overlay::Settings) {
-                    <SettingsOverlay
+                if mode == AppMode::Queue {
+                    <QueuePage
+                        queue={(*queue).clone()}
+                        on_back={Callback::from({
+                            let router = router.clone();
+                            move |_| router.back()
+                        })}
+                        on_open_chat={Callback::from({
+                            let navigate = navigate.clone();
+                            let load_messages_for_chat = load_messages_for_chat.clone();
+                            move |chat_id| {
+                                navigate.emit((
+                                    AppRoute::Chats {
+                                        chat_id: Some(chat_id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                                load_messages_for_chat.emit(chat_id);
+                            }
+                        })}
+                        on_open_story={Callback::from({
+                            let navigate = navigate.clone();
+                            move |story_id| {
+                                navigate.emit((
+                                    AppRoute::Stories {
+                                        story_id: Some(story_id),
+                                        nav: StoryNav::None,
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            }
+                        })}
+                        on_queue_change={Callback::from({
+                            let queue = queue.clone();
+                            move |status| queue.set(Some(status))
+                        })}
+                    />
+                } else {
+                    <SettingsPage
                         settings={settings.clone()}
-                        on_close={close_overlay.clone()}
+                        on_back={Callback::from({
+                            let router = router.clone();
+                            move |_| router.back()
+                        })}
                     />
                 }
-                <QueuePage
-                    queue={(*queue).clone()}
-                    on_back={Callback::from({
-                        let router = router.clone();
-                        move |_| router.back()
-                    })}
-                    on_open_chat={Callback::from({
-                        let navigate = navigate.clone();
-                        let load_messages_for_chat = load_messages_for_chat.clone();
-                        move |chat_id| {
-                            navigate.emit((
-                                AppRoute::Chats {
-                                    chat_id: Some(chat_id),
-                                    overlay: None,
-                                    sidebar: false,
-                                },
-                                true,
-                            ));
-                            load_messages_for_chat.emit(chat_id);
-                        }
-                    })}
-                    on_open_story={Callback::from({
-                        let navigate = navigate.clone();
-                        move |story_id| {
-                            navigate.emit((
-                                AppRoute::Stories {
-                                    story_id: Some(story_id),
-                                    nav: StoryNav::None,
-                                    overlay: None,
-                                    sidebar: false,
-                                },
-                                true,
-                            ));
-                        }
-                    })}
-                    on_queue_change={Callback::from({
-                        let queue = queue.clone();
-                        move |status| queue.set(Some(status))
-                    })}
-                />
             </div>
         };
     }
@@ -1126,13 +1126,11 @@ fn app() -> Html {
             <ModeBar
                 mode={mode}
                 queue={(*queue).clone()}
-                settings_open={overlay == Some(Overlay::Settings)}
                 on_toggle_sidebar={toggle_sidebar.clone()}
                 show_sidebar_toggle={true}
                 sidebar_open={sidebar_open}
                 on_open_settings={open_settings.clone()}
                 on_open_queue={open_queue.clone()}
-                on_close_overlay={close_overlay.clone()}
             />
             if picker_open {
                 <CharacterPickerModal
@@ -1144,12 +1142,6 @@ fn app() -> Html {
                             start_chat.emit((character.id, character.name.clone()));
                         }
                     })}
-                />
-            }
-            if overlay == Some(Overlay::Settings) {
-                <SettingsOverlay
-                    settings={settings.clone()}
-                    on_close={close_overlay.clone()}
                 />
             }
             if mode == AppMode::Chats
@@ -1707,73 +1699,66 @@ fn app() -> Html {
 struct ModeBarProps {
     mode: AppMode,
     queue: Option<QueueStatus>,
-    settings_open: bool,
     show_sidebar_toggle: bool,
     sidebar_open: bool,
     on_toggle_sidebar: Callback<()>,
     on_open_settings: Callback<()>,
     on_open_queue: Callback<()>,
-    on_close_overlay: Callback<()>,
 }
 
 #[function_component(ModeBar)]
 fn mode_bar(props: &ModeBarProps) -> Html {
     html! {
-        <>
-            if props.settings_open {
-                <div class="settings-backdrop" onclick={props.on_close_overlay.reform(|_| ())} />
-            }
-            <div class="mode-bar">
-                <div class="mode-bar-start">
-                    if props.show_sidebar_toggle {
-                        <button
-                            class={classes!(
-                                "mode-btn",
-                                "mode-btn-menu",
-                                "mode-bar-sidebar-toggle",
-                                props.sidebar_open.then_some("active"),
-                            )}
-                            aria-label="Toggle sidebar"
-                            aria-expanded={if props.sidebar_open { "true" } else { "false" }}
-                            onclick={props.on_toggle_sidebar.reform(|_| ())}
-                        >
-                            {"☰"}
-                        </button>
-                    }
-                    <div class="mode-bar-brand">
-                        <span class="mode-bar-title">{"Dreamwell"}</span>
-                        <BuildInfo />
-                    </div>
-                </div>
-                <div class="mode-bar-actions">
-                    <TopBarQueueButton
-                        queue={props.queue.clone()}
-                        active={props.mode == AppMode::Queue}
-                        on_open={props.on_open_queue.clone()}
-                    />
+        <div class="mode-bar">
+            <div class="mode-bar-start">
+                if props.show_sidebar_toggle {
                     <button
-                        type="button"
-                        class={classes!("mode-btn", "mode-btn-icon", props.settings_open.then_some("active"))}
-                        title="Settings"
-                        aria-label="Settings"
-                        onclick={props.on_open_settings.reform(|_| ())}
+                        class={classes!(
+                            "mode-btn",
+                            "mode-btn-menu",
+                            "mode-bar-sidebar-toggle",
+                            props.sidebar_open.then_some("active"),
+                        )}
+                        aria-label="Toggle sidebar"
+                        aria-expanded={if props.sidebar_open { "true" } else { "false" }}
+                        onclick={props.on_toggle_sidebar.reform(|_| ())}
                     >
-                        <span class="mode-btn-icon-glyph">{"⚙"}</span>
+                        {"☰"}
                     </button>
+                }
+                <div class="mode-bar-brand">
+                    <span class="mode-bar-title">{"Dreamwell"}</span>
+                    <BuildInfo />
                 </div>
             </div>
-        </>
+            <div class="mode-bar-actions">
+                <TopBarQueueButton
+                    queue={props.queue.clone()}
+                    active={props.mode == AppMode::Queue}
+                    on_open={props.on_open_queue.clone()}
+                />
+                <button
+                    type="button"
+                    class={classes!("mode-btn", "mode-btn-icon", (props.mode == AppMode::Settings).then_some("active"))}
+                    title="Settings"
+                    aria-label="Settings"
+                    onclick={props.on_open_settings.reform(|_| ())}
+                >
+                    <span class="mode-btn-icon-glyph">{"⚙"}</span>
+                </button>
+            </div>
+        </div>
     }
 }
 
 #[derive(Properties, PartialEq)]
-struct SettingsOverlayProps {
+struct SettingsPageProps {
     settings: UseStateHandle<Option<Settings>>,
-    on_close: Callback<()>,
+    on_back: Callback<()>,
 }
 
-#[function_component(SettingsOverlay)]
-fn settings_overlay(props: &SettingsOverlayProps) -> Html {
+#[function_component(SettingsPage)]
+fn settings_page(props: &SettingsPageProps) -> Html {
     let draft = use_state(|| None::<Settings>);
     let draft_ref = use_mut_ref(|| None::<Settings>);
     let last_saved = use_state(|| None::<Settings>);
@@ -1825,13 +1810,16 @@ fn settings_overlay(props: &SettingsOverlayProps) -> Html {
     }
 
     html! {
-        <div class="settings-popover panel-overlay">
-            <div class="settings-header">
-                <h2>{"Settings"}</h2>
-                <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
+        <main class="main settings-page">
+            <header class="header">
+                <button class="btn secondary" onclick={props.on_back.reform(|_| ())}>{"← Back"}</button>
+                <h1 class="header-title">{"Settings"}</h1>
+                <p class="header-subtitle muted">{"Inference server, model, and generation defaults."}</p>
+            </header>
+            <div class="settings-page-body">
+                <SettingsPanel save_ctx={save_ctx} />
             </div>
-            <SettingsPanel save_ctx={save_ctx} />
-        </div>
+        </main>
     }
 }
 

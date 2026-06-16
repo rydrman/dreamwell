@@ -6,7 +6,6 @@ use yew::prelude::*;
 pub enum Overlay {
     Character,
     Variables,
-    Settings,
     NewChat,
 }
 
@@ -35,9 +34,8 @@ pub enum AppRoute {
         overlay: Option<Overlay>,
         sidebar: bool,
     },
-    Queue {
-        overlay: Option<Overlay>,
-    },
+    Queue,
+    Settings,
 }
 
 impl Default for AppRoute {
@@ -55,15 +53,15 @@ impl AppRoute {
         match self {
             Self::Chats { .. } => crate::queue_ui::AppMode::Chats,
             Self::Stories { .. } => crate::queue_ui::AppMode::Stories,
-            Self::Queue { .. } => crate::queue_ui::AppMode::Queue,
+            Self::Queue => crate::queue_ui::AppMode::Queue,
+            Self::Settings => crate::queue_ui::AppMode::Settings,
         }
     }
 
     pub fn overlay(&self) -> Option<Overlay> {
         match self {
-            Self::Chats { overlay, .. }
-            | Self::Stories { overlay, .. }
-            | Self::Queue { overlay } => *overlay,
+            Self::Chats { overlay, .. } | Self::Stories { overlay, .. } => *overlay,
+            Self::Queue | Self::Settings => None,
         }
     }
 
@@ -88,7 +86,8 @@ impl AppRoute {
                 overlay: None,
                 sidebar: *sidebar,
             },
-            Self::Queue { .. } => Self::Queue { overlay: None },
+            Self::Queue => Self::Queue,
+            Self::Settings => Self::Settings,
         }
     }
 
@@ -112,9 +111,7 @@ impl AppRoute {
                 overlay: Some(overlay),
                 sidebar,
             },
-            Self::Queue { .. } => Self::Queue {
-                overlay: Some(overlay),
-            },
+            Self::Queue | Self::Settings => self,
         }
     }
 
@@ -257,10 +254,8 @@ impl AppRoute {
                 overlay: None,
                 sidebar: false,
             } => format!("/stories/{id}/chapters/{chapter_id}/beats/{beat_id}"),
-            Self::Queue {
-                overlay: Some(overlay),
-            } => format!("/queue/{}", overlay_segment(*overlay)),
-            Self::Queue { overlay: None } => "/queue".to_string(),
+            Self::Queue => "/queue".to_string(),
+            Self::Settings => "/settings".to_string(),
             Self::Stories {
                 story_id: None,
                 nav: StoryNav::Chapter(_) | StoryNav::Beat { .. },
@@ -316,9 +311,15 @@ fn overlay_segment(overlay: Overlay) -> &'static str {
     match overlay {
         Overlay::Character => "character",
         Overlay::Variables => "variables",
-        Overlay::Settings => "settings",
         Overlay::NewChat => "new",
     }
+}
+
+fn route_if_settings(segments: &[&str]) -> Option<AppRoute> {
+    segments
+        .iter()
+        .any(|segment| *segment == "settings")
+        .then_some(AppRoute::Settings)
 }
 
 fn chats_to_path(chat_id: Option<i64>, overlay: Option<Overlay>, sidebar: bool) -> String {
@@ -345,6 +346,7 @@ pub fn parse_path(path: &str) -> AppRoute {
 
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     match segments.first().copied() {
+        Some("settings") => AppRoute::Settings,
         Some("queue") => parse_queue(&segments[1..]),
         Some("stories") => parse_stories(&segments[1..]),
         Some("chats") | None => parse_chats(segments.get(1..).unwrap_or(&[])),
@@ -360,13 +362,15 @@ fn parse_overlay(value: &str) -> Option<Overlay> {
     match value {
         "character" => Some(Overlay::Character),
         "variables" => Some(Overlay::Variables),
-        "settings" => Some(Overlay::Settings),
         "new" => Some(Overlay::NewChat),
         _ => None,
     }
 }
 
 fn parse_chats(segments: &[&str]) -> AppRoute {
+    if let Some(route) = route_if_settings(segments) {
+        return route;
+    }
     match segments {
         [] => AppRoute::Chats {
             chat_id: None,
@@ -427,6 +431,9 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
 }
 
 fn parse_stories(segments: &[&str]) -> AppRoute {
+    if let Some(route) = route_if_settings(segments) {
+        return route;
+    }
     match segments {
         [] => AppRoute::Stories {
             story_id: None,
@@ -620,13 +627,10 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
 }
 
 fn parse_queue(segments: &[&str]) -> AppRoute {
-    match segments {
-        [] => AppRoute::Queue { overlay: None },
-        [overlay] if parse_overlay(overlay).is_some() => AppRoute::Queue {
-            overlay: parse_overlay(overlay),
-        },
-        _ => AppRoute::Queue { overlay: None },
+    if let Some(route) = route_if_settings(segments) {
+        return route;
     }
+    AppRoute::Queue
 }
 
 pub fn current_route() -> AppRoute {
@@ -748,11 +752,6 @@ mod tests {
                 sidebar: false,
             },
             AppRoute::Chats {
-                chat_id: Some(42),
-                overlay: Some(Overlay::Settings),
-                sidebar: false,
-            },
-            AppRoute::Chats {
                 chat_id: None,
                 overlay: Some(Overlay::NewChat),
                 sidebar: false,
@@ -765,11 +764,6 @@ mod tests {
             AppRoute::Chats {
                 chat_id: Some(42),
                 overlay: Some(Overlay::Character),
-                sidebar: true,
-            },
-            AppRoute::Chats {
-                chat_id: None,
-                overlay: Some(Overlay::Settings),
                 sidebar: true,
             },
         ];
@@ -806,15 +800,6 @@ mod tests {
                     chapter_id: 9,
                     beat_id: 12,
                 },
-                overlay: Some(Overlay::Settings),
-                sidebar: false,
-            },
-            AppRoute::Stories {
-                story_id: Some(3),
-                nav: StoryNav::Beat {
-                    chapter_id: 9,
-                    beat_id: 12,
-                },
                 overlay: Some(Overlay::Variables),
                 sidebar: true,
             },
@@ -839,15 +824,31 @@ mod tests {
 
     #[test]
     fn round_trip_queue() {
-        let routes = [
-            AppRoute::Queue { overlay: None },
-            AppRoute::Queue {
-                overlay: Some(Overlay::Settings),
-            },
-        ];
+        let routes = [AppRoute::Queue];
         for route in routes {
             let path = route.to_path();
             assert_eq!(parse_path(&path), route, "path: {path}");
+        }
+    }
+
+    #[test]
+    fn round_trip_settings() {
+        let route = AppRoute::Settings;
+        let path = route.to_path();
+        assert_eq!(parse_path(&path), route, "path: {path}");
+    }
+
+    #[test]
+    fn legacy_settings_paths_redirect() {
+        let legacy = [
+            "/chats/settings",
+            "/chats/1/settings",
+            "/queue/settings",
+            "/stories/3/settings",
+            "/stories/3/basics/settings",
+        ];
+        for path in legacy {
+            assert_eq!(parse_path(path), AppRoute::Settings, "path: {path}");
         }
     }
 }
