@@ -2,6 +2,7 @@ mod api;
 mod app_sync;
 mod auth;
 mod auto_grow;
+mod chat_sync;
 mod generation_ui;
 mod install;
 mod item_list;
@@ -28,6 +29,7 @@ thread_local! {
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
+use chat_sync::messages_stale_vs_chat;
 use dreamwell_types::*;
 use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
@@ -40,7 +42,7 @@ use router::{use_router, AppRoute, Overlay, StoryNav};
 use sidebar::AppSidebar;
 use stories_ui::StoriesShell;
 use story_save::{AutoSaveField, AutoSavePhase};
-use story_sync::AUTOSAVE_DEBOUNCE_MS;
+use story_sync::{FetchGeneration, AUTOSAVE_DEBOUNCE_MS};
 use summary_ui::{
     chat_summarize_in_progress, is_chat_summarize_pending, SummaryBreak, SummaryKind, SummaryView,
     CHAT_SUMMARIZE_PLACEHOLDER,
@@ -320,6 +322,33 @@ fn publish_archived_chats(archived_chats: &UseStateHandle<Vec<Chat>>, next: Vec<
     }
 }
 
+fn spawn_gated_messages_fetch(
+    chat_id: i64,
+    messages: &UseStateHandle<Vec<Message>>,
+    messages_loading: &UseStateHandle<bool>,
+    messages_fetch_gen: &UseStateHandle<u64>,
+    show_loading: bool,
+) {
+    let generation = FetchGeneration::from_raw(**messages_fetch_gen).bump();
+    messages_fetch_gen.set(generation.raw());
+    if show_loading {
+        messages_loading.set(true);
+    }
+    let messages = messages.clone();
+    let messages_loading = messages_loading.clone();
+    let messages_fetch_gen = messages_fetch_gen.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = api::get_messages(chat_id).await;
+        let latest = FetchGeneration::from_raw(*messages_fetch_gen);
+        if generation.is_current(latest) {
+            if let Ok(msgs) = result {
+                messages.set(msgs);
+            }
+            messages_loading.set(false);
+        }
+    });
+}
+
 #[function_component(App)]
 fn app() -> Html {
     let router = use_router();
@@ -333,6 +362,7 @@ fn app() -> Html {
     let characters = use_state(Vec::<Character>::new);
     let messages = use_state(Vec::<Message>::new);
     let messages_loading = use_state(|| false);
+    let messages_fetch_gen = use_state(|| 0u64);
     let settings = use_state(|| None::<Settings>);
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
@@ -469,6 +499,7 @@ fn app() -> Html {
     {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
+        let messages_fetch_gen = messages_fetch_gen.clone();
         let chats = chats.clone();
         let chat_stream_nudge = chat_stream_nudge.clone();
         let summarize_watch = summarize_watch.clone();
@@ -480,17 +511,19 @@ fn app() -> Html {
                 *chat_stream_nudge.borrow_mut() = None;
                 *summarize_watch.borrow_mut() = None;
                 if let Some(chat_id) = *chat_id {
-                    messages_loading.set(true);
-                    let messages_for_fetch = messages.clone();
-                    let messages_loading_for_fetch = messages_loading.clone();
+                    spawn_gated_messages_fetch(
+                        chat_id,
+                        &messages,
+                        &messages_loading,
+                        &messages_fetch_gen,
+                        true,
+                    );
+                    let messages = messages.clone();
+                    let messages_fetch_gen = messages_fetch_gen.clone();
+                    let messages_loading = messages_loading.clone();
                     let chats = chats.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        if let Ok(msgs) = api::get_messages(chat_id).await {
-                            messages_for_fetch.set(msgs);
-                        }
-                        messages_loading_for_fetch.set(false);
-                    });
                     let summarize_watch = summarize_watch.clone();
+                    let had_active_job = Rc::new(RefCell::new(false));
                     let stream = api::ChatStream::new(chat_id, move |payload| {
                         if let Some(marker_id) = *summarize_watch.borrow() {
                             let completed = payload.messages.iter().any(|message| {
@@ -518,9 +551,24 @@ fn app() -> Html {
                         if let Some(marker_id) = summarize_placeholder_id(&payload.messages) {
                             *summarize_watch.borrow_mut() = Some(marker_id);
                         }
+                        let was_active = *had_active_job.borrow();
+                        let now_active = payload.active_job.is_some();
+                        if now_active {
+                            *had_active_job.borrow_mut() = true;
+                        }
                         messages.set(payload.messages.clone());
                         messages_loading.set(false);
                         update_chat_in_list(&chats, payload.chat.clone());
+                        if was_active && !now_active {
+                            spawn_gated_messages_fetch(
+                                chat_id,
+                                &messages,
+                                &messages_loading,
+                                &messages_fetch_gen,
+                                false,
+                            );
+                            *had_active_job.borrow_mut() = false;
+                        }
                     });
                     *chat_stream_nudge.borrow_mut() = Some(stream.nudge());
                     stream_holder = Some(stream);
@@ -537,22 +585,40 @@ fn app() -> Html {
     }
 
     {
-        let refresh_generation = refresh_generation.clone();
         let chat_stream_nudge = chat_stream_nudge.clone();
         let chats = chats.clone();
         let archived_chats = archived_chats.clone();
         let queue = queue.clone();
         let stories = stories.clone();
+        let router = router.clone();
+        let messages = messages.clone();
+        let messages_loading = messages_loading.clone();
+        let messages_fetch_gen = messages_fetch_gen.clone();
         use_effect_with((), move |_| {
             let guard = app_sync::register_scope(
                 {
-                    let refresh_generation = refresh_generation.clone();
                     let chats = chats.clone();
                     let archived_chats = archived_chats.clone();
                     let queue = queue.clone();
                     let stories = stories.clone();
+                    let router = router.clone();
+                    let chat_stream_nudge = chat_stream_nudge.clone();
+                    let messages = messages.clone();
+                    let messages_loading = messages_loading.clone();
+                    let messages_fetch_gen = messages_fetch_gen.clone();
                     move |_reason| {
-                        refresh_generation.set(*refresh_generation + 1);
+                        if let Some(nudge) = chat_stream_nudge.borrow().clone() {
+                            nudge.resume();
+                        }
+                        if let Some(chat_id) = chat_id_from_route(&router.route()) {
+                            spawn_gated_messages_fetch(
+                                chat_id,
+                                &messages,
+                                &messages_loading,
+                                &messages_fetch_gen,
+                                false,
+                            );
+                        }
                         let queue = queue.clone();
                         let chats = chats.clone();
                         let archived_chats = archived_chats.clone();
@@ -593,16 +659,15 @@ fn app() -> Html {
     let load_messages_for_chat = {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
+        let messages_fetch_gen = messages_fetch_gen.clone();
         Callback::from(move |chat_id: i64| {
-            let messages = messages.clone();
-            let messages_loading = messages_loading.clone();
-            messages_loading.set(true);
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(msgs) = api::get_messages(chat_id).await {
-                    messages.set(msgs);
-                }
-                messages_loading.set(false);
-            });
+            spawn_gated_messages_fetch(
+                chat_id,
+                &messages,
+                &messages_loading,
+                &messages_fetch_gen,
+                true,
+            );
         })
     };
 
@@ -653,6 +718,9 @@ fn app() -> Html {
         let stories = stories.clone();
         let router = router.clone();
         let job_tracker = job_tracker.clone();
+        let messages = messages.clone();
+        let messages_loading = messages_loading.clone();
+        let messages_fetch_gen = messages_fetch_gen.clone();
         use_effect_with((), move |_| {
             let queue = queue.clone();
             let chats = chats.clone();
@@ -660,6 +728,9 @@ fn app() -> Html {
             let stories = stories.clone();
             let router = router.clone();
             let job_tracker = job_tracker.clone();
+            let messages = messages.clone();
+            let messages_loading = messages_loading.clone();
+            let messages_fetch_gen = messages_fetch_gen.clone();
             let poll_ms = if notifications::is_enabled() {
                 1500
             } else {
@@ -678,6 +749,9 @@ fn app() -> Html {
                 };
                 let notifications_on = notifications::is_enabled();
                 let job_tracker = job_tracker.clone();
+                let messages = messages.clone();
+                let messages_loading = messages_loading.clone();
+                let messages_fetch_gen = messages_fetch_gen.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     let status = api::get_queue().await.ok();
                     let chat_list = api::list_chats().await.ok().map(sort_chats);
@@ -715,6 +789,19 @@ fn app() -> Html {
                         queue.set(Some(status));
                     }
                     if let Some(list) = chat_list {
+                        if let Some(chat_id) = view.selected_chat_id {
+                            if let Some(chat) = list.iter().find(|chat| chat.id == chat_id) {
+                                if messages_stale_vs_chat(&messages, chat) {
+                                    spawn_gated_messages_fetch(
+                                        chat_id,
+                                        &messages,
+                                        &messages_loading,
+                                        &messages_fetch_gen,
+                                        false,
+                                    );
+                                }
+                            }
+                        }
                         publish_chats(&chats, list);
                     }
                     if let Some(list) = archived_list {
@@ -1419,11 +1506,15 @@ fn app() -> Html {
                                     onclick={{
                                         let chat_id = header.id;
                                         let messages = messages.clone();
+                                        let messages_loading = messages_loading.clone();
+                                        let messages_fetch_gen = messages_fetch_gen.clone();
                                         let chats = chats.clone();
                                         let queue = queue.clone();
                                         let bump_stream = bump_stream.clone();
                                         Callback::from(move |_| {
                                             let messages = messages.clone();
+                                            let messages_loading = messages_loading.clone();
+                                            let messages_fetch_gen = messages_fetch_gen.clone();
                                             let chats = chats.clone();
                                             let queue = queue.clone();
                                             let bump_stream = bump_stream.clone();
@@ -1431,9 +1522,13 @@ fn app() -> Html {
                                                 match api::summarize_chat(chat_id).await {
                                                     Ok(_) => {
                                                         bump_stream.emit(());
-                                                        if let Ok(msgs) = api::get_messages(chat_id).await {
-                                                            messages.set(msgs);
-                                                        }
+                                                        spawn_gated_messages_fetch(
+                                                            chat_id,
+                                                            &messages,
+                                                            &messages_loading,
+                                                            &messages_fetch_gen,
+                                                            false,
+                                                        );
                                                         if let Ok(list) = api::list_chats().await {
                                                             publish_chats(&chats, list);
                                                         }
@@ -1484,19 +1579,27 @@ fn app() -> Html {
                         char_name={active_header.as_ref().map(|h| h.character_name.clone())}
                         on_messages_change={Callback::from({
                             let messages = messages.clone();
+                            let messages_loading = messages_loading.clone();
+                            let messages_fetch_gen = messages_fetch_gen.clone();
                             let chats = chats.clone();
                             let queue = queue.clone();
                             let bump_stream = bump_stream.clone();
                             move |_| {
                                 let Some(chat_id) = selected_chat_id else { return };
                                 let messages = messages.clone();
+                                let messages_loading = messages_loading.clone();
+                                let messages_fetch_gen = messages_fetch_gen.clone();
                                 let chats = chats.clone();
                                 let queue = queue.clone();
                                 bump_stream.emit(());
+                                spawn_gated_messages_fetch(
+                                    chat_id,
+                                    &messages,
+                                    &messages_loading,
+                                    &messages_fetch_gen,
+                                    false,
+                                );
                                 wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(msgs) = api::get_messages(chat_id).await {
-                                        messages.set(msgs);
-                                    }
                                     if let Ok(list) = api::list_chats().await {
                                         publish_chats(&chats, list);
                                     }
@@ -1559,20 +1662,28 @@ fn app() -> Html {
                     notice={selected.as_ref().and_then(|chat| composer_notice(chat, &messages))}
                     on_send={Callback::from({
                         let messages = messages.clone();
+                        let messages_loading = messages_loading.clone();
+                        let messages_fetch_gen = messages_fetch_gen.clone();
                         let chats = chats.clone();
                         let queue = queue.clone();
                         let bump_stream = bump_stream.clone();
                         move |content: String| {
                             let Some(chat_id) = selected_chat_id else { return };
                             let messages = messages.clone();
+                            let messages_loading = messages_loading.clone();
+                            let messages_fetch_gen = messages_fetch_gen.clone();
                             let chats = chats.clone();
                             let queue = queue.clone();
                             bump_stream.emit(());
                             wasm_bindgen_futures::spawn_local(async move {
                                 let _ = api::send_message(chat_id, &content).await;
-                                if let Ok(msgs) = api::get_messages(chat_id).await {
-                                    messages.set(msgs);
-                                }
+                                spawn_gated_messages_fetch(
+                                    chat_id,
+                                    &messages,
+                                    &messages_loading,
+                                    &messages_fetch_gen,
+                                    false,
+                                );
                                 if let Ok(list) = api::list_chats().await {
                                     publish_chats(&chats, list);
                                 }
