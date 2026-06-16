@@ -23,8 +23,8 @@ use crate::story_save::{
     AutoSaveField, AutoSaveOutcome, AutoSavePhase,
 };
 use crate::story_sync::{
-    fetch_response_is_current, should_replace_detail_from_sse, story_list_with_detail,
-    FetchGeneration,
+    detail_stale_vs_story_list, fetch_response_is_current, should_replace_detail_from_sse,
+    story_list_with_detail, FetchGeneration,
 };
 use crate::summary_ui::{SummaryBreak, SummaryKind, SummaryView};
 use crate::title_editor::{TitleEditTrigger, TitleEditor};
@@ -369,12 +369,10 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     if now_active {
                         *had_active_job.borrow_mut() = true;
                     }
-                    if should_replace_detail_from_sse(payload.active_job.as_ref()) {
-                        detail_for_stream.set(Some(payload.detail.clone()));
-                    }
+                    let job_just_finished = was_active && !now_active;
                     stories_for_stream
                         .set(story_list_with_detail(&stories_for_stream, &payload.detail));
-                    if was_active && !now_active {
+                    if job_just_finished {
                         let detail_ref = detail_for_stream.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(d) = api::get_story(story_id).await {
@@ -382,6 +380,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                             }
                         });
                         *had_active_job.borrow_mut() = false;
+                    } else if should_replace_detail_from_sse(payload.active_job.as_ref()) {
+                        detail_for_stream.set(Some(payload.detail.clone()));
                     }
                 });
                 *story_stream_nudge.borrow_mut() = Some(stream.nudge());
@@ -476,12 +476,16 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     let detail = detail.clone();
                     let route = route.clone();
                     let story_stream_nudge = story_stream_nudge.clone();
-                    move |_reason| {
+                    move |ctx| {
                         let story_id = story_id_from_route(&route);
                         let stories = stories.clone();
                         let detail = detail.clone();
                         if let Some(nudge) = story_stream_nudge.borrow().clone() {
-                            nudge.resume();
+                            if ctx.force() {
+                                nudge.reconnect();
+                            } else {
+                                nudge.resume();
+                            }
                         }
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(list) = api::list_stories().await {
@@ -505,6 +509,35 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 },
             );
             move || drop(guard)
+        });
+    }
+
+    {
+        let detail = detail.clone();
+        let stories = stories.clone();
+        let route = props.route.clone();
+        use_effect_with((), move |_| {
+            let hook = app_sync::register_poll_hook(Rc::new(move || {
+                let story_id = story_id_from_route(&route);
+                let Some(story_id) = story_id else {
+                    return;
+                };
+                let Some(detail_value) = (*detail).clone() else {
+                    return;
+                };
+                let Some(story) = stories.iter().find(|s| s.id == story_id) else {
+                    return;
+                };
+                if detail_stale_vs_story_list(&detail_value, story) {
+                    let detail_handle = detail.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Ok(d) = api::get_story(story_id).await {
+                            detail_handle.set(Some(d));
+                        }
+                    });
+                }
+            }));
+            move || drop(hook)
         });
     }
 

@@ -15,7 +15,7 @@ NAMESPACE ?= dreamwell
 
 COMPOSE_DEV ?= docker compose -f docker-compose.dev.yml
 
-.PHONY: fmt fmt-check clippy test validate install-hooks install-trunk build build-front build-server run run-local run-docker clean docker deploy
+.PHONY: fmt fmt-check clippy test e2e validate install-hooks install-trunk build build-front build-server run run-local run-docker clean docker deploy
 
 fmt:
 	$(CARGO) fmt --all
@@ -29,7 +29,10 @@ clippy:
 test:
 	$(CARGO) test --workspace
 
-validate: fmt-check clippy test
+e2e:
+	./scripts/e2e-run.sh
+
+validate: fmt-check clippy test e2e
 
 install-hooks:
 	git config core.hooksPath .githooks

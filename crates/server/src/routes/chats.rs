@@ -370,3 +370,162 @@ async fn stream_chat(
 
     Ok(Sse::new(event_stream).keep_alive(KeepAlive::default()))
 }
+
+#[cfg(test)]
+mod stream_tests {
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::Router;
+    use dreamwell_types::{CharacterCreate, JobStatus, MessageRole};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use crate::db;
+    use crate::queue::JobQueue;
+    use crate::routes::AppState;
+
+    use super::stream_chat;
+
+    async fn test_state(poll_ms: u64) -> (tempfile::TempDir, AppState) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.db");
+        let pool = db::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .expect("connect");
+        let queue = JobQueue::new(pool.clone());
+        let state = AppState {
+            pool,
+            queue,
+            sse_poll_interval_ms: poll_ms,
+        };
+        (dir, state)
+    }
+
+    async fn seed_chat(state: &AppState) -> (i64, i64) {
+        let character = db::create_character(
+            &state.pool,
+            CharacterCreate {
+                name: "Test".into(),
+                description: String::new(),
+                personality: String::new(),
+                scenario: String::new(),
+                first_message: String::new(),
+                example_dialogue: String::new(),
+                system_prompt: String::new(),
+                avatar_url: None,
+            },
+        )
+        .await
+        .expect("character");
+        let chat = db::create_chat(&state.pool, "Chat".into(), character.id)
+            .await
+            .expect("chat");
+        let message = db::insert_message(
+            &state.pool,
+            chat.id,
+            MessageRole::Assistant,
+            String::new(),
+            false,
+        )
+        .await
+        .expect("message");
+        (chat.id, message.id)
+    }
+
+    fn parse_sse_events(body: &str) -> Vec<(Option<String>, String)> {
+        body.split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                let mut event = None;
+                let mut data = String::new();
+                for line in block.lines() {
+                    if let Some(name) = line.strip_prefix("event:") {
+                        event = Some(name.trim().to_string());
+                    } else if let Some(payload) = line.strip_prefix("data:") {
+                        data = payload.trim().to_string();
+                    }
+                }
+                (event, data)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stream_emits_data_then_idle_when_no_active_job() {
+        let (_dir, state) = test_state(50).await;
+        let (chat_id, _message_id) = seed_chat(&state).await;
+
+        let app = Router::new()
+            .route("/:id/stream", axum::routing::get(stream_chat))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{chat_id}/stream"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        let events = parse_sse_events(&text);
+        assert!(!events.is_empty());
+        assert!(events
+            .iter()
+            .any(|(event, data)| { event.is_none() && data.contains("\"messages\"") }));
+        assert!(events
+            .iter()
+            .any(|(event, _)| event.as_deref() == Some("idle")));
+    }
+
+    #[tokio::test]
+    async fn stream_emits_idle_after_job_completes() {
+        let (_dir, state) = test_state(50).await;
+        let (chat_id, message_id) = seed_chat(&state).await;
+        let job = db::enqueue_job(&state.pool, chat_id, message_id)
+            .await
+            .expect("enqueue");
+        sqlx::query("UPDATE generation_jobs SET status = 'running' WHERE id = ?1")
+            .bind(job.id)
+            .execute(&state.pool)
+            .await
+            .expect("mark running");
+
+        let pool = state.pool.clone();
+        let job_id = job.id;
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            db::complete_job(&pool, job_id, JobStatus::Completed, None)
+                .await
+                .expect("complete");
+        });
+
+        let app = Router::new()
+            .route("/:id/stream", axum::routing::get(stream_chat))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/{chat_id}/stream"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        let events = parse_sse_events(&text);
+        assert!(events
+            .iter()
+            .any(|(event, _)| event.as_deref() == Some("idle")));
+    }
+}

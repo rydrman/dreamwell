@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::auth;
+use crate::sse_client;
 use dreamwell_types::*;
 use gloo_net::http::{Request, RequestBuilder};
 use gloo_timers::callback::Timeout;
@@ -10,7 +11,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{Event, EventSource, MessageEvent};
 
-const IDLE_RECONNECT_MS: u32 = 2_000;
+const IDLE_RECONNECT_MS: u32 = sse_client::IDLE_RECONNECT_MS;
 
 struct ReconnectingEventSource {
     url: String,
@@ -103,9 +104,7 @@ impl ReconnectingEventSource {
         self.timeout.borrow_mut().take();
         let attempt = *self.attempt.borrow();
         *self.attempt.borrow_mut() = attempt.saturating_add(1);
-        let delay_ms = 1_000u32
-            .saturating_mul(2u32.saturating_pow(attempt.min(5)))
-            .min(30_000);
+        let delay_ms = sse_client::SseConnectionState::error_backoff_ms(attempt);
         self.schedule_reconnect_after(delay_ms);
     }
 
@@ -145,9 +144,10 @@ impl ReconnectingEventSource {
     }
 
     fn reconnect(self: &Rc<Self>) {
-        if *self.stopped.borrow() || *self.paused.borrow() {
+        if *self.stopped.borrow() {
             return;
         }
+        *self.paused.borrow_mut() = false;
         self.attempt.replace(0);
         self.connect();
     }

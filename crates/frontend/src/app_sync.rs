@@ -15,13 +15,29 @@ pub enum ResumeReason {
     PageShow,
 }
 
-type ReconcileFn = Rc<dyn Fn(ResumeReason)>;
+/// Context passed to reconcile handlers when the tab resumes or reconnects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResumeContext {
+    pub reason: ResumeReason,
+    /// Hard reconcile after bfcache restore or memory discard — reconnect streams and refetch.
+    pub force: bool,
+}
+
+impl ResumeContext {
+    pub fn force(self) -> bool {
+        self.force
+    }
+}
+
+type ReconcileFn = Rc<dyn Fn(ResumeContext)>;
 type PauseFn = Rc<dyn Fn()>;
 type PollTickFn = Rc<dyn Fn()>;
 
 thread_local! {
     static REGISTRY: RefCell<Registry> = RefCell::new(Registry::default());
     static POLL_TICK: RefCell<Option<PollTickFn>> = const { RefCell::new(None) };
+    static POLL_HOOKS: RefCell<Vec<(usize, PollTickFn)>> = RefCell::new(Vec::new());
+    static NEXT_POLL_HOOK_ID: RefCell<usize> = const { RefCell::new(0) };
 }
 
 #[derive(Default)]
@@ -64,9 +80,22 @@ impl Drop for ScopeGuard {
     }
 }
 
+/// Guard returned from [`register_poll_hook`]; unregisters on drop.
+pub struct PollHookGuard {
+    id: usize,
+}
+
+impl Drop for PollHookGuard {
+    fn drop(&mut self) {
+        POLL_HOOKS.with(|hooks| {
+            hooks.borrow_mut().retain(|(id, _)| *id != self.id);
+        });
+    }
+}
+
 /// Register reconcile and pause handlers for a part of the app (e.g. chats shell, stories shell).
 pub fn register_scope(
-    on_reconcile: impl Fn(ResumeReason) + 'static,
+    on_reconcile: impl Fn(ResumeContext) + 'static,
     on_pause: impl Fn() + 'static,
 ) -> ScopeGuard {
     let id = REGISTRY.with(|registry| {
@@ -75,6 +104,17 @@ pub fn register_scope(
             .register(Rc::new(on_reconcile), Rc::new(on_pause))
     });
     ScopeGuard { id }
+}
+
+/// Register an extra poll tick handler (e.g. story detail staleness repair).
+pub fn register_poll_hook(tick: PollTickFn) -> PollHookGuard {
+    let id = NEXT_POLL_HOOK_ID.with(|next| {
+        let id = *next.borrow();
+        *next.borrow_mut() = id.saturating_add(1);
+        id
+    });
+    POLL_HOOKS.with(|hooks| hooks.borrow_mut().push((id, tick)));
+    PollHookGuard { id }
 }
 
 /// Whether the tab is visible and the browser reports an online network state.
@@ -100,21 +140,33 @@ fn document_was_discarded() -> bool {
         .unwrap_or(false)
 }
 
-/// Run all registered reconcile handlers and trigger an immediate poll tick.
-pub fn reconcile(reason: ResumeReason) {
-    let _force = reason == ResumeReason::PageShow || document_was_discarded();
-
-    REGISTRY.with(|registry| {
-        for scope in &registry.borrow().scopes {
-            (scope.reconcile)(reason);
-        }
-    });
-
+fn run_poll_ticks() {
     POLL_TICK.with(|tick| {
         if let Some(tick) = tick.borrow().as_ref() {
             tick();
         }
     });
+    POLL_HOOKS.with(|hooks| {
+        for (_, hook) in hooks.borrow().iter() {
+            hook();
+        }
+    });
+}
+
+/// Run all registered reconcile handlers and trigger an immediate poll tick.
+pub fn reconcile(reason: ResumeReason) {
+    let ctx = ResumeContext {
+        reason,
+        force: reason == ResumeReason::PageShow || document_was_discarded(),
+    };
+
+    REGISTRY.with(|registry| {
+        for scope in &registry.borrow().scopes {
+            (scope.reconcile)(ctx);
+        }
+    });
+
+    run_poll_ticks();
 }
 
 /// Pause background sync for all registered scopes (e.g. when the tab is hidden).
@@ -202,11 +254,11 @@ pub fn start_poll(interval_ms: u32, tick: PollTickFn) -> impl FnOnce() {
     POLL_TICK.with(|slot| {
         *slot.borrow_mut() = Some(tick.clone());
     });
-    tick();
+    run_poll_ticks();
 
     let handle = Interval::new(interval_ms, move || {
         if tab_active() {
-            tick();
+            run_poll_ticks();
         }
     });
 
