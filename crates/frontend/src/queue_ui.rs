@@ -8,6 +8,7 @@ pub enum AppMode {
     Chats,
     Stories,
     Queue,
+    Settings,
 }
 
 fn job_type_label(job_type: JobType) -> &'static str {
