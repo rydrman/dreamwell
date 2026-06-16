@@ -1342,7 +1342,7 @@ pub fn inline_chat_variables(props: &InlineChatVariablesProps) -> Html {
     let show_previous_column = rows.iter().any(|row| row.previous_value.is_some());
 
     html! {
-        <CollapsibleVariablesSection title={title} default_expanded={true}>
+        <CollapsibleVariablesSection title={title} default_expanded={false}>
             <VariableList
                 rows={rows}
                 new_scope_value={props.message_id.to_string()}
@@ -1430,7 +1430,7 @@ pub fn inline_story_variables(props: &InlineStoryVariablesProps) -> Html {
     let show_previous_column = rows.iter().any(|row| row.previous_value.is_some());
 
     html! {
-        <CollapsibleVariablesSection title={title} default_expanded={true}>
+        <CollapsibleVariablesSection title={title} default_expanded={false}>
             <VariableList
                 rows={rows}
                 new_scope_value={scope_value}
