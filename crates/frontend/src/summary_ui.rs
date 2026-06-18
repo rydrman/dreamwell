@@ -37,11 +37,10 @@ pub fn is_chat_summarize_pending(message: &Message) -> bool {
     message.is_summary && message.content.starts_with("Summarizing earlier")
 }
 
-pub fn chat_summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
+pub fn chat_summarize_in_progress(chat: &Chat, _messages: &[Message]) -> bool {
     chat.active_job
         .as_ref()
         .is_some_and(|job| job.job_type == JobType::ChatSummarize)
-        || messages.iter().any(is_chat_summarize_pending)
 }
 
 #[derive(Properties, PartialEq)]
