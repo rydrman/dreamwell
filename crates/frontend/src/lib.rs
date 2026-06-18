@@ -47,6 +47,7 @@ use story_save::{AutoSaveField, AutoSavePhase};
 use story_sync::{FetchGeneration, AUTOSAVE_DEBOUNCE_MS};
 use summary_ui::{
     chat_summarize_in_progress, is_chat_summarize_pending, SummaryBreak, SummaryKind, SummaryView,
+    CHAT_SUMMARIZE_PLACEHOLDER,
 };
 use title_editor::TitleEditor;
 use variables_ui::{
@@ -560,18 +561,13 @@ fn app() -> Html {
                         let job_just_finished = was_active && !now_active;
                         update_chat_in_list(&chats, payload.chat.clone());
                         if job_just_finished {
-                            if should_apply_messages_from_sse(&payload.messages, &payload.chat) {
-                                messages.set(payload.messages.clone());
-                                messages_loading.set(false);
-                            } else {
-                                spawn_gated_messages_fetch(
-                                    chat_id,
-                                    &messages,
-                                    &messages_loading,
-                                    &messages_fetch_gen,
-                                    false,
-                                );
-                            }
+                            spawn_gated_messages_fetch(
+                                chat_id,
+                                &messages,
+                                &messages_loading,
+                                &messages_fetch_gen,
+                                false,
+                            );
                             *had_active_job.borrow_mut() = false;
                         } else if should_apply_messages_from_sse(&payload.messages, &payload.chat) {
                             messages.set(payload.messages.clone());
@@ -2682,6 +2678,8 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     }
 }
 
+const SUMMARIZE_PLACEHOLDER: &str = CHAT_SUMMARIZE_PLACEHOLDER;
+
 #[derive(Clone, Copy, PartialEq)]
 enum SummaryMarkerMode {
     View,
@@ -2706,7 +2704,7 @@ fn summary_marker(props: &SummaryMarkerProps) -> Html {
         props.message.job_status,
         Some(JobStatus::Queued) | Some(JobStatus::Running)
     );
-    let pending = active || props.summarize_busy;
+    let pending = active || props.message.content == SUMMARIZE_PLACEHOLDER;
     let can_manage = !pending && !props.summarize_busy && !*acting;
     let has_summary = !props.chat_summary.trim().is_empty();
 
