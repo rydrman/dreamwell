@@ -34,14 +34,31 @@ impl SummaryKind {
 }
 
 pub fn is_chat_summarize_pending(message: &Message) -> bool {
-    message.is_summary && message.content.starts_with("Summarizing earlier")
+    message.is_summary
+        && message
+            .content
+            .starts_with(CHAT_SUMMARIZE_PLACEHOLDER.trim_end_matches('…'))
 }
 
-pub fn chat_summarize_in_progress(chat: &Chat, messages: &[Message]) -> bool {
+/// Whether the sidebar reports an active chat-summarize job.
+pub fn chat_has_active_summarize_job(chat: &Chat) -> bool {
     chat.active_job
         .as_ref()
         .is_some_and(|job| job.job_type == JobType::ChatSummarize)
-        || messages.iter().any(is_chat_summarize_pending)
+}
+
+/// Whether summarization should lock composer-level controls.
+///
+/// Only the authoritative active job is used here. A stale placeholder message
+/// left in local state after the queue drains must not keep the UI locked.
+pub fn chat_summarize_in_progress(chat: &Chat, _messages: &[Message]) -> bool {
+    chat_has_active_summarize_job(chat)
+}
+
+/// Local messages still show the in-flight placeholder, but the chat row no longer
+/// has an active summarize job.
+pub fn messages_have_stale_summarize_placeholder(messages: &[Message], chat: &Chat) -> bool {
+    !chat_has_active_summarize_job(chat) && messages.iter().any(is_chat_summarize_pending)
 }
 
 #[derive(Properties, PartialEq)]
@@ -110,5 +127,80 @@ pub fn summary_view(props: &SummaryViewProps) -> Html {
                 </>
             }
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use dreamwell_types::{Job, JobStatus, MessageRole};
+
+    fn sample_chat(active_job: Option<Job>) -> Chat {
+        Chat {
+            id: 1,
+            title: "Test".into(),
+            character_id: 1,
+            character_name: "Char".into(),
+            summary: String::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived_at: None,
+            active_job,
+            queued_jobs: 0,
+        }
+    }
+
+    fn summarize_job(status: JobStatus) -> Job {
+        Job {
+            id: 1,
+            job_type: JobType::ChatSummarize,
+            status,
+            chat_id: Some(1),
+            message_id: Some(2),
+            story_id: None,
+            chapter_id: None,
+            beat_id: None,
+            guidance_notes: String::new(),
+            error: None,
+            position: 0,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    fn placeholder_message() -> Message {
+        Message {
+            id: 2,
+            chat_id: 1,
+            role: MessageRole::System,
+            content: CHAT_SUMMARIZE_PLACEHOLDER.into(),
+            thought_content: String::new(),
+            thought_duration_ms: None,
+            thought_in_progress: false,
+            variable_updates: vec![],
+            is_summary: true,
+            in_summary: false,
+            created_at: Utc::now(),
+            job_status: None,
+            generation_error: None,
+        }
+    }
+
+    #[test]
+    fn in_progress_follows_active_job_not_stale_placeholder() {
+        let chat = sample_chat(None);
+        let messages = vec![placeholder_message()];
+        assert!(!chat_summarize_in_progress(&chat, &messages));
+        assert!(messages_have_stale_summarize_placeholder(&messages, &chat));
+    }
+
+    #[test]
+    fn in_progress_when_summarize_job_active() {
+        let chat = sample_chat(Some(summarize_job(JobStatus::Running)));
+        let messages = vec![placeholder_message()];
+        assert!(chat_summarize_in_progress(&chat, &messages));
+        assert!(!messages_have_stale_summarize_placeholder(&messages, &chat));
     }
 }

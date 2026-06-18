@@ -345,6 +345,7 @@ async fn stream_chat(
                     break;
                 }
             };
+            let _ = crate::summarize::cleanup_stale_summary_markers(&pool, id).await;
             let messages = db::list_messages(&pool, id).await.unwrap_or_default();
             let active_job = db::get_active_job(&pool, id).await.ok().flatten();
             let has_active_job = active_job.is_some();

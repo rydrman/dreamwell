@@ -53,6 +53,17 @@ pub async fn cleanup_stale_summary_markers(pool: &SqlitePool, chat_id: i64) -> A
     if !stale_ids.is_empty() {
         db::delete_messages(pool, &stale_ids).await?;
     }
+
+    if !db::has_active_summarize_job(pool, chat_id).await? {
+        let orphan_ids: Vec<i64> = messages
+            .iter()
+            .filter(|message| message.is_summary && message.content == SUMMARIZE_PLACEHOLDER)
+            .map(|message| message.id)
+            .collect();
+        if !orphan_ids.is_empty() {
+            db::delete_messages(pool, &orphan_ids).await?;
+        }
+    }
     Ok(())
 }
 
