@@ -976,9 +976,10 @@ fn app() -> Html {
                 active_header.clone(),
             ),
             move |(mode, chat_id, _story_id, _header)| {
-                mobile_chrome_visible.set(false);
                 let mode = *mode;
                 let chat_id = *chat_id;
+                let at_top = window_scroll_y() <= 0.0;
+                mobile_chrome_visible.set(at_top && mode == AppMode::Chats && chat_id.is_some());
                 let mobile_chrome_visible = mobile_chrome_visible.clone();
                 let app_layout_ref = app_layout_ref.clone();
                 let last_scroll_y = Rc::new(RefCell::new(window_scroll_y()));
@@ -1471,10 +1472,10 @@ fn app() -> Html {
                                                 character_id: None,
                                                 summary: None,
                                             };
-                                            if api::update_chat(chat_id, &payload).await.is_ok() {
-                                                if let Ok(list) = api::list_chats().await {
-                                                    publish_chats(&chats, list);
-                                                }
+                                            if let Ok(updated) =
+                                                api::update_chat(chat_id, &payload).await
+                                            {
+                                                update_chat_in_list(&chats, updated);
                                             }
                                         });
                                     }

@@ -2255,6 +2255,11 @@ input.header-title {
     transform: translateY(0);
   }
 
+  .app-layout--chat-scroll-chrome.mobile-chrome-visible .main {
+    padding-top: var(--sidebar-inset-top, 0px);
+    transition: padding-top 0.2s ease;
+  }
+
   .content-scroll {
     overflow: visible;
     flex: none;
