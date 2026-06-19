@@ -939,6 +939,32 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_games() {
+        let routes = [
+            AppRoute::Games {
+                game_id: None,
+                sidebar: false,
+            },
+            AppRoute::Games {
+                game_id: None,
+                sidebar: true,
+            },
+            AppRoute::Games {
+                game_id: Some(7),
+                sidebar: false,
+            },
+            AppRoute::Games {
+                game_id: Some(7),
+                sidebar: true,
+            },
+        ];
+        for route in routes {
+            let path = route.to_path();
+            assert_eq!(parse_path(&path), route, "path: {path}");
+        }
+    }
+
+    #[test]
     fn round_trip_queue() {
         let routes = [AppRoute::Queue];
         for route in routes {
