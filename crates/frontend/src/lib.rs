@@ -286,12 +286,35 @@ fn cache_chat_list(key: &str, chats: &[Chat]) {
     }
 }
 
-fn publish_chats(chats: &UseStateHandle<Vec<Chat>>, next: Vec<Chat>) {
-    let next = sort_chats(next);
-    if **chats != next {
+fn finalize_chat_list(current: &[Chat], next: Vec<Chat>, keep_chat_id: Option<i64>) -> Vec<Chat> {
+    let mut next = sort_chats(next);
+    if let Some(id) = keep_chat_id {
+        if !next.iter().any(|chat| chat.id == id) {
+            if let Some(chat) = current.iter().find(|chat| chat.id == id) {
+                next.push(chat.clone());
+                next = sort_chats(next);
+            }
+        }
+    }
+    next
+}
+
+fn publish_chats(chats: &UseStateHandle<Vec<Chat>>, next: Vec<Chat>, keep_chat_id: Option<i64>) {
+    let current = (**chats).clone();
+    let next = finalize_chat_list(&current, next, keep_chat_id);
+    if current != next {
         cache_chat_list(CHATS_LIST_CACHE_KEY, &next);
         chats.set(next);
     }
+}
+
+fn merge_chat_into_list(mut chats: Vec<Chat>, updated: Chat) -> Vec<Chat> {
+    if let Some(chat) = chats.iter_mut().find(|chat| chat.id == updated.id) {
+        *chat = updated;
+    } else {
+        chats.push(updated);
+    }
+    chats
 }
 
 /// Merge one chat into the sidebar list without re-sorting.
@@ -299,17 +322,9 @@ fn publish_chats(chats: &UseStateHandle<Vec<Chat>>, next: Vec<Chat>) {
 /// Stream updates touch `updated_at` frequently; re-sorting on every payload
 /// makes the list jump even when the visible order should stay put.
 fn update_chat_in_list(chats: &UseStateHandle<Vec<Chat>>, updated: Chat) {
+    cache_chat_snapshot(&updated);
     let current = (**chats).clone();
-    let next: Vec<Chat> = current
-        .iter()
-        .map(|chat| {
-            if chat.id == updated.id {
-                updated.clone()
-            } else {
-                chat.clone()
-            }
-        })
-        .collect();
+    let next = merge_chat_into_list(current.clone(), updated);
     if current != next {
         cache_chat_list(CHATS_LIST_CACHE_KEY, &sort_chats(next.clone()));
         chats.set(next);
@@ -420,7 +435,11 @@ fn app() -> Html {
                 match api::list_chats().await {
                     Ok(list) => {
                         chat_list = sort_chats(list);
-                        publish_chats(&chats, chat_list.clone());
+                        publish_chats(
+                            &chats,
+                            chat_list.clone(),
+                            chat_id_from_route(&router.route()),
+                        );
                     }
                     Err(ref err) if api::is_auth_expired(err) => {
                         auth_expired.set(true);
@@ -429,7 +448,11 @@ fn app() -> Html {
                     }
                     Err(_) if !cached_chats.is_empty() => {
                         chat_list = cached_chats.clone();
-                        publish_chats(&chats, chat_list.clone());
+                        publish_chats(
+                            &chats,
+                            chat_list.clone(),
+                            chat_id_from_route(&router.route()),
+                        );
                     }
                     Err(_) => {}
                 }
@@ -631,12 +654,13 @@ fn app() -> Html {
                         let chats = chats.clone();
                         let archived_chats = archived_chats.clone();
                         let stories = stories.clone();
+                        let keep_chat_id = chat_id_from_route(&router.route());
                         wasm_bindgen_futures::spawn_local(async move {
                             if let Ok(status) = api::get_queue().await {
                                 queue.set(Some(status));
                             }
                             if let Ok(list) = api::list_chats().await {
-                                publish_chats(&chats, list);
+                                publish_chats(&chats, list, keep_chat_id);
                             }
                             if let Ok(list) = api::list_archived_chats().await {
                                 publish_archived_chats(&archived_chats, list);
@@ -810,7 +834,7 @@ fn app() -> Html {
                                 }
                             }
                         }
-                        publish_chats(&chats, list);
+                        publish_chats(&chats, list, view.selected_chat_id);
                     }
                     if let Some(list) = archived_list {
                         publish_archived_chats(&archived_chats, list);
@@ -976,9 +1000,10 @@ fn app() -> Html {
                 active_header.clone(),
             ),
             move |(mode, chat_id, _story_id, _header)| {
-                mobile_chrome_visible.set(false);
                 let mode = *mode;
                 let chat_id = *chat_id;
+                let at_top = window_scroll_y() <= 0.0;
+                mobile_chrome_visible.set(at_top && mode == AppMode::Chats && chat_id.is_some());
                 let mobile_chrome_visible = mobile_chrome_visible.clone();
                 let app_layout_ref = app_layout_ref.clone();
                 let last_scroll_y = Rc::new(RefCell::new(window_scroll_y()));
@@ -1091,7 +1116,7 @@ fn app() -> Html {
                 match api::create_chat(&title, character_id).await {
                     Ok(chat) => {
                         if let Ok(list) = api::list_chats().await {
-                            publish_chats(&chats, list);
+                            publish_chats(&chats, list, Some(chat.id));
                         }
                         navigate.emit((
                             AppRoute::Chats {
@@ -1175,7 +1200,7 @@ fn app() -> Html {
                                 };
                                 let _ = api::update_chat(chat_id, &payload).await;
                                 if let Ok(list) = api::list_chats().await {
-                                    publish_chats(&chats, list);
+                                    publish_chats(&chats, list, Some(chat_id));
                                 }
                             });
                         }
@@ -1191,7 +1216,7 @@ fn app() -> Html {
                             let load_messages_for_chat = load_messages_for_chat.clone();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(list) = api::list_chats().await {
-                                    publish_chats(&chats, list);
+                                    publish_chats(&chats, list, Some(chat_id));
                                 }
                                 navigate.emit((
                                     AppRoute::Chats {
@@ -1234,7 +1259,11 @@ fn app() -> Html {
                                             ));
                                         }
                                     }
-                                    publish_chats(&chats, list);
+                                    publish_chats(
+                                        &chats,
+                                        list,
+                                        chat_id_from_route(&route),
+                                    );
                                 }
                                 if let Ok(list) = api::list_archived_chats().await {
                                     publish_archived_chats(&archived_chats, list);
@@ -1322,7 +1351,7 @@ fn app() -> Html {
                                         false,
                                     ));
                                 }
-                                publish_chats(&chats, list);
+                                publish_chats(&chats, list, None);
                             }
                             if let Ok(list) = api::list_archived_chats().await {
                                 publish_archived_chats(&archived_chats, list);
@@ -1341,7 +1370,7 @@ fn app() -> Html {
                         wasm_bindgen_futures::spawn_local(async move {
                             if api::restore_chat(id).await.is_ok() {
                                 if let Ok(list) = api::list_chats().await {
-                                    publish_chats(&chats, list);
+                                    publish_chats(&chats, list, Some(id));
                                 }
                                 if let Ok(list) = api::list_archived_chats().await {
                                     publish_archived_chats(&archived_chats, list);
@@ -1471,10 +1500,10 @@ fn app() -> Html {
                                                 character_id: None,
                                                 summary: None,
                                             };
-                                            if api::update_chat(chat_id, &payload).await.is_ok() {
-                                                if let Ok(list) = api::list_chats().await {
-                                                    publish_chats(&chats, list);
-                                                }
+                                            if let Ok(updated) =
+                                                api::update_chat(chat_id, &payload).await
+                                            {
+                                                update_chat_in_list(&chats, updated);
                                             }
                                         });
                                     }
@@ -1530,7 +1559,7 @@ fn app() -> Html {
                                                             false,
                                                         );
                                                         if let Ok(list) = api::list_chats().await {
-                                                            publish_chats(&chats, list);
+                                                            publish_chats(&chats, list, Some(chat_id));
                                                         }
                                                         if let Ok(status) = api::get_queue().await {
                                                             queue.set(Some(status));
@@ -1601,7 +1630,7 @@ fn app() -> Html {
                                 );
                                 wasm_bindgen_futures::spawn_local(async move {
                                     if let Ok(list) = api::list_chats().await {
-                                        publish_chats(&chats, list);
+                                        publish_chats(&chats, list, Some(chat_id));
                                     }
                                     if let Ok(status) = api::get_queue().await {
                                         queue.set(Some(status));
@@ -1685,7 +1714,7 @@ fn app() -> Html {
                                     false,
                                 );
                                 if let Ok(list) = api::list_chats().await {
-                                    publish_chats(&chats, list);
+                                    publish_chats(&chats, list, Some(chat_id));
                                 }
                                 if let Ok(status) = api::get_queue().await {
                                     queue.set(Some(status));
@@ -4106,6 +4135,68 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
             _ => {}
         });
     })
+}
+
+#[cfg(test)]
+mod chat_list_tests {
+    use super::*;
+
+    fn sample_chat(id: i64, title: &str, updated_at: &str) -> Chat {
+        let mut chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": title,
+            "character_id": 1,
+            "character_name": "Test",
+            "summary": "",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": updated_at,
+            "queued_jobs": 0,
+        }))
+        .expect("sample chat");
+        chat.active_job = None;
+        chat
+    }
+
+    #[test]
+    fn merge_chat_into_list_updates_existing_chat() {
+        let chats = vec![
+            sample_chat(1, "Alpha", "2026-01-01T00:00:00Z"),
+            sample_chat(2, "Beta", "2026-01-02T00:00:00Z"),
+        ];
+        let updated = sample_chat(1, "Renamed", "2026-01-03T00:00:00Z");
+        let next = merge_chat_into_list(chats, updated);
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].title, "Renamed");
+        assert_eq!(next[1].id, 2);
+    }
+
+    #[test]
+    fn merge_chat_into_list_inserts_missing_chat() {
+        let chats = vec![sample_chat(2, "Beta", "2026-01-02T00:00:00Z")];
+        let updated = sample_chat(1, "Renamed", "2026-01-03T00:00:00Z");
+        let next = merge_chat_into_list(chats, updated);
+        assert_eq!(next.len(), 2);
+        assert!(next
+            .iter()
+            .any(|chat| chat.id == 1 && chat.title == "Renamed"));
+    }
+
+    #[test]
+    fn finalize_chat_list_keeps_selected_chat_when_server_list_omits_it() {
+        let current = vec![
+            sample_chat(1, "Renamed", "2026-01-03T00:00:00Z"),
+            sample_chat(2, "Beta", "2026-01-02T00:00:00Z"),
+        ];
+        let next = finalize_chat_list(
+            &current,
+            vec![sample_chat(2, "Beta", "2026-01-02T00:00:00Z")],
+            Some(1),
+        );
+        assert_eq!(next.len(), 2);
+        assert!(next
+            .iter()
+            .any(|chat| chat.id == 1 && chat.title == "Renamed"));
+    }
 }
 
 #[cfg(test)]
