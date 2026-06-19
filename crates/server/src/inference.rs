@@ -288,8 +288,29 @@ pub async fn chat_completion(
     top_p: f64,
     max_tokens: i64,
 ) -> AppResult<String> {
+    chat_completion_with_format(
+        base_url,
+        model,
+        messages,
+        temperature,
+        top_p,
+        max_tokens,
+        None,
+    )
+    .await
+}
+
+pub async fn chat_completion_with_format(
+    base_url: &str,
+    model: &str,
+    messages: &[serde_json::Value],
+    temperature: f64,
+    top_p: f64,
+    max_tokens: i64,
+    response_format: Option<&Value>,
+) -> AppResult<String> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": model,
         "messages": messages,
         "temperature": temperature,
@@ -297,6 +318,9 @@ pub async fn chat_completion(
         "max_tokens": max_tokens,
         "stream": false,
     });
+    if let Some(format) = response_format {
+        payload["response_format"] = format.clone();
+    }
     let response = http_client().post(url).json(&payload).send().await?;
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -307,6 +331,86 @@ pub async fn chat_completion(
         .as_str()
         .unwrap_or_default()
         .to_string())
+}
+
+/// Schema-validated JSON completion with repair retries on parse failure.
+#[allow(clippy::too_many_arguments)]
+pub async fn chat_completion_json<T>(
+    base_url: &str,
+    model: &str,
+    messages: &[serde_json::Value],
+    temperature: f64,
+    top_p: f64,
+    max_tokens: i64,
+    response_format: Option<&Value>,
+    max_attempts: u32,
+    token: &tokio_util::sync::CancellationToken,
+) -> AppResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let format = response_format.map(|schema| {
+        serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "response",
+                "strict": true,
+                "schema": schema
+            }
+        })
+    });
+    let format_ref = format.as_ref();
+
+    let mut last_error = "JSON parse failed".to_string();
+    let mut attempt_messages = messages.to_vec();
+
+    for attempt in 1..=max_attempts.max(1) {
+        if token.is_cancelled() {
+            return Err(AppError::internal("cancelled"));
+        }
+
+        let raw = chat_completion_with_format(
+            base_url,
+            model,
+            &attempt_messages,
+            temperature,
+            top_p,
+            max_tokens,
+            format_ref,
+        )
+        .await?;
+
+        let json_str = strip_json_fence(&raw);
+        match serde_json::from_str::<T>(json_str) {
+            Ok(parsed) => return Ok(parsed),
+            Err(err) => {
+                last_error = err.to_string();
+                if attempt < max_attempts {
+                    attempt_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": raw
+                    }));
+                    attempt_messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": format!(
+                            "Your previous response was not valid JSON: {last_error}. Reply with ONLY corrected JSON."
+                        )
+                    }));
+                }
+            }
+        }
+    }
+    Err(AppError::inference(last_error))
+}
+
+fn strip_json_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|s| s.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(trimmed)
 }
 
 #[cfg(test)]

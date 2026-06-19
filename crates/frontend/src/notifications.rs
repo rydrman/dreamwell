@@ -183,6 +183,13 @@ pub fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StoryBeatProseRecheck => "Prose align",
         JobType::StoryChapterSummarize => "Chapter summarize",
         JobType::StoryBeatVariableRecheck => "Variable recheck",
+        JobType::GameTurnCheck => "Declare checks",
+        JobType::GameTurnResolve => "Resolve turn",
+        JobType::GameTurnScenePlan => "Scene plan",
+        JobType::GameTurnProse => "Turn prose",
+        JobType::GameSceneSummarize => "Scene summarize",
+        JobType::GameProseRecheck => "Prose align",
+        JobType::GameStateRecheck => "State recheck",
     }
 }
 

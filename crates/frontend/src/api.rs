@@ -773,3 +773,104 @@ impl Drop for StoryStream {
         self.inner.stop();
     }
 }
+
+pub async fn list_games() -> Result<Vec<Game>, String> {
+    json(api_request("GET", "/api/games")).await
+}
+
+pub async fn create_game(payload: &GameCreate) -> Result<GameDetail, String> {
+    json_body("POST", "/api/games", payload).await
+}
+
+pub async fn get_game(id: i64) -> Result<GameDetail, String> {
+    json(api_request("GET", &format!("/api/games/{id}"))).await
+}
+
+pub async fn update_game(id: i64, payload: &GameUpdate) -> Result<GameDetail, String> {
+    json_body("PATCH", &format!("/api/games/{id}"), payload).await
+}
+
+pub async fn delete_game(id: i64) -> Result<(), String> {
+    send_empty(api_request("DELETE", &format!("/api/games/{id}"))).await
+}
+
+pub async fn submit_turn(game_id: i64, payload: &SubmitTurnRequest) -> Result<GameDetail, String> {
+    json_body("POST", &format!("/api/games/{game_id}/turns"), payload).await
+}
+
+pub async fn continue_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/continue"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn regenerate_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/regenerate"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn recheck_turn_prose(
+    game_id: i64,
+    turn_id: i64,
+    guidance_notes: &str,
+) -> Result<Job, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/prose/recheck"),
+        &GenerateRequest {
+            guidance_notes: guidance_notes.to_string(),
+        },
+    )
+    .await
+}
+
+pub async fn recheck_turn_state(
+    game_id: i64,
+    turn_id: i64,
+    guidance_notes: &str,
+) -> Result<Job, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/state/recheck"),
+        &GenerateRequest {
+            guidance_notes: guidance_notes.to_string(),
+        },
+    )
+    .await
+}
+
+pub struct GameStream {
+    inner: Rc<ReconnectingEventSource>,
+}
+
+impl GameStream {
+    pub fn new(game_id: i64, on_update: impl Fn(GameStreamPayload) + 'static) -> Self {
+        let url = format!("/api/games/{game_id}/stream");
+        let inner = ReconnectingEventSource::new(url, move |text| {
+            if let Ok(payload) = serde_json::from_str::<GameStreamPayload>(&text) {
+                on_update(payload);
+            }
+        });
+        Self { inner }
+    }
+
+    #[allow(dead_code)]
+    pub fn nudge(&self) -> StreamNudge {
+        StreamNudge {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl Drop for GameStream {
+    fn drop(&mut self) {
+        self.inner.stop();
+    }
+}

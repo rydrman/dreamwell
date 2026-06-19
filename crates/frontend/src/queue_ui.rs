@@ -7,6 +7,7 @@ use crate::api;
 pub enum AppMode {
     Chats,
     Stories,
+    Game,
     Queue,
     Settings,
     Characters,
@@ -27,6 +28,13 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StoryBeatProseRecheck => "prose align",
         JobType::StoryChapterSummarize => "chapter summarize",
         JobType::StoryBeatVariableRecheck => "variable recheck",
+        JobType::GameTurnCheck => "declaring checks",
+        JobType::GameTurnResolve => "resolving turn",
+        JobType::GameTurnScenePlan => "planning scene",
+        JobType::GameTurnProse => "writing prose",
+        JobType::GameSceneSummarize => "summarizing scene",
+        JobType::GameProseRecheck => "aligning prose",
+        JobType::GameStateRecheck => "checking state",
     }
 }
 
@@ -35,6 +43,8 @@ fn job_target(job: &Job) -> String {
         format!("chat {chat_id}")
     } else if let Some(story_id) = job.story_id {
         format!("story {story_id}")
+    } else if let Some(game_id) = job.game_id {
+        format!("game {game_id}")
     } else {
         format!("job {}", job.id)
     }
