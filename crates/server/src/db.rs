@@ -1491,6 +1491,56 @@ impl SettingsRow {
 }
 
 #[cfg(test)]
+mod chat_update_tests {
+    use super::*;
+    use dreamwell_types::ChatUpdate;
+    use sqlx::SqlitePool;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        ensure_settings(&pool).await.expect("settings");
+        pool
+    }
+
+    #[tokio::test]
+    async fn update_chat_title_remains_in_active_list() {
+        let pool = test_pool().await;
+        let character_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO characters (name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at) VALUES ('c','','','','','','',datetime('now'),datetime('now')) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("character");
+        let chat = create_chat(&pool, "Before rename".into(), character_id)
+            .await
+            .expect("chat");
+
+        let updated = update_chat(
+            &pool,
+            chat.id,
+            ChatUpdate {
+                title: Some("After rename".into()),
+                character_id: None,
+                summary: None,
+            },
+        )
+        .await
+        .expect("update");
+
+        assert_eq!(updated.title, "After rename");
+
+        let list = list_chats(&pool).await.expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, chat.id);
+        assert_eq!(list[0].title, "After rename");
+    }
+}
+
+#[cfg(test)]
 mod generation_failure_tests {
     use super::*;
     use sqlx::SqlitePool;
