@@ -179,6 +179,7 @@ fn characters_route_context(route: &AppRoute) -> (Option<i64>, Option<i64>) {
         AppRoute::Characters {
             character_id,
             chat_id,
+            ..
         } => (*character_id, *chat_id),
         _ => (None, None),
     }
@@ -207,6 +208,9 @@ fn sidebar_open_from_route(route: &AppRoute) -> bool {
         AppRoute::Chats { sidebar: true, .. }
             | AppRoute::Stories { sidebar: true, .. }
             | AppRoute::Games { sidebar: true, .. }
+            | AppRoute::Queue { sidebar: true }
+            | AppRoute::Settings { sidebar: true }
+            | AppRoute::Characters { sidebar: true, .. }
     )
 }
 
@@ -912,12 +916,12 @@ fn app() -> Html {
 
     let open_queue = {
         let navigate = navigate.clone();
-        Callback::from(move |_| navigate.emit((AppRoute::Queue, true)))
+        Callback::from(move |_| navigate.emit((AppRoute::Queue { sidebar: false }, true)))
     };
 
     let open_settings = {
         let navigate = navigate.clone();
-        Callback::from(move |_| navigate.emit((AppRoute::Settings, true)))
+        Callback::from(move |_| navigate.emit((AppRoute::Settings { sidebar: false }, true)))
     };
 
     let open_characters = {
@@ -927,6 +931,7 @@ fn app() -> Html {
                 AppRoute::Characters {
                     character_id: None,
                     chat_id: None,
+                    sidebar: false,
                 },
                 true,
             ))
@@ -940,6 +945,7 @@ fn app() -> Html {
                 AppRoute::Characters {
                     character_id,
                     chat_id: Some(chat_id),
+                    sidebar: false,
                 },
                 true,
             ))
@@ -1001,13 +1007,15 @@ fn app() -> Html {
                 },
                 AppMode::Game => AppRoute::Games {
                     game_id: game_id_from_route(&route),
+                    overlay: None,
                     sidebar: false,
                 },
-                AppMode::Queue => AppRoute::Queue,
-                AppMode::Settings => AppRoute::Settings,
+                AppMode::Queue => AppRoute::Queue { sidebar: false },
+                AppMode::Settings => AppRoute::Settings { sidebar: false },
                 AppMode::Characters => AppRoute::Characters {
                     character_id: None,
                     chat_id: None,
+                    sidebar: false,
                 },
             };
             navigate.emit((next, true));
@@ -1049,154 +1057,6 @@ fn app() -> Html {
             });
         })
     };
-
-    if mode == AppMode::Queue || mode == AppMode::Settings || mode == AppMode::Characters {
-        let (characters_character_id, characters_chat_id) = characters_route_context(&route);
-        let selected_character_id =
-            resolve_characters_selected_id(characters_character_id, characters_chat_id, &chats);
-        return html! {
-            <div class="app-layout">
-                <ModeBar
-                    mode={mode}
-                    queue={(*queue).clone()}
-                    show_sidebar_toggle={false}
-                    sidebar_open={false}
-                    on_toggle_sidebar={toggle_sidebar.clone()}
-                    on_open_settings={open_settings.clone()}
-                    on_open_queue={open_queue.clone()}
-                    on_open_characters={open_characters.clone()}
-                />
-                if mode == AppMode::Queue {
-                    <QueuePage
-                        queue={(*queue).clone()}
-                        on_back={Callback::from({
-                            let router = router.clone();
-                            move |_| router.back()
-                        })}
-                        on_open_chat={Callback::from({
-                            let navigate = navigate.clone();
-                            let load_messages_for_chat = load_messages_for_chat.clone();
-                            move |chat_id| {
-                                navigate.emit((
-                                    AppRoute::Chats {
-                                        chat_id: Some(chat_id),
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                                load_messages_for_chat.emit(chat_id);
-                            }
-                        })}
-                        on_open_story={Callback::from({
-                            let navigate = navigate.clone();
-                            move |story_id| {
-                                navigate.emit((
-                                    AppRoute::Stories {
-                                        story_id: Some(story_id),
-                                        nav: StoryNav::None,
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            }
-                        })}
-                        on_queue_change={Callback::from({
-                            let queue = queue.clone();
-                            move |status| queue.set(Some(status))
-                        })}
-                    />
-                } else if mode == AppMode::Settings {
-                    <SettingsPage
-                        settings={settings.clone()}
-                        on_back={Callback::from({
-                            let router = router.clone();
-                            move |_| router.back()
-                        })}
-                    />
-                } else {
-                    <CharactersPage
-                        selected_character_id={selected_character_id}
-                        chat_id={characters_chat_id}
-                        on_back={Callback::from({
-                            let router = router.clone();
-                            move |_| router.back()
-                        })}
-                        on_character_change={Callback::from({
-                            let chats = chats.clone();
-                            move |(chat_id, character_id)| {
-                                let chats = chats.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    let payload = ChatUpdate {
-                                        character_id: Some(character_id),
-                                        title: None,
-                                        summary: None,
-                                    };
-                                    let _ = api::update_chat(chat_id, &payload).await;
-                                    if let Ok(list) = api::list_chats().await {
-                                        publish_chats(&chats, list, Some(chat_id));
-                                    }
-                                });
-                            }
-                        })}
-                        on_start_chat={start_chat.clone()}
-                        on_chat_created={Callback::from({
-                            let chats = chats.clone();
-                            let navigate = navigate.clone();
-                            let load_messages_for_chat = load_messages_for_chat.clone();
-                            move |chat_id| {
-                                let chats = chats.clone();
-                                let navigate = navigate.clone();
-                                let load_messages_for_chat = load_messages_for_chat.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(list) = api::list_chats().await {
-                                        publish_chats(&chats, list, Some(chat_id));
-                                    }
-                                    navigate.emit((
-                                        AppRoute::Chats {
-                                            chat_id: Some(chat_id),
-                                            overlay: None,
-                                            sidebar: false,
-                                        },
-                                        true,
-                                    ));
-                                    load_messages_for_chat.emit(chat_id);
-                                });
-                            }
-                        })}
-                        on_chats_changed={Callback::from({
-                            let chats = chats.clone();
-                            let archived_chats = archived_chats.clone();
-                            move |_| {
-                                let chats = chats.clone();
-                                let archived_chats = archived_chats.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(list) = api::list_chats().await {
-                                        publish_chats(&chats, list, None);
-                                    }
-                                    if let Ok(list) = api::list_archived_chats().await {
-                                        publish_archived_chats(&archived_chats, list);
-                                    }
-                                });
-                            }
-                        })}
-                        on_characters_changed={Callback::from({
-                            let characters = characters.clone();
-                            move |_| {
-                                let characters = characters.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(list) = api::list_characters().await {
-                                        characters.set(list);
-                                    }
-                                });
-                            }
-                        })}
-                    />
-                }
-            </div>
-        };
-    }
 
     let selected = selected_chat_id.and_then(|id| chats.iter().find(|c| c.id == id).cloned());
     let active_header = active_chat_header(&selected, selected_chat_id);
@@ -1324,6 +1184,10 @@ fn app() -> Html {
             navigate.emit((route.clone().with_overlay(overlay), true));
         })
     };
+
+    let (characters_character_id, characters_chat_id) = characters_route_context(&route);
+    let selected_character_id =
+        resolve_characters_selected_id(characters_character_id, characters_chat_id, &chats);
 
     html! {
         <div
@@ -1559,6 +1423,7 @@ fn app() -> Html {
                         navigate.emit((
                             AppRoute::Games {
                                 game_id: Some(id),
+                                overlay: None,
                                 sidebar: false,
                             },
                             true,
@@ -1583,6 +1448,7 @@ fn app() -> Html {
                                 navigate.emit((
                                     AppRoute::Games {
                                         game_id: Some(d.game.id),
+                                        overlay: None,
                                         sidebar: false,
                                     },
                                     true,
@@ -1606,6 +1472,7 @@ fn app() -> Html {
                                     navigate.emit((
                                         AppRoute::Games {
                                             game_id: list.first().map(|g| g.id),
+                                            overlay: None,
                                             sidebar: false,
                                         },
                                         false,
@@ -1619,7 +1486,134 @@ fn app() -> Html {
             />
             <main class="main">
                 <QueueBar queue={(*queue).clone()} on_open={open_queue.clone()} />
-                if mode == AppMode::Stories {
+                if mode == AppMode::Queue {
+                    <QueuePage
+                        queue={(*queue).clone()}
+                        on_back={Callback::from({
+                            let router = router.clone();
+                            move |_| router.back()
+                        })}
+                        on_open_chat={Callback::from({
+                            let navigate = navigate.clone();
+                            let load_messages_for_chat = load_messages_for_chat.clone();
+                            move |chat_id| {
+                                navigate.emit((
+                                    AppRoute::Chats {
+                                        chat_id: Some(chat_id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                                load_messages_for_chat.emit(chat_id);
+                            }
+                        })}
+                        on_open_story={Callback::from({
+                            let navigate = navigate.clone();
+                            move |story_id| {
+                                navigate.emit((
+                                    AppRoute::Stories {
+                                        story_id: Some(story_id),
+                                        nav: StoryNav::None,
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            }
+                        })}
+                        on_queue_change={Callback::from({
+                            let queue = queue.clone();
+                            move |status| queue.set(Some(status))
+                        })}
+                    />
+                } else if mode == AppMode::Settings {
+                    <SettingsPage
+                        settings={settings.clone()}
+                        on_back={Callback::from({
+                            let router = router.clone();
+                            move |_| router.back()
+                        })}
+                    />
+                } else if mode == AppMode::Characters {
+                    <CharactersPage
+                        selected_character_id={selected_character_id}
+                        chat_id={characters_chat_id}
+                        on_back={Callback::from({
+                            let router = router.clone();
+                            move |_| router.back()
+                        })}
+                        on_character_change={Callback::from({
+                            let chats = chats.clone();
+                            move |(chat_id, character_id)| {
+                                let chats = chats.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let payload = ChatUpdate {
+                                        character_id: Some(character_id),
+                                        title: None,
+                                        summary: None,
+                                    };
+                                    let _ = api::update_chat(chat_id, &payload).await;
+                                    if let Ok(list) = api::list_chats().await {
+                                        publish_chats(&chats, list, Some(chat_id));
+                                    }
+                                });
+                            }
+                        })}
+                        on_start_chat={start_chat.clone()}
+                        on_chat_created={Callback::from({
+                            let chats = chats.clone();
+                            let navigate = navigate.clone();
+                            let load_messages_for_chat = load_messages_for_chat.clone();
+                            move |chat_id| {
+                                let chats = chats.clone();
+                                let navigate = navigate.clone();
+                                let load_messages_for_chat = load_messages_for_chat.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(list) = api::list_chats().await {
+                                        publish_chats(&chats, list, Some(chat_id));
+                                    }
+                                    navigate.emit((
+                                        AppRoute::Chats {
+                                            chat_id: Some(chat_id),
+                                            overlay: None,
+                                            sidebar: false,
+                                        },
+                                        true,
+                                    ));
+                                    load_messages_for_chat.emit(chat_id);
+                                });
+                            }
+                        })}
+                        on_chats_changed={Callback::from({
+                            let chats = chats.clone();
+                            let archived_chats = archived_chats.clone();
+                            move |_| {
+                                let chats = chats.clone();
+                                let archived_chats = archived_chats.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(list) = api::list_chats().await {
+                                        publish_chats(&chats, list, None);
+                                    }
+                                    if let Ok(list) = api::list_archived_chats().await {
+                                        publish_archived_chats(&archived_chats, list);
+                                    }
+                                });
+                            }
+                        })}
+                        on_characters_changed={Callback::from({
+                            let characters = characters.clone();
+                            move |_| {
+                                let characters = characters.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(list) = api::list_characters().await {
+                                        characters.set(list);
+                                    }
+                                });
+                            }
+                        })}
+                    />
+                } else if mode == AppMode::Stories {
                     <StoriesShell
                         route={route.clone()}
                         on_navigate={navigate.clone()}
@@ -4358,10 +4352,12 @@ mod sidebar_tests {
         }));
         assert!(!sidebar_open_from_route(&AppRoute::Games {
             game_id: None,
+            overlay: None,
             sidebar: false,
         }));
         assert!(sidebar_open_from_route(&AppRoute::Games {
             game_id: None,
+            overlay: None,
             sidebar: true,
         }));
     }

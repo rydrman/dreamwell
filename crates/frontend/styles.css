@@ -2398,79 +2398,55 @@ input.header-title {
 .game-shell {
   display: flex;
   flex-direction: column;
-  height: 100%;
-}
-
-.game-layout {
-  display: flex;
-  gap: 1rem;
   flex: 1;
   min-height: 0;
 }
 
-.game-main {
-  flex: 1;
+.game-turn-pair {
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  gap: 0.75rem;
 }
 
 .game-turn-feed {
   flex: 1;
-  overflow-y: auto;
-  padding: 0.5rem 0;
+  min-height: 0;
 }
 
-.game-turn {
-  margin-bottom: 1.5rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border, #333);
+.game-phase-section {
+  margin: 0 -1rem 0.75rem;
 }
 
-.game-turn-action {
-  margin-bottom: 0.75rem;
+.game-phase-section-body {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+  padding: 0 0.75rem 0.75rem;
 }
 
-.game-phase-bubble {
-  margin: 0.5rem 0;
-  border: 1px solid var(--border, #333);
-  border-radius: 6px;
-  padding: 0.25rem 0.75rem;
+.game-turn-meta {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
 }
 
-.game-phase-bubble summary {
-  cursor: pointer;
-  font-weight: 600;
-  padding: 0.35rem 0;
+.game-turn-meta + .btn-compact {
+  margin-right: 0.35rem;
+  margin-top: 0.35rem;
 }
 
-.phase-content {
-  padding: 0.5rem 0 0.75rem;
+.game-composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 1rem;
+  border-top: 1px solid var(--border, #333);
 }
 
 .tier-fail .tier-badge { color: #e55; }
 .tier-mixed .tier-badge { color: #da3; }
 .tier-strong .tier-badge { color: #5b5; }
-
-.game-composer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border, #333);
-}
-
-.game-state-panel {
-  width: 280px;
-  flex-shrink: 0;
-  border-left: 1px solid var(--border, #333);
-  padding-left: 1rem;
-  overflow-y: auto;
-}
-
-.game-state-toggle {
-  align-self: flex-start;
-}
 
 .scene-beats {
   margin: 0;
@@ -2523,9 +2499,4 @@ input.header-title {
 
 .modifier-range .input-compact {
   width: 4rem;
-}
-
-.game-turn-meta + .btn-compact {
-  margin-right: 0.35rem;
-  margin-top: 0.35rem;
 }
