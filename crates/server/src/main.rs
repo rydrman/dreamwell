@@ -3,6 +3,11 @@ mod character_import;
 mod config;
 mod db;
 mod error;
+mod game_prompts;
+mod game_resolution;
+mod game_state;
+mod game_summarize;
+mod game_turn;
 mod inference;
 mod message_followups;
 mod prompts;
@@ -82,6 +87,7 @@ async fn main() {
         .nest("/chats", routes::chats::router())
         .nest("/jobs", routes::jobs::router())
         .nest("/stories", routes::stories::router())
+        .nest("/games", routes::games::router())
         .nest("/settings", routes::settings::router());
 
     if std::env::var("DREAMWELL_E2E").is_ok_and(|v| v == "1") {

@@ -1,6 +1,7 @@
 pub mod characters;
 pub mod chats;
 pub mod e2e_seed;
+pub mod games;
 pub mod jobs;
 pub mod settings;
 pub mod stories;

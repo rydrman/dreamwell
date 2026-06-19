@@ -418,6 +418,15 @@ async fn run_job(
         JobType::StoryBeatProseRecheck => {
             run_story_beat_prose_recheck_handler(pool, job_id, &job, &settings, token).await
         }
+        JobType::GameTurnCheck
+        | JobType::GameTurnResolve
+        | JobType::GameTurnScenePlan
+        | JobType::GameTurnProse
+        | JobType::GameSceneSummarize
+        | JobType::GameProseRecheck
+        | JobType::GameStateRecheck => {
+            crate::game_turn::run_game_job(pool, job_id, &job, &settings, token).await
+        }
     }
 }
 
@@ -470,7 +479,14 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
         | JobType::StoryChapterSummarize
         | JobType::StoryBeatMechanical
         | JobType::StoryBeatVariableRecheck
-        | JobType::StoryBeatProseRecheck => {}
+        | JobType::StoryBeatProseRecheck
+        | JobType::GameProseRecheck
+        | JobType::GameStateRecheck
+        | JobType::GameTurnCheck
+        | JobType::GameTurnResolve
+        | JobType::GameTurnScenePlan
+        | JobType::GameTurnProse
+        | JobType::GameSceneSummarize => {}
     }
     Ok(())
 }
@@ -513,7 +529,14 @@ async fn fail_job(
         | JobType::StoryChapterSummarize
         | JobType::StoryBeatMechanical
         | JobType::StoryBeatVariableRecheck
-        | JobType::StoryBeatProseRecheck => {}
+        | JobType::StoryBeatProseRecheck
+        | JobType::GameTurnCheck
+        | JobType::GameTurnResolve
+        | JobType::GameTurnScenePlan
+        | JobType::GameTurnProse
+        | JobType::GameSceneSummarize
+        | JobType::GameProseRecheck
+        | JobType::GameStateRecheck => {}
     }
     Ok(())
 }
@@ -1584,6 +1607,14 @@ pub async fn enqueue_generation(
 }
 
 pub async fn enqueue_story_generation(
+    queue: &JobQueue,
+    job: dreamwell_types::Job,
+) -> AppResult<dreamwell_types::Job> {
+    queue.wake();
+    Ok(job)
+}
+
+pub async fn enqueue_game_generation(
     queue: &JobQueue,
     job: dreamwell_types::Job,
 ) -> AppResult<dreamwell_types::Job> {
