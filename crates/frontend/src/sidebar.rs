@@ -20,6 +20,7 @@ pub struct AppSidebarProps {
     pub on_permanent_delete_chat: Callback<i64>,
     pub on_select_story: Callback<i64>,
     pub on_new_story: Callback<()>,
+    pub on_open_characters: Callback<()>,
     pub on_delete_story: Callback<i64>,
 }
 
@@ -47,7 +48,10 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
             </div>
             <div class="sidebar-toolbar">
                 if chats_active {
-                    <button class="btn" onclick={props.on_new_chat.reform(|_| ())}>{"New chat"}</button>
+                    <>
+                        <button class="btn" onclick={props.on_new_chat.reform(|_| ())}>{"New chat"}</button>
+                        <button class="btn secondary" onclick={props.on_open_characters.reform(|_| ())}>{"Characters"}</button>
+                    </>
                 } else {
                     <button class="btn" onclick={props.on_new_story.reform(|_| ())}>{"New story"}</button>
                 }
