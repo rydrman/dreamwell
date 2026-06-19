@@ -564,7 +564,22 @@ input.header-title {
   gap: 0.25rem;
 }
 
+.characters-page .header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
 .settings-page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.characters-page-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;

@@ -4,7 +4,6 @@ use yew::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overlay {
-    Character,
     Variables,
     NewChat,
 }
@@ -36,6 +35,10 @@ pub enum AppRoute {
     },
     Queue,
     Settings,
+    Characters {
+        character_id: Option<i64>,
+        chat_id: Option<i64>,
+    },
 }
 
 impl Default for AppRoute {
@@ -55,13 +58,14 @@ impl AppRoute {
             Self::Stories { .. } => crate::queue_ui::AppMode::Stories,
             Self::Queue => crate::queue_ui::AppMode::Queue,
             Self::Settings => crate::queue_ui::AppMode::Settings,
+            Self::Characters { .. } => crate::queue_ui::AppMode::Characters,
         }
     }
 
     pub fn overlay(&self) -> Option<Overlay> {
         match self {
             Self::Chats { overlay, .. } | Self::Stories { overlay, .. } => *overlay,
-            Self::Queue | Self::Settings => None,
+            Self::Queue | Self::Settings | Self::Characters { .. } => None,
         }
     }
 
@@ -88,6 +92,13 @@ impl AppRoute {
             },
             Self::Queue => Self::Queue,
             Self::Settings => Self::Settings,
+            Self::Characters {
+                character_id,
+                chat_id,
+            } => Self::Characters {
+                character_id: *character_id,
+                chat_id: *chat_id,
+            },
         }
     }
 
@@ -111,7 +122,7 @@ impl AppRoute {
                 overlay: Some(overlay),
                 sidebar,
             },
-            Self::Queue | Self::Settings => self,
+            Self::Queue | Self::Settings | Self::Characters { .. } => self,
         }
     }
 
@@ -256,6 +267,22 @@ impl AppRoute {
             } => format!("/stories/{id}/chapters/{chapter_id}/beats/{beat_id}"),
             Self::Queue => "/queue".to_string(),
             Self::Settings => "/settings".to_string(),
+            Self::Characters {
+                character_id: None,
+                chat_id: None,
+            } => "/characters".to_string(),
+            Self::Characters {
+                character_id: Some(id),
+                chat_id: None,
+            } => format!("/characters/{id}"),
+            Self::Characters {
+                character_id: None,
+                chat_id: Some(chat_id),
+            } => format!("/characters/chat/{chat_id}"),
+            Self::Characters {
+                character_id: Some(id),
+                chat_id: Some(chat_id),
+            } => format!("/characters/{id}/chat/{chat_id}"),
             Self::Stories {
                 story_id: None,
                 nav: StoryNav::Chapter(_) | StoryNav::Beat { .. },
@@ -309,9 +336,15 @@ impl AppRoute {
 
 fn overlay_segment(overlay: Overlay) -> &'static str {
     match overlay {
-        Overlay::Character => "character",
         Overlay::Variables => "variables",
         Overlay::NewChat => "new",
+    }
+}
+
+fn characters_route(character_id: Option<i64>, chat_id: Option<i64>) -> AppRoute {
+    AppRoute::Characters {
+        character_id,
+        chat_id,
     }
 }
 
@@ -348,6 +381,7 @@ pub fn parse_path(path: &str) -> AppRoute {
     match segments.first().copied() {
         Some("settings") => AppRoute::Settings,
         Some("queue") => parse_queue(&segments[1..]),
+        Some("characters") => parse_characters(&segments[1..]),
         Some("stories") => parse_stories(&segments[1..]),
         Some("chats") | None => parse_chats(segments.get(1..).unwrap_or(&[])),
         _ => AppRoute::default(),
@@ -360,10 +394,23 @@ fn parse_id(value: &str) -> Option<i64> {
 
 fn parse_overlay(value: &str) -> Option<Overlay> {
     match value {
-        "character" => Some(Overlay::Character),
         "variables" => Some(Overlay::Variables),
         "new" => Some(Overlay::NewChat),
         _ => None,
+    }
+}
+
+fn parse_characters(segments: &[&str]) -> AppRoute {
+    match segments {
+        [] => characters_route(None, None),
+        [id] if parse_id(id).is_some() => characters_route(parse_id(id), None),
+        ["chat", chat_id] if parse_id(chat_id).is_some() => {
+            characters_route(None, parse_id(chat_id))
+        }
+        [id, "chat", chat_id] if parse_id(id).is_some() && parse_id(chat_id).is_some() => {
+            characters_route(parse_id(id), parse_id(chat_id))
+        }
+        _ => characters_route(None, None),
     }
 }
 
@@ -392,6 +439,8 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
             overlay: Some(Overlay::NewChat),
             sidebar: true,
         },
+        ["character"] => characters_route(None, None),
+        ["character", "sidebar"] => characters_route(None, None),
         [overlay] if parse_overlay(overlay).is_some() => AppRoute::Chats {
             chat_id: None,
             overlay: parse_overlay(overlay),
@@ -412,6 +461,10 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
             overlay: None,
             sidebar: true,
         },
+        [id, "character"] if parse_id(id).is_some() => characters_route(None, parse_id(id)),
+        [id, "character", "sidebar"] if parse_id(id).is_some() => {
+            characters_route(None, parse_id(id))
+        }
         [id, overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
             AppRoute::Chats {
                 chat_id: parse_id(id),
@@ -447,6 +500,7 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
             overlay: None,
             sidebar: true,
         },
+        ["character"] => characters_route(None, None),
         [overlay] if parse_overlay(overlay).is_some() => AppRoute::Stories {
             story_id: None,
             nav: StoryNav::None,
@@ -465,6 +519,10 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
             overlay: None,
             sidebar: true,
         },
+        [id, "character"] if parse_id(id).is_some() => characters_route(None, parse_id(id)),
+        [id, "character", "sidebar"] if parse_id(id).is_some() => {
+            characters_route(None, parse_id(id))
+        }
         [id, overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
             AppRoute::Stories {
                 story_id: parse_id(id),
@@ -743,11 +801,6 @@ mod tests {
             },
             AppRoute::Chats {
                 chat_id: Some(42),
-                overlay: Some(Overlay::Character),
-                sidebar: false,
-            },
-            AppRoute::Chats {
-                chat_id: Some(42),
                 overlay: Some(Overlay::Variables),
                 sidebar: false,
             },
@@ -761,10 +814,21 @@ mod tests {
                 overlay: None,
                 sidebar: true,
             },
-            AppRoute::Chats {
+            AppRoute::Characters {
+                character_id: None,
+                chat_id: None,
+            },
+            AppRoute::Characters {
+                character_id: Some(5),
+                chat_id: None,
+            },
+            AppRoute::Characters {
+                character_id: None,
                 chat_id: Some(42),
-                overlay: Some(Overlay::Character),
-                sidebar: true,
+            },
+            AppRoute::Characters {
+                character_id: Some(5),
+                chat_id: Some(42),
             },
         ];
         for route in routes {
@@ -836,6 +900,36 @@ mod tests {
         let route = AppRoute::Settings;
         let path = route.to_path();
         assert_eq!(parse_path(&path), route, "path: {path}");
+    }
+
+    #[test]
+    fn legacy_character_paths_redirect() {
+        let legacy = [
+            (
+                "/chats/character",
+                AppRoute::Characters {
+                    character_id: None,
+                    chat_id: None,
+                },
+            ),
+            (
+                "/chats/42/character",
+                AppRoute::Characters {
+                    character_id: None,
+                    chat_id: Some(42),
+                },
+            ),
+            (
+                "/stories/character",
+                AppRoute::Characters {
+                    character_id: None,
+                    chat_id: None,
+                },
+            ),
+        ];
+        for (path, expected) in legacy {
+            assert_eq!(parse_path(path), expected, "path: {path}");
+        }
     }
 
     #[test]
