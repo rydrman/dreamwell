@@ -816,6 +816,36 @@ pub async fn regenerate_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, S
     .await
 }
 
+pub async fn recheck_turn_prose(
+    game_id: i64,
+    turn_id: i64,
+    guidance_notes: &str,
+) -> Result<Job, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/prose/recheck"),
+        &GenerateRequest {
+            guidance_notes: guidance_notes.to_string(),
+        },
+    )
+    .await
+}
+
+pub async fn recheck_turn_state(
+    game_id: i64,
+    turn_id: i64,
+    guidance_notes: &str,
+) -> Result<Job, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/state/recheck"),
+        &GenerateRequest {
+            guidance_notes: guidance_notes.to_string(),
+        },
+    )
+    .await
+}
+
 pub struct GameStream {
     inner: Rc<ReconnectingEventSource>,
 }

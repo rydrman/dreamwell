@@ -15,7 +15,7 @@ const DEFAULT_SKILLS: &str = r#"{"Finesse":0,"Force":0,"Flair":0,"Focus":0,"Sway
 
 pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
     let rows = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, created_at, updated_at FROM games ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -28,7 +28,7 @@ pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
 
 pub async fn get_game(pool: &SqlitePool, id: i64) -> AppResult<Game> {
     let row = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, created_at, updated_at FROM games WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -71,6 +71,9 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
         modifier_max: row.modifier_max,
         merge_resolve_scene: row.merge_resolve_scene != 0,
         step_mode: row.step_mode != 0,
+        model_checks: row.model_checks,
+        model_resolve: row.model_resolve,
+        model_prose: row.model_prose,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
         active_job,
@@ -82,6 +85,12 @@ fn parse_resolution_system(s: &str) -> ResolutionSystem {
     match s {
         "pbta_2d6" => ResolutionSystem::Pbta2d6,
         _ => ResolutionSystem::Pbta2d6,
+    }
+}
+
+fn resolution_system_str(system: ResolutionSystem) -> &'static str {
+    match system {
+        ResolutionSystem::Pbta2d6 => "pbta_2d6",
     }
 }
 
@@ -146,26 +155,36 @@ pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> App
         premise: payload.premise.unwrap_or(existing.premise),
         setting: payload.setting.unwrap_or(existing.setting),
         gm_style: payload.gm_style.unwrap_or(existing.gm_style),
+        resolution_system: payload
+            .resolution_system
+            .unwrap_or(existing.resolution_system),
         modifier_min: payload.modifier_min.unwrap_or(existing.modifier_min),
         modifier_max: payload.modifier_max.unwrap_or(existing.modifier_max),
         merge_resolve_scene: payload
             .merge_resolve_scene
             .unwrap_or(existing.merge_resolve_scene),
         step_mode: payload.step_mode.unwrap_or(existing.step_mode),
+        model_checks: payload.model_checks.unwrap_or(existing.model_checks),
+        model_resolve: payload.model_resolve.unwrap_or(existing.model_resolve),
+        model_prose: payload.model_prose.unwrap_or(existing.model_prose),
         updated_at: Utc::now(),
         ..existing
     };
     sqlx::query(
-        "UPDATE games SET title=?1, premise=?2, setting=?3, gm_style=?4, modifier_min=?5, modifier_max=?6, merge_resolve_scene=?7, step_mode=?8, updated_at=?9 WHERE id=?10",
+        "UPDATE games SET title=?1, premise=?2, setting=?3, gm_style=?4, resolution_system=?5, modifier_min=?6, modifier_max=?7, merge_resolve_scene=?8, step_mode=?9, model_checks=?10, model_resolve=?11, model_prose=?12, updated_at=?13 WHERE id=?14",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
     .bind(&updated.setting)
     .bind(&updated.gm_style)
+    .bind(resolution_system_str(updated.resolution_system))
     .bind(updated.modifier_min)
     .bind(updated.modifier_max)
     .bind(updated.merge_resolve_scene as i64)
     .bind(updated.step_mode as i64)
+    .bind(&updated.model_checks)
+    .bind(&updated.model_resolve)
+    .bind(&updated.model_prose)
     .bind(updated.updated_at.to_rfc3339())
     .bind(id)
     .execute(pool)
@@ -742,6 +761,9 @@ struct GameRow {
     modifier_max: i64,
     merge_resolve_scene: i64,
     step_mode: i64,
+    model_checks: String,
+    model_resolve: String,
+    model_prose: String,
     created_at: String,
     updated_at: String,
 }

@@ -234,6 +234,48 @@ impl JobQueue {
         Ok(job)
     }
 
+    pub async fn enqueue_game_prose_recheck(
+        &self,
+        pool: &SqlitePool,
+        game_id: i64,
+        turn_id: i64,
+        guidance_notes: &str,
+        settings: &dreamwell_types::Settings,
+    ) -> AppResult<dreamwell_types::Job> {
+        let job = crate::game_prose_recheck::enqueue_turn_prose_recheck(
+            pool,
+            &self.work_tx,
+            game_id,
+            turn_id,
+            guidance_notes,
+            settings,
+        )
+        .await?;
+        self.wake();
+        Ok(job)
+    }
+
+    pub async fn enqueue_game_state_recheck(
+        &self,
+        pool: &SqlitePool,
+        game_id: i64,
+        turn_id: i64,
+        guidance_notes: &str,
+        settings: &dreamwell_types::Settings,
+    ) -> AppResult<dreamwell_types::Job> {
+        let job = crate::game_state_recheck::enqueue_turn_state_recheck(
+            pool,
+            &self.work_tx,
+            game_id,
+            turn_id,
+            guidance_notes,
+            settings,
+        )
+        .await?;
+        self.wake();
+        Ok(job)
+    }
+
     pub async fn cancel_job(&self, pool: &SqlitePool, job_id: i64) -> AppResult<Job> {
         let job = db::get_job(pool, job_id).await?;
         match job.status {

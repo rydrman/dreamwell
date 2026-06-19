@@ -641,6 +641,12 @@ pub struct Game {
     pub modifier_max: i64,
     pub merge_resolve_scene: bool,
     pub step_mode: bool,
+    #[serde(default)]
+    pub model_checks: String,
+    #[serde(default)]
+    pub model_resolve: String,
+    #[serde(default)]
+    pub model_prose: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub active_job: Option<Job>,
@@ -774,6 +780,10 @@ pub struct GameUpdate {
     pub modifier_max: Option<i64>,
     pub merge_resolve_scene: Option<bool>,
     pub step_mode: Option<bool>,
+    pub resolution_system: Option<ResolutionSystem>,
+    pub model_checks: Option<String>,
+    pub model_resolve: Option<String>,
+    pub model_prose: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

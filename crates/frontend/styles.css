@@ -2493,3 +2493,39 @@ input.header-title {
   margin-top: 1rem;
   font-size: 0.9em;
 }
+
+.game-settings-panel {
+  margin-top: 1rem;
+  font-size: 0.9em;
+}
+
+.game-settings-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.game-settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.game-settings-fields .input {
+  width: 100%;
+}
+
+.modifier-range {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.modifier-range .input-compact {
+  width: 4rem;
+}
+
+.game-turn-meta + .btn-compact {
+  margin-right: 0.35rem;
+  margin-top: 0.35rem;
+}

@@ -18,10 +18,18 @@ struct SeedChatRunningResponse {
     expected_content: String,
 }
 
+#[derive(Serialize)]
+struct SeedGameRunningResponse {
+    game_id: i64,
+    expected_content: String,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/seed-chat-running", post(seed_chat_running))
         .route("/complete-chat-job/:chat_id", post(complete_chat_job))
+        .route("/seed-game-running", post(seed_game_running))
+        .route("/complete-game-job/:game_id", post(complete_game_job))
 }
 
 async fn seed_chat_running(
@@ -76,6 +84,66 @@ async fn complete_chat_job(
             .bind(message_id)
             .execute(&state.pool)
             .await?;
+    }
+    db::complete_job(&state.pool, job.id, JobStatus::Completed, None).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn seed_game_running(
+    State(state): State<AppState>,
+) -> AppResult<Json<SeedGameRunningResponse>> {
+    let detail = db::create_game(
+        &state.pool,
+        dreamwell_types::GameCreate {
+            title: "E2E Game".into(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let game_id = detail.game.id;
+    let turn_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO game_turns (game_id, sort_order, player_action, phase, prose, created_at, updated_at) VALUES (?1, 0, 'I pick the lock.', 'prose', '', ?2, ?2) RETURNING id",
+    )
+    .bind(game_id)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .fetch_one(&state.pool)
+    .await?;
+    let job = db::enqueue_game_job(
+        &state.pool,
+        dreamwell_types::JobType::GameTurnProse,
+        game_id,
+        Some(turn_id),
+        String::new(),
+    )
+    .await?;
+    sqlx::query("UPDATE generation_jobs SET status = 'running' WHERE id = ?1")
+        .bind(job.id)
+        .execute(&state.pool)
+        .await?;
+
+    Ok(Json(SeedGameRunningResponse {
+        game_id,
+        expected_content: "The lock clicks open under your touch.".into(),
+    }))
+}
+
+async fn complete_game_job(
+    State(state): State<AppState>,
+    Path(game_id): Path<i64>,
+) -> AppResult<Json<OkResponse>> {
+    let active = db::get_active_game_job(&state.pool, game_id).await?;
+    let Some(job) = active else {
+        return Ok(Json(OkResponse { ok: true }));
+    };
+    if let Some(turn_id) = job.turn_id {
+        sqlx::query(
+            "UPDATE game_turns SET prose = ?1, phase = 'done', updated_at = ?2 WHERE id = ?3",
+        )
+        .bind("The lock clicks open under your touch.")
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(turn_id)
+        .execute(&state.pool)
+        .await?;
     }
     db::complete_job(&state.pool, job.id, JobStatus::Completed, None).await?;
     Ok(Json(OkResponse { ok: true }))

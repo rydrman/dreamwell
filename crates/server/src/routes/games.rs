@@ -13,7 +13,7 @@ use axum::{
 };
 use dreamwell_types::{
     Game, GameActorUpdate, GameCreate, GameDetail, GameStateEntryUpdate, GameStreamPayload,
-    GameUpdate, OkResponse, SubmitTurnRequest,
+    GameUpdate, GenerateRequest, Job, OkResponse, SubmitTurnRequest,
 };
 
 use crate::db;
@@ -29,6 +29,14 @@ pub fn router() -> Router<AppState> {
         .route("/:id/turns", post(submit_turn))
         .route("/:id/turns/:turn_id/continue", post(continue_turn))
         .route("/:id/turns/:turn_id/regenerate", post(regenerate_turn))
+        .route(
+            "/:id/turns/:turn_id/prose/recheck",
+            post(recheck_turn_prose),
+        )
+        .route(
+            "/:id/turns/:turn_id/state/recheck",
+            post(recheck_turn_state),
+        )
         .route("/:id/actors/:actor_id", axum::routing::patch(update_actor))
         .route(
             "/:id/state/:entry_id",
@@ -117,6 +125,34 @@ async fn regenerate_turn(
     let job = db::prepare_regenerate_turn(&state.pool, id, turn_id).await?;
     enqueue_game_generation(&state.queue, job).await?;
     Ok(Json(db::get_game_detail(&state.pool, id).await?))
+}
+
+async fn recheck_turn_prose(
+    State(state): State<AppState>,
+    Path((id, turn_id)): Path<(i64, i64)>,
+    Json(payload): Json<GenerateRequest>,
+) -> AppResult<Json<Job>> {
+    let settings = db::get_settings(&state.pool).await?;
+    let job = state
+        .queue
+        .enqueue_game_prose_recheck(&state.pool, id, turn_id, &payload.guidance_notes, &settings)
+        .await?;
+    db::touch_game(&state.pool, id).await?;
+    Ok(Json(job))
+}
+
+async fn recheck_turn_state(
+    State(state): State<AppState>,
+    Path((id, turn_id)): Path<(i64, i64)>,
+    Json(payload): Json<GenerateRequest>,
+) -> AppResult<Json<Job>> {
+    let settings = db::get_settings(&state.pool).await?;
+    let job = state
+        .queue
+        .enqueue_game_state_recheck(&state.pool, id, turn_id, &payload.guidance_notes, &settings)
+        .await?;
+    db::touch_game(&state.pool, id).await?;
+    Ok(Json(job))
 }
 
 async fn stream_game(

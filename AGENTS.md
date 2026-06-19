@@ -6,7 +6,9 @@ Before committing any changes, run:
 make validate
 ```
 
-This runs `fmt-check`, `clippy`, `test` (Rust unit/integration), and `e2e` (Playwright tab-resume tests) — the same checks as CI.
+This runs `fmt-check`, `clippy`, `test` (Rust unit/integration), and `e2e` (Playwright tab-resume tests for chats and games) — the same checks as CI.
+
+Game mode code lives under `crates/server/src/game_*.rs`, `crates/server/src/routes/games.rs`, and `crates/frontend/src/game_*.rs`. See `docs/game-mode-plan.md` for the turn pipeline and phased build plan.
 
 For a fast Rust-only loop during development:
 

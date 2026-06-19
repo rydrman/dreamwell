@@ -149,6 +149,46 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         })
     };
 
+    let on_recheck_prose = {
+        let detail = detail.clone();
+        let guidance_input = guidance_input.clone();
+        Callback::from(move |turn_id: i64| {
+            let Some(game_id) = game_id else { return };
+            let detail = detail.clone();
+            let guidance = (*guidance_input).clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::recheck_turn_prose(game_id, turn_id, &guidance)
+                    .await
+                    .is_ok()
+                {
+                    if let Ok(d) = api::get_game(game_id).await {
+                        detail.set(Some(d));
+                    }
+                }
+            });
+        })
+    };
+
+    let on_recheck_state = {
+        let detail = detail.clone();
+        let guidance_input = guidance_input.clone();
+        Callback::from(move |turn_id: i64| {
+            let Some(game_id) = game_id else { return };
+            let detail = detail.clone();
+            let guidance = (*guidance_input).clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::recheck_turn_state(game_id, turn_id, &guidance)
+                    .await
+                    .is_ok()
+                {
+                    if let Ok(d) = api::get_game(game_id).await {
+                        detail.set(Some(d));
+                    }
+                }
+            });
+        })
+    };
+
     let toggle_phase = {
         let expanded_phases = expanded_phases.clone();
         Callback::from(move |(turn_id, phase): (i64, String)| {
@@ -312,6 +352,16 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                             <button class="btn secondary btn-compact" onclick={on_regenerate.reform(move |_| turn_id)}>
                                                 {"Regenerate (keep roll)"}
                                             </button>
+                                            if !turn.prose.is_empty() && !turn.scene_beats.is_empty() {
+                                                <button class="btn secondary btn-compact" onclick={on_recheck_prose.reform(move |_| turn_id)}>
+                                                    {"Align prose"}
+                                                </button>
+                                            }
+                                            if !turn.prose.is_empty() {
+                                                <button class="btn secondary btn-compact" onclick={on_recheck_state.reform(move |_| turn_id)}>
+                                                    {"Recheck state"}
+                                                </button>
+                                            }
                                         }
                                     </article>
                                 }
@@ -411,6 +461,163 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 />
                                 {" Step mode (pause between phases)"}
                             </label>
+                            <details class="game-settings-panel">
+                                <summary>{"Game settings"}</summary>
+                                <div class="game-settings-fields">
+                                    <label class="muted">{"Resolution"}</label>
+                                    <div>{"PbtA 2d6"}</div>
+                                    <label class="muted">{"Modifier range (situational)"}</label>
+                                    <div class="modifier-range">
+                                        <input
+                                            class="input input-compact"
+                                            type="number"
+                                            value={game_detail.game.modifier_min.to_string()}
+                                            onchange={{
+                                                let detail_state = detail.clone();
+                                                let game_id = game_detail.game.id;
+                                                let modifier_max = game_detail.game.modifier_max;
+                                                Callback::from(move |e: Event| {
+                                                    let input: HtmlInputElement = e.target_unchecked_into();
+                                                    if let Ok(min) = input.value().parse::<i64>() {
+                                                        let detail_state = detail_state.clone();
+                                                        wasm_bindgen_futures::spawn_local(async move {
+                                                            let payload = GameUpdate {
+                                                                modifier_min: Some(min),
+                                                                modifier_max: Some(modifier_max),
+                                                                ..Default::default()
+                                                            };
+                                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                                detail_state.set(Some(d));
+                                                            }
+                                                        });
+                                                    }
+                                                })
+                                            }}
+                                        />
+                                        <span>{" to "}</span>
+                                        <input
+                                            class="input input-compact"
+                                            type="number"
+                                            value={game_detail.game.modifier_max.to_string()}
+                                            onchange={{
+                                                let detail_state = detail.clone();
+                                                let game_id = game_detail.game.id;
+                                                let modifier_min = game_detail.game.modifier_min;
+                                                Callback::from(move |e: Event| {
+                                                    let input: HtmlInputElement = e.target_unchecked_into();
+                                                    if let Ok(max) = input.value().parse::<i64>() {
+                                                        let detail_state = detail_state.clone();
+                                                        wasm_bindgen_futures::spawn_local(async move {
+                                                            let payload = GameUpdate {
+                                                                modifier_min: Some(modifier_min),
+                                                                modifier_max: Some(max),
+                                                                ..Default::default()
+                                                            };
+                                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                                detail_state.set(Some(d));
+                                                            }
+                                                        });
+                                                    }
+                                                })
+                                            }}
+                                        />
+                                    </div>
+                                    <label class="step-mode-toggle">
+                                        <input
+                                            type="checkbox"
+                                            checked={game_detail.game.merge_resolve_scene}
+                                            onchange={{
+                                                let detail_state = detail.clone();
+                                                let game_id = game_detail.game.id;
+                                                Callback::from(move |e: Event| {
+                                                    let input: HtmlInputElement = e.target_unchecked_into();
+                                                    let detail_state = detail_state.clone();
+                                                    wasm_bindgen_futures::spawn_local(async move {
+                                                        let payload = GameUpdate {
+                                                            merge_resolve_scene: Some(input.checked()),
+                                                            ..Default::default()
+                                                        };
+                                                        if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                            detail_state.set(Some(d));
+                                                        }
+                                                    });
+                                                })
+                                            }}
+                                        />
+                                        {" Merge resolve + scene (faster)"}
+                                    </label>
+                                    <label class="muted">{"Model overrides (blank = global)"}</label>
+                                    <input
+                                        class="input"
+                                        type="text"
+                                        placeholder="Checks phase model"
+                                        value={game_detail.game.model_checks.clone()}
+                                        onchange={{
+                                            let detail_state = detail.clone();
+                                            let game_id = game_detail.game.id;
+                                            Callback::from(move |e: Event| {
+                                                let input: HtmlInputElement = e.target_unchecked_into();
+                                                let detail_state = detail_state.clone();
+                                                wasm_bindgen_futures::spawn_local(async move {
+                                                    let payload = GameUpdate {
+                                                        model_checks: Some(input.value()),
+                                                        ..Default::default()
+                                                    };
+                                                    if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                        detail_state.set(Some(d));
+                                                    }
+                                                });
+                                            })
+                                        }}
+                                    />
+                                    <input
+                                        class="input"
+                                        type="text"
+                                        placeholder="Resolve phase model"
+                                        value={game_detail.game.model_resolve.clone()}
+                                        onchange={{
+                                            let detail_state = detail.clone();
+                                            let game_id = game_detail.game.id;
+                                            Callback::from(move |e: Event| {
+                                                let input: HtmlInputElement = e.target_unchecked_into();
+                                                let detail_state = detail_state.clone();
+                                                wasm_bindgen_futures::spawn_local(async move {
+                                                    let payload = GameUpdate {
+                                                        model_resolve: Some(input.value()),
+                                                        ..Default::default()
+                                                    };
+                                                    if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                        detail_state.set(Some(d));
+                                                    }
+                                                });
+                                            })
+                                        }}
+                                    />
+                                    <input
+                                        class="input"
+                                        type="text"
+                                        placeholder="Prose phase model"
+                                        value={game_detail.game.model_prose.clone()}
+                                        onchange={{
+                                            let detail_state = detail.clone();
+                                            let game_id = game_detail.game.id;
+                                            Callback::from(move |e: Event| {
+                                                let input: HtmlInputElement = e.target_unchecked_into();
+                                                let detail_state = detail_state.clone();
+                                                wasm_bindgen_futures::spawn_local(async move {
+                                                    let payload = GameUpdate {
+                                                        model_prose: Some(input.value()),
+                                                        ..Default::default()
+                                                    };
+                                                    if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                        detail_state.set(Some(d));
+                                                    }
+                                                });
+                                            })
+                                        }}
+                                    />
+                                </div>
+                            </details>
                         </aside>
                     } else {
                         <button class="btn secondary game-state-toggle" onclick={{

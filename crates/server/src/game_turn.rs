@@ -12,10 +12,34 @@ use crate::game_prompts::{
     build_declare_checks_messages, build_prose_messages, build_resolve_messages,
     declare_checks_schema, resolve_schema,
 };
-use crate::game_resolution::{clamp_modifier, roll_dice, tier_str};
+use crate::game_resolution::{clamp_modifier, roll_dice};
 use crate::game_state::{apply_state_changes, skill_modifier, validate_skill};
 use crate::game_summarize::maybe_enqueue_scene_summarize;
 use crate::inference::{chat_completion_json, stream_chat_completion};
+
+#[derive(Debug, Clone, Copy)]
+pub enum GameModelPhase {
+    Checks,
+    Resolve,
+    Prose,
+}
+
+pub fn model_for_phase(
+    game: &dreamwell_types::Game,
+    settings: &Settings,
+    phase: GameModelPhase,
+) -> String {
+    let override_model = match phase {
+        GameModelPhase::Checks => &game.model_checks,
+        GameModelPhase::Resolve => &game.model_resolve,
+        GameModelPhase::Prose => &game.model_prose,
+    };
+    if !override_model.trim().is_empty() {
+        override_model.clone()
+    } else {
+        settings.model.clone()
+    }
+}
 
 fn max_retries() -> u32 {
     config::GENERATION_MAX_RETRIES
@@ -53,9 +77,39 @@ pub async fn run_game_job(
             )
             .await
         }
-        JobType::GameProseRecheck | JobType::GameStateRecheck => {
-            db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
-            Ok(())
+        JobType::GameProseRecheck => {
+            let game_id = job
+                .game_id
+                .ok_or_else(|| AppError::internal("prose recheck job missing game_id"))?;
+            let turn_id = job
+                .turn_id
+                .ok_or_else(|| AppError::internal("prose recheck job missing turn_id"))?;
+            crate::game_prose_recheck::run_turn_prose_recheck_job(
+                pool,
+                job_id,
+                game_id,
+                turn_id,
+                &job.guidance_notes,
+                settings,
+            )
+            .await
+        }
+        JobType::GameStateRecheck => {
+            let game_id = job
+                .game_id
+                .ok_or_else(|| AppError::internal("state recheck job missing game_id"))?;
+            let turn_id = job
+                .turn_id
+                .ok_or_else(|| AppError::internal("state recheck job missing turn_id"))?;
+            crate::game_state_recheck::run_turn_state_recheck_job(
+                pool,
+                job_id,
+                game_id,
+                turn_id,
+                &job.guidance_notes,
+                settings,
+            )
+            .await
         }
         _ => Err(AppError::internal("not a game job")),
     }
@@ -85,9 +139,10 @@ async fn run_turn_from_checks(
     let game = detail.game.clone();
 
     let messages = build_declare_checks_messages(&game, &detail, &turn, &job.guidance_notes);
+    let checks_model = model_for_phase(&game, settings, GameModelPhase::Checks);
     let declared: DeclareChecksResponse = chat_completion_json(
         &settings.inference_url,
-        &settings.model,
+        &checks_model,
         &messages,
         0.4,
         settings.top_p,
@@ -175,9 +230,10 @@ async fn run_resolve_and_prose(
     let checks = turn.checks.clone();
 
     let messages = build_resolve_messages(&game, &detail, &turn, &checks, &job.guidance_notes);
+    let resolve_model = model_for_phase(&game, settings, GameModelPhase::Resolve);
     let resolved: dreamwell_types::ResolveTurnResponse = chat_completion_json(
         &settings.inference_url,
-        &settings.model,
+        &resolve_model,
         &messages,
         0.5,
         settings.top_p,
@@ -250,9 +306,10 @@ async fn stream_turn_prose(
         settings,
     );
 
+    let prose_model = model_for_phase(&detail.game, settings, GameModelPhase::Prose);
     let mut stream = stream_chat_completion(
         &settings.inference_url,
-        &settings.model,
+        &prose_model,
         &messages,
         settings.temperature,
         settings.top_p,
@@ -311,11 +368,8 @@ fn validate_declared_check(
 ) -> DeclaredCheck {
     let validated_skill = validate_skill(&check.skill, pc);
     let sheet_mod = skill_modifier(&validated_skill, pc);
-    let total_mod = clamp_modifier(
-        check.modifier + sheet_mod,
-        game.modifier_min,
-        game.modifier_max,
-    );
+    let situational = clamp_modifier(check.modifier, game.modifier_min, game.modifier_max);
+    let total_mod = situational + sheet_mod;
     DeclaredCheck {
         label: check.label.clone(),
         skill: validated_skill,
@@ -333,10 +387,74 @@ async fn cancel_turn_job(pool: &SqlitePool, job: &Job) -> AppResult<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn format_tier(check: &GameTurnCheck) -> String {
-    check
-        .tier
-        .map(|t| tier_str(t).to_string())
-        .unwrap_or_default()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use dreamwell_types::{Game, GameActor};
+
+    fn sample_game() -> Game {
+        Game {
+            id: 1,
+            title: "Test".into(),
+            premise: String::new(),
+            setting: String::new(),
+            gm_style: String::new(),
+            resolution_system: dreamwell_types::ResolutionSystem::Pbta2d6,
+            modifier_min: -2,
+            modifier_max: 3,
+            merge_resolve_scene: true,
+            step_mode: false,
+            model_checks: String::new(),
+            model_resolve: String::new(),
+            model_prose: String::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            active_job: None,
+            queued_jobs: 0,
+        }
+    }
+
+    fn sample_pc() -> GameActor {
+        GameActor {
+            id: 1,
+            game_id: 1,
+            role: "pc".into(),
+            name: "Alex".into(),
+            description: String::new(),
+            skills: [("Finesse".into(), 2)].into_iter().collect(),
+            sort_order: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn validate_declared_check_clamps_situational_only() {
+        let check = DeclaredCheck {
+            label: "Pick lock".into(),
+            skill: "Finesse".into(),
+            modifier: 10,
+            stakes: String::new(),
+            justification: String::new(),
+        };
+        let validated = validate_declared_check(&check, &sample_pc(), &sample_game());
+        // situational clamped to 3, sheet +2 → total 5
+        assert_eq!(validated.modifier, 5);
+    }
+
+    #[test]
+    fn validate_declared_check_applies_negative_sheet_mod() {
+        let mut pc = sample_pc();
+        pc.skills.insert("Force".into(), -1);
+        let check = DeclaredCheck {
+            label: "Break door".into(),
+            skill: "Force".into(),
+            modifier: -2,
+            stakes: String::new(),
+            justification: String::new(),
+        };
+        let validated = validate_declared_check(&check, &pc, &sample_game());
+        assert_eq!(validated.modifier, -3);
+    }
 }

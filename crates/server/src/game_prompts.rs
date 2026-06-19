@@ -242,3 +242,23 @@ pub fn resolve_schema() -> serde_json::Value {
         "required": ["scene_beats", "state_changes"]
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declare_checks_schema_is_object_with_checks() {
+        let schema = declare_checks_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["checks"].is_object());
+    }
+
+    #[test]
+    fn resolve_schema_requires_scene_beats_and_state_changes() {
+        let schema = resolve_schema();
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "scene_beats"));
+        assert!(required.iter().any(|v| v == "state_changes"));
+    }
+}
