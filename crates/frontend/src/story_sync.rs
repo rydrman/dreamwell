@@ -104,6 +104,8 @@ mod tests {
             beat_id: Some(1),
             chat_id: None,
             message_id: None,
+            game_id: None,
+            turn_id: None,
             guidance_notes: String::new(),
             error: None,
             position: 0,

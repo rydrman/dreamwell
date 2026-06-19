@@ -112,6 +112,13 @@ pub fn job_running_label(job_type: JobType) -> &'static str {
         JobType::StoryBeatOutline => "outlining beats…",
         JobType::StoryChapterSummarize => "summarizing chapter…",
         JobType::StoryBeatVariableRecheck => "checking variables…",
+        JobType::GameTurnCheck => "declaring checks…",
+        JobType::GameTurnResolve => "resolving turn…",
+        JobType::GameTurnScenePlan => "planning scene…",
+        JobType::GameTurnProse => "writing prose…",
+        JobType::GameSceneSummarize => "summarizing scene…",
+        JobType::GameProseRecheck => "aligning prose…",
+        JobType::GameStateRecheck => "checking state…",
     }
 }
 
@@ -213,6 +220,21 @@ pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
                 JobType::StoryBeatProse | JobType::StoryBeatProseContinue => {
                     GenerationPhase::Writing
                 }
+                _ => GenerationPhase::ProposingOutline,
+            };
+            Some(GenerationNotice::Running(phase))
+        }
+        JobStatus::Queued => Some(GenerationNotice::Queued),
+        _ => None,
+    }
+}
+
+pub fn game_notice(detail: &GameDetail) -> Option<GenerationNotice> {
+    let job = detail.game.active_job.as_ref()?;
+    match job.status {
+        JobStatus::Running => {
+            let phase = match job.job_type {
+                JobType::GameTurnProse => GenerationPhase::Writing,
                 _ => GenerationPhase::ProposingOutline,
             };
             Some(GenerationNotice::Running(phase))

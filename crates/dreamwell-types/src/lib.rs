@@ -31,6 +31,13 @@ pub enum JobType {
     StoryBeatProseRecheck,
     StoryChapterSummarize,
     StoryBeatVariableRecheck,
+    GameTurnCheck,
+    GameTurnResolve,
+    GameTurnScenePlan,
+    GameTurnProse,
+    GameSceneSummarize,
+    GameProseRecheck,
+    GameStateRecheck,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -283,6 +290,8 @@ pub struct Job {
     pub story_id: Option<i64>,
     pub chapter_id: Option<i64>,
     pub beat_id: Option<i64>,
+    pub game_id: Option<i64>,
+    pub turn_id: Option<i64>,
     pub guidance_notes: String,
     pub status: JobStatus,
     pub error: Option<String>,
@@ -587,6 +596,260 @@ pub struct ChatStreamPayload {
     pub chat: Chat,
     pub messages: Vec<Message>,
     pub active_job: Option<Job>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionSystem {
+    Pbta2d6,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckTier {
+    Fail,
+    Mixed,
+    Strong,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StateKind {
+    Resource,
+    Condition,
+    Fact,
+    Clock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StateOp {
+    Set,
+    Add,
+    Remove,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Game {
+    pub id: i64,
+    pub title: String,
+    pub premise: String,
+    pub setting: String,
+    pub gm_style: String,
+    pub resolution_system: ResolutionSystem,
+    pub modifier_min: i64,
+    pub modifier_max: i64,
+    pub merge_resolve_scene: bool,
+    pub step_mode: bool,
+    #[serde(default)]
+    pub model_checks: String,
+    #[serde(default)]
+    pub model_resolve: String,
+    #[serde(default)]
+    pub model_prose: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub active_job: Option<Job>,
+    pub queued_jobs: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameActor {
+    pub id: i64,
+    pub game_id: i64,
+    pub role: String,
+    pub name: String,
+    pub description: String,
+    pub skills: std::collections::HashMap<String, i64>,
+    pub sort_order: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameStateEntry {
+    pub id: i64,
+    pub game_id: i64,
+    pub actor_id: Option<i64>,
+    pub kind: StateKind,
+    pub key: String,
+    pub value: String,
+    pub num_value: Option<i64>,
+    pub max_value: Option<i64>,
+    pub source_turn: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameTurnCheck {
+    pub id: i64,
+    pub turn_id: i64,
+    pub label: String,
+    pub skill: String,
+    pub modifier: i64,
+    pub stakes: String,
+    pub justification: String,
+    pub dice_expr: String,
+    pub seed: i64,
+    pub rolls: Vec<i64>,
+    pub total: i64,
+    pub tier: Option<CheckTier>,
+    pub margin: i64,
+    pub sort_order: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppliedStateChange {
+    pub target: String,
+    pub kind: StateKind,
+    pub key: String,
+    pub op: StateOp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_num: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameTurn {
+    pub id: i64,
+    pub game_id: i64,
+    pub sort_order: i64,
+    pub player_action: String,
+    pub phase: String,
+    pub scene_beats: Vec<String>,
+    pub prose: String,
+    pub state_changes: Vec<AppliedStateChange>,
+    pub checks: Vec<GameTurnCheck>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameScene {
+    pub id: i64,
+    pub game_id: i64,
+    pub title: String,
+    pub summary: String,
+    pub summary_valid: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_at: Option<DateTime<Utc>>,
+    pub start_turn: i64,
+    pub sort_order: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameDetail {
+    pub game: Game,
+    pub actors: Vec<GameActor>,
+    pub state: Vec<GameStateEntry>,
+    pub turns: Vec<GameTurn>,
+    pub scenes: Vec<GameScene>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GameCreate {
+    #[serde(default = "default_game_title")]
+    pub title: String,
+    #[serde(default)]
+    pub premise: String,
+    #[serde(default)]
+    pub setting: String,
+    #[serde(default)]
+    pub gm_style: String,
+}
+
+fn default_game_title() -> String {
+    "Untitled Game".to_string()
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GameUpdate {
+    pub title: Option<String>,
+    pub premise: Option<String>,
+    pub setting: Option<String>,
+    pub gm_style: Option<String>,
+    pub modifier_min: Option<i64>,
+    pub modifier_max: Option<i64>,
+    pub merge_resolve_scene: Option<bool>,
+    pub step_mode: Option<bool>,
+    pub resolution_system: Option<ResolutionSystem>,
+    pub model_checks: Option<String>,
+    pub model_resolve: Option<String>,
+    pub model_prose: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameActorUpdate {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub skills: Option<std::collections::HashMap<String, i64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameStateEntryUpdate {
+    pub value: Option<String>,
+    pub num_value: Option<i64>,
+    pub max_value: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubmitTurnRequest {
+    pub player_action: String,
+    #[serde(default)]
+    pub guidance_notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameStreamPayload {
+    pub detail: GameDetail,
+    pub active_job: Option<Job>,
+}
+
+/// LLM output for Phase 1 — declare checks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeclareChecksResponse {
+    #[serde(default)]
+    pub checks: Vec<DeclaredCheck>,
+    #[serde(default)]
+    pub no_check_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeclaredCheck {
+    pub label: String,
+    pub skill: String,
+    pub modifier: i64,
+    pub stakes: String,
+    pub justification: String,
+}
+
+/// LLM output for Phase 2 — resolve + state delta (+ scene beats when merged).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolveTurnResponse {
+    #[serde(default)]
+    pub scene_beats: Vec<String>,
+    #[serde(default)]
+    pub state_changes: Vec<StateChangeRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateChangeRequest {
+    pub target: String,
+    pub kind: StateKind,
+    pub key: String,
+    pub op: StateOp,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub delta: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -33,6 +33,10 @@ pub enum AppRoute {
         overlay: Option<Overlay>,
         sidebar: bool,
     },
+    Games {
+        game_id: Option<i64>,
+        sidebar: bool,
+    },
     Queue,
     Settings,
     Characters {
@@ -56,6 +60,7 @@ impl AppRoute {
         match self {
             Self::Chats { .. } => crate::queue_ui::AppMode::Chats,
             Self::Stories { .. } => crate::queue_ui::AppMode::Stories,
+            Self::Games { .. } => crate::queue_ui::AppMode::Game,
             Self::Queue => crate::queue_ui::AppMode::Queue,
             Self::Settings => crate::queue_ui::AppMode::Settings,
             Self::Characters { .. } => crate::queue_ui::AppMode::Characters,
@@ -65,7 +70,7 @@ impl AppRoute {
     pub fn overlay(&self) -> Option<Overlay> {
         match self {
             Self::Chats { overlay, .. } | Self::Stories { overlay, .. } => *overlay,
-            Self::Queue | Self::Settings | Self::Characters { .. } => None,
+            Self::Queue | Self::Settings | Self::Characters { .. } | Self::Games { .. } => None,
         }
     }
 
@@ -88,6 +93,10 @@ impl AppRoute {
                 story_id: *story_id,
                 nav: *nav,
                 overlay: None,
+                sidebar: *sidebar,
+            },
+            Self::Games { game_id, sidebar } => Self::Games {
+                game_id: *game_id,
                 sidebar: *sidebar,
             },
             Self::Queue => Self::Queue,
@@ -122,7 +131,7 @@ impl AppRoute {
                 overlay: Some(overlay),
                 sidebar,
             },
-            Self::Queue | Self::Settings | Self::Characters { .. } => self,
+            Self::Queue | Self::Settings | Self::Characters { .. } | Self::Games { .. } => self,
         }
     }
 
@@ -146,6 +155,7 @@ impl AppRoute {
                 overlay,
                 sidebar,
             },
+            Self::Games { game_id, .. } => Self::Games { game_id, sidebar },
             other => other,
         }
     }
@@ -265,6 +275,22 @@ impl AppRoute {
                 overlay: None,
                 sidebar: false,
             } => format!("/stories/{id}/chapters/{chapter_id}/beats/{beat_id}"),
+            Self::Games {
+                game_id: None,
+                sidebar: false,
+            } => "/games".to_string(),
+            Self::Games {
+                game_id: None,
+                sidebar: true,
+            } => "/games/sidebar".to_string(),
+            Self::Games {
+                game_id: Some(id),
+                sidebar: false,
+            } => format!("/games/{id}"),
+            Self::Games {
+                game_id: Some(id),
+                sidebar: true,
+            } => format!("/games/{id}/sidebar"),
             Self::Queue => "/queue".to_string(),
             Self::Settings => "/settings".to_string(),
             Self::Characters {
@@ -383,6 +409,7 @@ pub fn parse_path(path: &str) -> AppRoute {
         Some("queue") => parse_queue(&segments[1..]),
         Some("characters") => parse_characters(&segments[1..]),
         Some("stories") => parse_stories(&segments[1..]),
+        Some("games") => parse_games(&segments[1..]),
         Some("chats") | None => parse_chats(segments.get(1..).unwrap_or(&[])),
         _ => AppRoute::default(),
     }
@@ -480,6 +507,31 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
             }
         }
         _ => AppRoute::default(),
+    }
+}
+
+fn parse_games(segments: &[&str]) -> AppRoute {
+    match segments {
+        [] => AppRoute::Games {
+            game_id: None,
+            sidebar: false,
+        },
+        ["sidebar"] => AppRoute::Games {
+            game_id: None,
+            sidebar: true,
+        },
+        [id] if parse_id(id).is_some() => AppRoute::Games {
+            game_id: parse_id(id),
+            sidebar: false,
+        },
+        [id, "sidebar"] if parse_id(id).is_some() => AppRoute::Games {
+            game_id: parse_id(id),
+            sidebar: true,
+        },
+        _ => AppRoute::Games {
+            game_id: None,
+            sidebar: false,
+        },
     }
 }
 

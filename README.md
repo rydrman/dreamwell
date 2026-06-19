@@ -19,6 +19,21 @@ Send messages across many chats, switch away, and come back later — responses 
 - Per-chat variables the model can update via `<var key="...">...</var>`
 - Prompt prefix/suffix and model parameters
 - Shared backend queue (default concurrency: 1)
+- **Game mode**: tabletop-RPG-style turns with real 2d6 dice, typed state, and auto-chained phases (checks → roll → resolve → prose)
+
+## Game mode
+
+Game mode is a third top-level tab alongside Chats and Stories. Each turn:
+
+1. The player submits an action.
+2. The backend declares checks, rolls real dice, resolves state changes, and streams prose.
+3. The UI shows stacked phase bubbles (checks, roll, state, scene, prose) updated over SSE.
+
+Use **step mode** in the state panel to pause between phases. **Regenerate (keep roll)** re-runs resolve/prose without re-rolling. **Align prose** and **Recheck state** run optional quality passes after a turn completes.
+
+Per-game settings (modifier range, merge resolve+scene, per-phase model overrides) live in the state panel under **Game settings**. Empty model overrides use the global Settings model.
+
+See `docs/game-mode-plan.md` for the full design.
 
 ## Development
 

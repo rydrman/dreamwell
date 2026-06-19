@@ -10,8 +10,10 @@ pub struct AppSidebarProps {
     pub chats: Vec<Chat>,
     pub archived_chats: Vec<Chat>,
     pub stories: Vec<Story>,
+    pub games: Vec<Game>,
     pub selected_chat_id: Option<i64>,
     pub selected_story_id: Option<i64>,
+    pub selected_game_id: Option<i64>,
     pub on_mode: Callback<AppMode>,
     pub on_select_chat: Callback<i64>,
     pub on_new_chat: Callback<()>,
@@ -22,42 +24,52 @@ pub struct AppSidebarProps {
     pub on_new_story: Callback<()>,
     pub on_open_characters: Callback<()>,
     pub on_delete_story: Callback<i64>,
+    pub on_select_game: Callback<i64>,
+    pub on_new_game: Callback<()>,
+    pub on_delete_game: Callback<i64>,
 }
 
 #[function_component(AppSidebar)]
 pub fn app_sidebar(props: &AppSidebarProps) -> Html {
     let archive_open = use_state(|| false);
     let archive_count = props.archived_chats.len();
-    let chats_active = props.mode == AppMode::Chats;
 
     html! {
         <aside class="sidebar">
             <div class="sidebar-section-tabs">
                 <button
-                    class={classes!("sidebar-section-btn", chats_active.then_some("active"))}
+                    class={classes!("sidebar-section-btn", (props.mode == AppMode::Chats).then_some("active"))}
                     onclick={props.on_mode.reform(|_| AppMode::Chats)}
                 >
                     {"Chats"}
                 </button>
                 <button
-                    class={classes!("sidebar-section-btn", (!chats_active).then_some("active"))}
+                    class={classes!("sidebar-section-btn", (props.mode == AppMode::Stories).then_some("active"))}
                     onclick={props.on_mode.reform(|_| AppMode::Stories)}
                 >
                     {"Stories"}
                 </button>
+                <button
+                    class={classes!("sidebar-section-btn", (props.mode == AppMode::Game).then_some("active"))}
+                    onclick={props.on_mode.reform(|_| AppMode::Game)}
+                >
+                    {"Game"}
+                </button>
             </div>
             <div class="sidebar-toolbar">
-                if chats_active {
+                if props.mode == AppMode::Chats {
                     <>
                         <button class="btn" onclick={props.on_new_chat.reform(|_| ())}>{"New chat"}</button>
                         <button class="btn secondary" onclick={props.on_open_characters.reform(|_| ())}>{"Characters"}</button>
                     </>
-                } else {
+                } else if props.mode == AppMode::Stories {
                     <button class="btn" onclick={props.on_new_story.reform(|_| ())}>{"New story"}</button>
+                } else if props.mode == AppMode::Game {
+                    <button class="btn" onclick={props.on_new_game.reform(|_| ())}>{"New game"}</button>
                 }
             </div>
             <div class="sidebar-scroll">
-                if chats_active {
+                if props.mode == AppMode::Chats {
                     { for props.chats.iter().map(|chat| {
                         let id = chat.id;
                         let status = chat.active_job.as_ref().and_then(|job| job_status_badge(job, chat.queued_jobs));
@@ -83,7 +95,7 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                             </div>
                         }
                     }) }
-                } else {
+                } else if props.mode == AppMode::Stories {
                     { for props.stories.iter().map(|story| {
                         let id = story.id;
                         let selected = props.selected_story_id == Some(story.id);
@@ -102,9 +114,28 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                             </div>
                         }
                     }) }
+                } else if props.mode == AppMode::Game {
+                    { for props.games.iter().map(|game| {
+                        let id = game.id;
+                        let selected = props.selected_game_id == Some(game.id);
+                        let status = game.active_job.as_ref().and_then(|job| job_status_badge(job, game.queued_jobs));
+                        html! {
+                            <div key={id} class={classes!("chat-item", selected.then_some("selected"))}>
+                                <div style="display:flex;gap:0.5rem;">
+                                    <div style="flex:1;min-width:0;" onclick={props.on_select_game.reform(move |_| id)}>
+                                        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{ &game.title }</div>
+                                        if let Some(status) = status {
+                                            <span class={classes!("badge", status.variant_class())}>{ status.label }</span>
+                                        }
+                                    </div>
+                                    <button class="btn secondary btn-compact" onclick={props.on_delete_game.reform(move |_| id)}>{"✕"}</button>
+                                </div>
+                            </div>
+                        }
+                    }) }
                 }
             </div>
-            if chats_active && archive_count > 0 {
+            if props.mode == AppMode::Chats && archive_count > 0 {
                 <div class="archive-panel">
                     <button class="archive-toggle" onclick={{
                         let archive_open = archive_open.clone();

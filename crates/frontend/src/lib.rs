@@ -3,6 +3,8 @@ mod app_sync;
 mod auth;
 mod auto_grow;
 mod chat_sync;
+mod game_sync;
+mod game_ui;
 mod generation_ui;
 mod install;
 mod item_list;
@@ -33,6 +35,7 @@ use wasm_bindgen::JsCast;
 
 use chat_sync::{messages_stale_vs_chat, should_apply_messages_from_sse};
 use dreamwell_types::*;
+use game_ui::GameShell;
 use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
 };
@@ -110,14 +113,20 @@ fn update_mobile_sidebar_inset(
     let inset = match mode {
         AppMode::Chats if chrome_visible => topbar_height + header_height,
         AppMode::Chats => 0.0,
-        AppMode::Stories | AppMode::Queue | AppMode::Settings | AppMode::Characters
+        AppMode::Stories
+        | AppMode::Game
+        | AppMode::Queue
+        | AppMode::Settings
+        | AppMode::Characters
             if scroll_y > 0.0 =>
         {
             header_height
         }
-        AppMode::Stories | AppMode::Queue | AppMode::Settings | AppMode::Characters => {
-            topbar_height + header_height
-        }
+        AppMode::Stories
+        | AppMode::Game
+        | AppMode::Queue
+        | AppMode::Settings
+        | AppMode::Characters => topbar_height + header_height,
     };
 
     set_app_layout_var(layout, "--sidebar-inset-top", &format!("{inset}px"));
@@ -154,6 +163,13 @@ fn chat_id_from_route(route: &AppRoute) -> Option<i64> {
 fn story_id_from_route(route: &AppRoute) -> Option<i64> {
     match route {
         AppRoute::Stories { story_id, .. } => *story_id,
+        _ => None,
+    }
+}
+
+fn game_id_from_route(route: &AppRoute) -> Option<i64> {
+    match route {
+        AppRoute::Games { game_id, .. } => *game_id,
         _ => None,
     }
 }
@@ -408,6 +424,7 @@ fn app() -> Html {
     let _selected_story_id = story_id_from_route(&route);
     let chats = use_state(Vec::<Chat>::new);
     let stories = use_state(Vec::<Story>::new);
+    let games = use_state(Vec::<Game>::new);
     let archived_chats = use_state(Vec::<Chat>::new);
     let characters = use_state(Vec::<Character>::new);
     let messages = use_state(Vec::<Message>::new);
@@ -456,6 +473,7 @@ fn app() -> Html {
         let characters = characters.clone();
         let settings = settings.clone();
         let stories = stories.clone();
+        let games = games.clone();
         let loading = loading.clone();
         let auth_expired = auth_expired.clone();
         let router = router.clone();
@@ -521,6 +539,15 @@ fn app() -> Html {
                 }
                 match api::list_stories().await {
                     Ok(list) => stories.set(list),
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) => {}
+                }
+                match api::list_games().await {
+                    Ok(list) => games.set(list),
                     Err(ref err) if api::is_auth_expired(err) => {
                         auth_expired.set(true);
                         loading.set(false);
@@ -970,6 +997,10 @@ fn app() -> Html {
                     overlay: None,
                     sidebar: false,
                 },
+                AppMode::Game => AppRoute::Games {
+                    game_id: game_id_from_route(&route),
+                    sidebar: false,
+                },
                 AppMode::Queue => AppRoute::Queue,
                 AppMode::Settings => AppRoute::Settings,
                 AppMode::Characters => AppRoute::Characters {
@@ -1343,8 +1374,10 @@ fn app() -> Html {
                 chats={(*chats).clone()}
                 archived_chats={(*archived_chats).clone()}
                 stories={(*stories).clone()}
+                games={(*games).clone()}
                 selected_chat_id={selected_chat_id}
                 selected_story_id={story_id_from_route(&route)}
+                selected_game_id={game_id_from_route(&route)}
                 on_mode={on_mode.clone()}
                 on_select_chat={Callback::from({
                     let navigate = navigate.clone();
@@ -1518,6 +1551,69 @@ fn app() -> Html {
                         });
                     }
                 })}
+                on_select_game={Callback::from({
+                    let navigate = navigate.clone();
+                    move |id| {
+                        navigate.emit((
+                            AppRoute::Games {
+                                game_id: Some(id),
+                                sidebar: false,
+                            },
+                            true,
+                        ));
+                    }
+                })}
+                on_new_game={Callback::from({
+                    let games = games.clone();
+                    let navigate = navigate.clone();
+                    move |_| {
+                        let games = games.clone();
+                        let navigate = navigate.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let payload = GameCreate {
+                                title: format!("Game {}", games.len() + 1),
+                                ..Default::default()
+                            };
+                            if let Ok(d) = api::create_game(&payload).await {
+                                if let Ok(list) = api::list_games().await {
+                                    games.set(list);
+                                }
+                                navigate.emit((
+                                    AppRoute::Games {
+                                        game_id: Some(d.game.id),
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            }
+                        });
+                    }
+                })}
+                on_delete_game={Callback::from({
+                    let games = games.clone();
+                    let navigate = navigate.clone();
+                    let route = route.clone();
+                    move |id| {
+                        let games = games.clone();
+                        let navigate = navigate.clone();
+                        let route = route.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = api::delete_game(id).await;
+                            if let Ok(list) = api::list_games().await {
+                                if game_id_from_route(&route) == Some(id) {
+                                    navigate.emit((
+                                        AppRoute::Games {
+                                            game_id: list.first().map(|g| g.id),
+                                            sidebar: false,
+                                        },
+                                        false,
+                                    ));
+                                }
+                                games.set(list);
+                            }
+                        });
+                    }
+                })}
             />
             <main class="main">
                 <QueueBar queue={(*queue).clone()} on_open={open_queue.clone()} />
@@ -1526,6 +1622,11 @@ fn app() -> Html {
                         route={route.clone()}
                         on_navigate={navigate.clone()}
                         variables_enabled={settings.as_ref().is_some_and(|s| s.variables_enabled)}
+                    />
+                } else if mode == AppMode::Game {
+                    <GameShell
+                        route={route.clone()}
+                        on_navigate={navigate.clone()}
                     />
                 } else {
                 <div class="chat-pane">
