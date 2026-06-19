@@ -104,20 +104,14 @@ impl AppRoute {
                 sidebar: *sidebar,
             },
             Self::Games {
-                game_id,
-                sidebar,
-                ..
+                game_id, sidebar, ..
             } => Self::Games {
                 game_id: *game_id,
                 overlay: None,
                 sidebar: *sidebar,
             },
-            Self::Queue { sidebar } => Self::Queue {
-                sidebar: *sidebar,
-            },
-            Self::Settings { sidebar } => Self::Settings {
-                sidebar: *sidebar,
-            },
+            Self::Queue { sidebar } => Self::Queue { sidebar: *sidebar },
+            Self::Settings { sidebar } => Self::Settings { sidebar: *sidebar },
             Self::Characters {
                 character_id,
                 chat_id,
@@ -182,9 +176,7 @@ impl AppRoute {
                 sidebar,
             },
             Self::Games {
-                game_id,
-                overlay,
-                ..
+                game_id, overlay, ..
             } => Self::Games {
                 game_id,
                 overlay,
@@ -452,11 +444,7 @@ fn overlay_segment(overlay: Overlay) -> &'static str {
     }
 }
 
-fn characters_route(
-    character_id: Option<i64>,
-    chat_id: Option<i64>,
-    sidebar: bool,
-) -> AppRoute {
+fn characters_route(character_id: Option<i64>, chat_id: Option<i64>, sidebar: bool) -> AppRoute {
     AppRoute::Characters {
         character_id,
         chat_id,
@@ -468,9 +456,7 @@ fn route_if_settings(segments: &[&str]) -> Option<AppRoute> {
     segments
         .iter()
         .any(|segment| *segment == "settings")
-        .then_some(AppRoute::Settings {
-            sidebar: false,
-        })
+        .then_some(AppRoute::Settings { sidebar: false })
 }
 
 fn chats_to_path(chat_id: Option<i64>, overlay: Option<Overlay>, sidebar: bool) -> String {
@@ -1093,7 +1079,10 @@ mod tests {
 
     #[test]
     fn round_trip_queue() {
-        let routes = [AppRoute::Queue { sidebar: false }, AppRoute::Queue { sidebar: true }];
+        let routes = [
+            AppRoute::Queue { sidebar: false },
+            AppRoute::Queue { sidebar: true },
+        ];
         for route in routes {
             let path = route.to_path();
             assert_eq!(parse_path(&path), route, "path: {path}");
@@ -1150,7 +1139,11 @@ mod tests {
             "/stories/3/basics/settings",
         ];
         for path in legacy {
-            assert_eq!(parse_path(path), AppRoute::Settings { sidebar: false }, "path: {path}");
+            assert_eq!(
+                parse_path(path),
+                AppRoute::Settings { sidebar: false },
+                "path: {path}"
+            );
         }
     }
 }
