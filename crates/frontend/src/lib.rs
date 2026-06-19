@@ -204,7 +204,9 @@ fn resolve_characters_selected_id(
 fn sidebar_open_from_route(route: &AppRoute) -> bool {
     matches!(
         route,
-        AppRoute::Chats { sidebar: true, .. } | AppRoute::Stories { sidebar: true, .. }
+        AppRoute::Chats { sidebar: true, .. }
+            | AppRoute::Stories { sidebar: true, .. }
+            | AppRoute::Games { sidebar: true, .. }
     )
 }
 
@@ -4324,6 +4326,45 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
             _ => {}
         });
     })
+}
+
+#[cfg(test)]
+mod sidebar_tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_open_from_route_matches_all_modes() {
+        assert!(!sidebar_open_from_route(&AppRoute::Chats {
+            chat_id: None,
+            overlay: None,
+            sidebar: false,
+        }));
+        assert!(sidebar_open_from_route(&AppRoute::Chats {
+            chat_id: None,
+            overlay: None,
+            sidebar: true,
+        }));
+        assert!(!sidebar_open_from_route(&AppRoute::Stories {
+            story_id: None,
+            nav: StoryNav::None,
+            overlay: None,
+            sidebar: false,
+        }));
+        assert!(sidebar_open_from_route(&AppRoute::Stories {
+            story_id: None,
+            nav: StoryNav::None,
+            overlay: None,
+            sidebar: true,
+        }));
+        assert!(!sidebar_open_from_route(&AppRoute::Games {
+            game_id: None,
+            sidebar: false,
+        }));
+        assert!(sidebar_open_from_route(&AppRoute::Games {
+            game_id: None,
+            sidebar: true,
+        }));
+    }
 }
 
 #[cfg(test)]
