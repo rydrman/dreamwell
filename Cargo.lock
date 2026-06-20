@@ -414,6 +414,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "png",
+ "rand 0.9.4",
  "regex",
  "reqwest",
  "serde",

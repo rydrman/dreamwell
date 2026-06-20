@@ -8,6 +8,7 @@ use crate::api;
 use crate::game_sync::should_replace_detail_from_sse;
 use crate::generation_ui::{game_notice, GenerationStatusBar};
 use crate::markdown::render_message_content;
+use crate::message_menu::MessageOptionsMenu;
 use crate::router::{AppRoute, Overlay};
 use crate::title_editor::TitleEditor;
 
@@ -314,12 +315,67 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let turn_id = turn.id;
                                 let is_active = !matches!(turn.phase.as_str(), "done" | "failed");
                                 let step_paused = turn.phase.ends_with("_pause");
+                                let show_continue = step_paused;
+                                let show_regenerate = turn.phase == "done";
+                                let show_align_prose = turn.phase == "done"
+                                    && !turn.prose.is_empty()
+                                    && !turn.scene_beats.is_empty();
+                                let show_recheck_state = turn.phase == "done" && !turn.prose.is_empty();
+                                let can_menu = show_continue
+                                    || show_regenerate
+                                    || show_align_prose
+                                    || show_recheck_state;
                                 html! {
                                     <div key={turn_id} class="game-turn-pair">
                                         <div class="message user">
                                             { &turn.player_action }
                                         </div>
                                         <div class="message assistant">
+                                            <div class="message-header">
+                                                <div class="message-meta muted">
+                                                    { format!("Phase: {}", phase_label(&turn.phase)) }
+                                                </div>
+                                                if can_menu {
+                                                    <MessageOptionsMenu title="Turn options">
+                                                        if show_continue {
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item"
+                                                                onclick={on_continue.reform(move |_| turn_id)}
+                                                            >
+                                                                {"Continue turn"}
+                                                            </button>
+                                                        }
+                                                        if show_regenerate {
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item"
+                                                                onclick={on_regenerate.reform(move |_| turn_id)}
+                                                            >
+                                                                {"Regenerate"}
+                                                            </button>
+                                                        }
+                                                        if show_align_prose {
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item"
+                                                                onclick={on_recheck_prose.reform(move |_| turn_id)}
+                                                            >
+                                                                {"Align prose"}
+                                                            </button>
+                                                        }
+                                                        if show_recheck_state {
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item"
+                                                                onclick={on_recheck_state.reform(move |_| turn_id)}
+                                                            >
+                                                                {"Recheck state"}
+                                                            </button>
+                                                        }
+                                                    </MessageOptionsMenu>
+                                                }
+                                            </div>
                                             if !turn.checks.is_empty() {
                                                 <GamePhaseSection
                                                     turn_id={turn_id}
@@ -400,31 +456,6 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 <div class="game-prose markdown-body">
                                                     { render_message_content(&turn.prose) }
                                                 </div>
-                                            }
-
-                                            <div class="game-turn-meta muted">
-                                                { format!("Phase: {}", phase_label(&turn.phase)) }
-                                            </div>
-
-                                            if step_paused {
-                                                <button class="btn secondary btn-compact" onclick={on_continue.reform(move |_| turn_id)}>
-                                                    {"Continue turn"}
-                                                </button>
-                                            }
-                                            if turn.phase == "done" {
-                                                <button class="btn secondary btn-compact" onclick={on_regenerate.reform(move |_| turn_id)}>
-                                                    {"Regenerate (keep roll)"}
-                                                </button>
-                                                if !turn.prose.is_empty() && !turn.scene_beats.is_empty() {
-                                                    <button class="btn secondary btn-compact" onclick={on_recheck_prose.reform(move |_| turn_id)}>
-                                                        {"Align prose"}
-                                                    </button>
-                                                }
-                                                if !turn.prose.is_empty() {
-                                                    <button class="btn secondary btn-compact" onclick={on_recheck_state.reform(move |_| turn_id)}>
-                                                        {"Recheck state"}
-                                                    </button>
-                                                }
                                             }
                                         </div>
                                     </div>
