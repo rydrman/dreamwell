@@ -475,6 +475,37 @@ pub async fn import_character(file: &web_sys::File) -> Result<Character, String>
     Ok(result.character)
 }
 
+pub async fn list_scenarios() -> Result<Vec<Scenario>, String> {
+    json(api_request("GET", "/api/scenarios")).await
+}
+
+pub async fn create_scenario(payload: &ScenarioCreate) -> Result<Scenario, String> {
+    json_body("POST", "/api/scenarios", payload).await
+}
+
+pub async fn update_scenario(id: i64, payload: &ScenarioUpdate) -> Result<Scenario, String> {
+    json_body("PATCH", &format!("/api/scenarios/{id}"), payload).await
+}
+
+pub async fn delete_scenario(id: i64) -> Result<(), String> {
+    send_empty(api_request("DELETE", &format!("/api/scenarios/{id}"))).await
+}
+
+pub async fn import_scenario(file: &web_sys::File) -> Result<Scenario, String> {
+    let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
+    form.append_with_blob("file", file)
+        .map_err(|_| "append failed".to_string())?;
+    let response = gloo_net::http::Request::post("/api/scenarios/import")
+        .body(form)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let response = ensure_ok_response(response).await?;
+    let result: ImportScenarioResponse = response.json().await.map_err(|e| e.to_string())?;
+    Ok(result.scenario)
+}
+
 #[derive(Clone)]
 pub struct StreamNudge {
     inner: Rc<ReconnectingEventSource>,
