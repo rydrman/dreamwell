@@ -13,6 +13,10 @@ IMAGE ?= ghcr.io/rydrman/dreamwell
 IMAGE_TAG ?= latest
 NAMESPACE ?= dreamwell
 
+GIT_SHA := $(shell git rev-parse HEAD)
+GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
+GIT_TAG := $(shell git describe --exact-match --tags HEAD 2>/dev/null)
+
 COMPOSE_DEV ?= docker compose -f docker-compose.dev.yml
 
 .PHONY: fmt fmt-check clippy test e2e validate install-hooks install-trunk build build-front build-server run run-local run-docker clean docker deploy
@@ -73,7 +77,10 @@ clean:
 	rm -rf .frontend-dist crates/frontend/dist
 
 docker:
-	DOCKER_BUILDKIT=1 docker build -t dreamwell:local .
+	@tags="-t $(IMAGE):$(GIT_SHA)"; \
+	[ "$(GIT_BRANCH)" = main ] && tags="$$tags -t $(IMAGE):latest"; \
+	[ -n "$(GIT_TAG)" ] && tags="$$tags -t $(IMAGE):$(GIT_TAG)"; \
+	DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA=$(GIT_SHA) $$tags -t dreamwell:local .
 
 deploy:
 	kubectl --kubeconfig=$(KUBECONFIG) apply -k deploy/
