@@ -20,7 +20,7 @@ fn pc_traits_json(payload: &GameCreate) -> String {
 
 pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
     let rows = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -33,7 +33,7 @@ pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
 
 pub async fn get_game(pool: &SqlitePool, id: i64) -> AppResult<Game> {
     let row = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -71,6 +71,7 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
         premise: row.premise,
         setting: row.setting,
         gm_style: row.gm_style,
+        opening_message: row.opening_message,
         character_id: row.character_id,
         scenario_id: row.scenario_id,
         resolution_system: parse_resolution_system(&row.resolution_system),
@@ -104,12 +105,13 @@ fn resolution_system_str(system: ResolutionSystem) -> &'static str {
 pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<GameDetail> {
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO games (title, premise, setting, gm_style, character_id, scenario_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7) RETURNING id",
+        "INSERT INTO games (title, premise, setting, gm_style, opening_message, character_id, scenario_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
     .bind(&payload.setting)
     .bind(&payload.gm_style)
+    .bind(&payload.opening_message)
     .bind(payload.character_id)
     .bind(payload.scenario_id)
     .bind(&now)
@@ -166,6 +168,7 @@ pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> App
         premise: payload.premise.unwrap_or(existing.premise),
         setting: payload.setting.unwrap_or(existing.setting),
         gm_style: payload.gm_style.unwrap_or(existing.gm_style),
+        opening_message: payload.opening_message.unwrap_or(existing.opening_message),
         resolution_system: payload
             .resolution_system
             .unwrap_or(existing.resolution_system),
@@ -182,12 +185,13 @@ pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> App
         ..existing
     };
     sqlx::query(
-        "UPDATE games SET title=?1, premise=?2, setting=?3, gm_style=?4, resolution_system=?5, modifier_min=?6, modifier_max=?7, merge_resolve_scene=?8, step_mode=?9, model_checks=?10, model_resolve=?11, model_prose=?12, updated_at=?13 WHERE id=?14",
+        "UPDATE games SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, resolution_system=?6, modifier_min=?7, modifier_max=?8, merge_resolve_scene=?9, step_mode=?10, model_checks=?11, model_resolve=?12, model_prose=?13, updated_at=?14 WHERE id=?15",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
     .bind(&updated.setting)
     .bind(&updated.gm_style)
+    .bind(&updated.opening_message)
     .bind(resolution_system_str(updated.resolution_system))
     .bind(updated.modifier_min)
     .bind(updated.modifier_max)
@@ -794,6 +798,7 @@ struct GameRow {
     premise: String,
     setting: String,
     gm_style: String,
+    opening_message: String,
     character_id: Option<i64>,
     scenario_id: Option<i64>,
     resolution_system: String,

@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 
 pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
     let rows = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -16,7 +16,7 @@ pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
 
 pub async fn get_scenario(pool: &SqlitePool, id: i64) -> AppResult<Scenario> {
     let row = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -30,12 +30,13 @@ pub async fn create_scenario(pool: &SqlitePool, payload: ScenarioCreate) -> AppR
     let traits_json = serde_json::to_string(&normalize_game_traits(payload.traits.clone()))
         .unwrap_or_else(|_| "{}".to_string());
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO scenarios (title, premise, setting, gm_style, pc_name, pc_description, traits, character_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) RETURNING id",
+        "INSERT INTO scenarios (title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
     .bind(&payload.setting)
     .bind(&payload.gm_style)
+    .bind(&payload.opening_message)
     .bind(&payload.pc_name)
     .bind(&payload.pc_description)
     .bind(&traits_json)
@@ -57,6 +58,7 @@ pub async fn update_scenario(
         premise: payload.premise.unwrap_or(existing.premise),
         setting: payload.setting.unwrap_or(existing.setting),
         gm_style: payload.gm_style.unwrap_or(existing.gm_style),
+        opening_message: payload.opening_message.unwrap_or(existing.opening_message),
         pc_name: payload.pc_name.unwrap_or(existing.pc_name),
         pc_description: payload.pc_description.unwrap_or(existing.pc_description),
         traits: payload
@@ -69,12 +71,13 @@ pub async fn update_scenario(
     };
     let traits_json = serde_json::to_string(&updated.traits).unwrap_or_else(|_| "{}".to_string());
     sqlx::query(
-        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, pc_name=?5, pc_description=?6, traits=?7, character_id=?8, updated_at=?9 WHERE id=?10",
+        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, pc_name=?6, pc_description=?7, traits=?8, character_id=?9, updated_at=?10 WHERE id=?11",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
     .bind(&updated.setting)
     .bind(&updated.gm_style)
+    .bind(&updated.opening_message)
     .bind(&updated.pc_name)
     .bind(&updated.pc_description)
     .bind(&traits_json)
@@ -105,6 +108,7 @@ fn scenario_from_row(row: ScenarioRow) -> AppResult<Scenario> {
         premise: row.premise,
         setting: row.setting,
         gm_style: row.gm_style,
+        opening_message: row.opening_message,
         pc_name: row.pc_name,
         pc_description: row.pc_description,
         traits: normalize_game_traits(traits),
@@ -121,6 +125,7 @@ struct ScenarioRow {
     premise: String,
     setting: String,
     gm_style: String,
+    opening_message: String,
     pc_name: String,
     pc_description: String,
     traits: String,

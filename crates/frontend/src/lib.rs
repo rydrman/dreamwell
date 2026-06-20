@@ -3,6 +3,7 @@ mod app_sync;
 mod auth;
 mod auto_grow;
 mod chat_sync;
+mod game_create_ui;
 mod game_sync;
 mod game_ui;
 mod generation_ui;
@@ -37,6 +38,7 @@ use wasm_bindgen::JsCast;
 
 use chat_sync::{messages_stale_vs_chat, should_apply_messages_from_sse};
 use dreamwell_types::*;
+use game_create_ui::GameCreateModal;
 use game_ui::GameShell;
 use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
@@ -1143,6 +1145,38 @@ fn app() -> Html {
         })
     };
 
+    let create_game = {
+        let games = games.clone();
+        let navigate = navigate.clone();
+        Callback::from(move |payload: GameCreate| {
+            let games = games.clone();
+            let navigate = navigate.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::create_game(&payload).await {
+                    Ok(detail) => {
+                        if let Ok(list) = api::list_games().await {
+                            games.set(list);
+                        }
+                        navigate.emit((
+                            AppRoute::Games {
+                                game_id: Some(detail.game.id),
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            true,
+                        ));
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ =
+                                window.alert_with_message(&format!("Could not start game: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
     let selected = selected_chat_id.and_then(|id| chats.iter().find(|c| c.id == id).cloned());
     let active_header = active_chat_header(&selected, selected_chat_id);
     let app_layout_ref = use_node_ref();
@@ -1256,6 +1290,7 @@ fn app() -> Html {
     let sidebar_open = sidebar_open_from_route(&route);
     let overlay = route.overlay();
     let picker_open = overlay == Some(Overlay::NewChat);
+    let game_create_open = overlay == Some(Overlay::NewGame);
 
     let (characters_character_id, characters_chat_id) = characters_route_context(&route);
     let (scenarios_scenario_id, scenarios_game_id) = scenarios_route_context(&route);
@@ -1305,6 +1340,13 @@ fn app() -> Html {
                             start_chat.emit((character.id, character.name.clone()));
                         }
                     })}
+                />
+            }
+            if game_create_open {
+                <GameCreateModal
+                    characters={(*characters).clone()}
+                    on_close={close_overlay.clone()}
+                    on_create={create_game.clone()}
                 />
             }
             if mode == AppMode::Chats && overlay == Some(Overlay::Variables) {
@@ -1518,6 +1560,18 @@ fn app() -> Html {
                     }
                 })}
                 on_open_scenarios={open_scenarios.clone()}
+                on_new_game={Callback::from({
+                    let navigate = navigate.clone();
+                    let route = route.clone();
+                    move |_| {
+                        let next = AppRoute::Games {
+                            game_id: game_id_from_route(&route),
+                            overlay: Some(Overlay::NewGame),
+                            sidebar: false,
+                        };
+                        navigate.emit((next, true));
+                    }
+                })}
                 on_delete_game={Callback::from({
                     let games = games.clone();
                     let navigate = navigate.clone();
@@ -1696,6 +1750,7 @@ fn app() -> Html {
                     <GameShell
                         route={route.clone()}
                         on_navigate={navigate.clone()}
+                        settings={(*settings).clone()}
                     />
                 } else {
                 <div class="chat-pane">

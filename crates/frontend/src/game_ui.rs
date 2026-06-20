@@ -16,6 +16,7 @@ use crate::title_editor::TitleEditor;
 pub struct GameShellProps {
     pub route: AppRoute,
     pub on_navigate: Callback<(AppRoute, bool)>,
+    pub settings: Option<Settings>,
 }
 
 fn game_id_from_route(route: &AppRoute) -> Option<i64> {
@@ -249,6 +250,33 @@ pub fn game_shell(props: &GameShellProps) -> Html {
     let game_detail = (*detail).clone();
     let notice = game_detail.as_ref().and_then(game_notice);
     let state_overlay_open = props.route.overlay() == Some(Overlay::State);
+    let opening_message = game_detail.as_ref().and_then(|detail| {
+        let text = detail.game.opening_message.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let pc_name = detail
+            .actors
+            .iter()
+            .find(|actor| actor.role == "pc")
+            .map(|actor| actor.name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Character");
+        let macro_ctx = props.settings.as_ref().map(|settings| MacroContext {
+            char_name: pc_name,
+            user_name: settings.user_name.as_str(),
+            persona: settings.persona_description.as_str(),
+            description: "",
+            personality: "",
+            scenario: "",
+            first_message: detail.game.opening_message.as_str(),
+        });
+        Some(if let Some(ctx) = macro_ctx {
+            substitute_macros(text, &ctx)
+        } else {
+            text.to_string()
+        })
+    });
 
     html! {
         <>
@@ -311,6 +339,13 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 
                     <div class="content-scroll">
                         <div class="messages game-turn-feed">
+                            if let Some(opening_message) = opening_message {
+                                <div class="game-opening message assistant">
+                                    <div class="game-prose markdown-body">
+                                        { render_message_content(&opening_message) }
+                                    </div>
+                                </div>
+                            }
                             { for game_detail.turns.iter().map(|turn| {
                                 let turn_id = turn.id;
                                 let is_active = !matches!(turn.phase.as_str(), "done" | "failed");
@@ -585,6 +620,38 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                 <details class="game-world-panel" open=true>
                     <summary>{"Scenario & world"}</summary>
                     <div class="game-world-fields">
+                        <label class="field"><span class="muted">{"Opening message"}</span>
+                            <textarea
+                                class="input"
+                                rows="4"
+                                value={game_detail.game.opening_message.clone()}
+                                onchange={{
+                                    let detail_state = detail_state.clone();
+                                    let premise = game_detail.game.premise.clone();
+                                    let setting = game_detail.game.setting.clone();
+                                    let gm_style = game_detail.game.gm_style.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        let premise = premise.clone();
+                                        let setting = setting.clone();
+                                        let gm_style = gm_style.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                opening_message: Some(input.value()),
+                                                premise: Some(premise),
+                                                setting: Some(setting),
+                                                gm_style: Some(gm_style),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }}
+                            />
+                        </label>
                         <label class="field"><span class="muted">{"Premise / scenario"}</span>
                             <textarea
                                 class="input"
