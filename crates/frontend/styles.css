@@ -164,6 +164,16 @@ button {
   width: min(42rem, calc(100vw - 2rem));
 }
 
+.game-tone-preset {
+  margin-bottom: 0.25rem;
+}
+
+.game-tone-preset-hint {
+  display: block;
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+}
+
 .game-create-lead {
   margin: 0 0 0.75rem;
 }
