@@ -12,7 +12,7 @@ use crate::game_prompts::{
     build_declare_checks_messages, build_prose_messages, build_resolve_messages,
     declare_checks_schema, resolve_schema,
 };
-use crate::game_resolution::{check_roll_seed, clamp_modifier, roll_dice};
+use crate::game_resolution::{clamp_modifier, roll_dice};
 use crate::game_state::{apply_state_changes, skill_modifier, validate_skill};
 use crate::game_summarize::maybe_enqueue_scene_summarize;
 use crate::inference::{chat_completion_json, stream_chat_completion};
@@ -163,8 +163,7 @@ async fn run_turn_from_checks(
     let mut rolled_checks = Vec::new();
     for (i, check) in declared.checks.iter().enumerate() {
         let validated = validate_declared_check(check, pc, &game);
-        let seed = check_roll_seed(game_id, turn_id, i);
-        let roll = roll_dice("2d6", validated.modifier, seed);
+        let roll = roll_dice("2d6", validated.modifier);
         let game_check = GameTurnCheck {
             id: 0,
             turn_id,
@@ -174,7 +173,7 @@ async fn run_turn_from_checks(
             stakes: validated.stakes.clone(),
             justification: validated.justification.clone(),
             dice_expr: "2d6".to_string(),
-            seed,
+            seed: 0,
             rolls: roll.as_ref().map(|r| r.rolls.clone()).unwrap_or_default(),
             total: roll.as_ref().map(|r| r.total).unwrap_or(0),
             tier: roll.as_ref().map(|r| r.tier),

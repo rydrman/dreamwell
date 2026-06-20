@@ -29,7 +29,7 @@ Game mode is a third top-level tab alongside Chats and Stories. Each turn:
 2. The backend declares checks, rolls real dice, resolves state changes, and streams prose.
 3. The UI shows stacked phase bubbles (checks, roll, state, scene, prose) updated over SSE.
 
-Use **step mode** in the state panel to pause between phases. **Regenerate (keep roll)** re-runs resolve/prose without re-rolling. **Align prose** and **Recheck state** run optional quality passes after a turn completes.
+Use **step mode** in the state panel to pause between phases. **Regenerate** re-rolls dice and re-runs resolve/prose. **Align prose** and **Recheck state** run optional quality passes after a turn completes.
 
 Per-game settings (modifier range, merge resolve+scene, per-phase model overrides) live in the state panel under **Game settings**. Empty model overrides use the global Settings model.
 

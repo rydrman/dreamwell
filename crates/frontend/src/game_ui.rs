@@ -352,7 +352,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                 class="message-menu-item"
                                                                 onclick={on_regenerate.reform(move |_| turn_id)}
                                                             >
-                                                                {"Regenerate (keep roll)"}
+                                                                {"Regenerate"}
                                                             </button>
                                                         }
                                                         if show_align_prose {
