@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_stream::stream;
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
@@ -13,17 +13,20 @@ use axum::{
 };
 use dreamwell_types::{
     Game, GameActorUpdate, GameCreate, GameDetail, GameStateEntryUpdate, GameStreamPayload,
-    GameUpdate, GenerateRequest, Job, OkResponse, SubmitTurnRequest,
+    GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse, SubmitTurnRequest,
 };
 
+use crate::character_import::parse_character_import;
 use crate::db;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::queue::enqueue_game_generation;
 use crate::routes::AppState;
+use crate::scenario_import::{game_create_from_character, GameCharacterImportMode};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_games).post(create_game))
+        .route("/import", post(import_game_draft))
         .route("/:id", get(get_game).patch(update_game).delete(delete_game))
         .route("/:id/stream", get(stream_game))
         .route("/:id/turns", post(submit_turn))
@@ -53,6 +56,41 @@ async fn create_game(
     Json(payload): Json<GameCreate>,
 ) -> AppResult<Json<GameDetail>> {
     Ok(Json(db::create_game(&state.pool, payload).await?))
+}
+
+async fn import_game_draft(
+    State(_state): State<AppState>,
+    mut multipart: Multipart,
+) -> AppResult<Json<ImportGameDraftResponse>> {
+    let mut filename = "character.json".to_string();
+    let mut content = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad_request(e.to_string()))?
+    {
+        if field.name() == Some("file") {
+            if let Some(name) = field.file_name() {
+                filename = name.to_string();
+            }
+            content = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::bad_request(e.to_string()))?
+                .to_vec();
+        }
+    }
+    let card = parse_character_import(&filename, &content)?;
+    let draft = game_create_from_character(card, GameCharacterImportMode::World, None, None);
+    let source = if filename.to_lowercase().ends_with(".png") {
+        "png"
+    } else {
+        "json"
+    };
+    Ok(Json(ImportGameDraftResponse {
+        draft,
+        source: source.to_string(),
+    }))
 }
 
 async fn get_game(

@@ -46,8 +46,16 @@ pub fn build_declare_checks_messages(
     let pc = detail.actors.iter().find(|a| a.role == "pc");
     let state_block = build_state_block(&detail.state, &detail.actors);
     let recent = recent_turn_context(&detail.turns, turn.id, 3);
+    let opening = if !game.opening_message.trim().is_empty() {
+        format!(
+            "\n\nOpening scene (already shown to the player):\n{}",
+            game.opening_message.trim()
+        )
+    } else {
+        String::new()
+    };
     let mut user = format!(
-        "World premise: {}\nSetting/tone: {}\nGM style: {}\n\nCurrent state:\n{state_block}\n\nRecent turns:\n{recent}\n\nPlayer action: {}",
+        "World premise: {}\nSetting/tone: {}\nGM style: {}{opening}\n\nCurrent state:\n{state_block}\n\nRecent turns:\n{recent}\n\nPlayer action: {}",
         game.premise, game.setting, game.gm_style, turn.player_action
     );
     if let Some(pc) = pc {

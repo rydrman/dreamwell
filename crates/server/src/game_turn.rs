@@ -399,6 +399,7 @@ mod tests {
             premise: String::new(),
             setting: String::new(),
             gm_style: String::new(),
+            opening_message: String::new(),
             character_id: None,
             scenario_id: None,
             resolution_system: dreamwell_types::ResolutionSystem::Pbta2d6,
