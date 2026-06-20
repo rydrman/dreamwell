@@ -265,7 +265,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 } else {
                     <div class="settings-popover panel-overlay">
                         <div class="settings-header">
-                            <h2>{"Character & state"}</h2>
+                            <h2>{"World & state"}</h2>
                             <button class="btn secondary btn-compact" onclick={close_state_overlay.reform(|_| ())}>{"Close"}</button>
                         </div>
                         <p class="muted">{"Loading game…"}</p>
@@ -300,7 +300,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                             <div class="header-actions">
                                 <button
                                     class="btn secondary btn-compact header-icon-btn"
-                                    title="Character & state"
+                                    title="World & state"
                                     onclick={open_state_overlay.reform(|_| ())}
                                 >
                                     {"State"}
@@ -501,7 +501,22 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 } else if game_id.is_some() {
                     <p class="muted">{"Loading game…"}</p>
                 } else {
-                    <p class="muted">{"Select or create a game from the sidebar."}</p>
+                    <div class="empty-state muted">
+                        <p>{"No game selected. Pick a scenario to play or create one in Scenarios."}</p>
+                        <button class="btn" style="margin-top:0.75rem;" onclick={{
+                            let on_navigate = props.on_navigate.clone();
+                            Callback::from(move |_| {
+                                on_navigate.emit((
+                                    AppRoute::Scenarios {
+                                        scenario_id: None,
+                                        game_id: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            })
+                        }}>{"Open scenarios"}</button>
+                    </div>
                 }
             </div>
         </>
@@ -563,10 +578,102 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
     html! {
         <div id="game-state-panel" class="settings-popover panel-overlay">
             <div class="settings-header">
-                <h2>{"Character & state"}</h2>
+                <h2>{"World & state"}</h2>
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
             </div>
             <div class="panel-overlay-body">
+                <details class="game-world-panel" open=true>
+                    <summary>{"Scenario & world"}</summary>
+                    <div class="game-world-fields">
+                        <label class="field"><span class="muted">{"Premise / scenario"}</span>
+                            <textarea
+                                class="input"
+                                rows="3"
+                                value={game_detail.game.premise.clone()}
+                                onchange={{
+                                    let detail_state = detail_state.clone();
+                                    let setting = game_detail.game.setting.clone();
+                                    let gm_style = game_detail.game.gm_style.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        let setting = setting.clone();
+                                        let gm_style = gm_style.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                premise: Some(input.value()),
+                                                setting: Some(setting),
+                                                gm_style: Some(gm_style),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }}
+                            />
+                        </label>
+                        <label class="field"><span class="muted">{"Setting / tone"}</span>
+                            <textarea
+                                class="input"
+                                rows="3"
+                                value={game_detail.game.setting.clone()}
+                                onchange={{
+                                    let detail_state = detail_state.clone();
+                                    let premise = game_detail.game.premise.clone();
+                                    let gm_style = game_detail.game.gm_style.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        let premise = premise.clone();
+                                        let gm_style = gm_style.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                premise: Some(premise),
+                                                setting: Some(input.value()),
+                                                gm_style: Some(gm_style),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }}
+                            />
+                        </label>
+                        <label class="field"><span class="muted">{"GM style"}</span>
+                            <textarea
+                                class="input"
+                                rows="2"
+                                value={game_detail.game.gm_style.clone()}
+                                onchange={{
+                                    let detail_state = detail_state.clone();
+                                    let premise = game_detail.game.premise.clone();
+                                    let setting = game_detail.game.setting.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        let premise = premise.clone();
+                                        let setting = setting.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                premise: Some(premise),
+                                                setting: Some(setting),
+                                                gm_style: Some(input.value()),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }}
+                            />
+                        </label>
+                    </div>
+                </details>
                 { for game_detail.actors.iter().filter(|a| a.role == "pc").map(|actor| html! {
                     <div class="actor-sheet" key={actor.id}>
                         <h4>{ if actor.name.is_empty() { "Player character" } else { &actor.name } }</h4>
