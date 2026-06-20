@@ -4,6 +4,7 @@ mod auth;
 mod auto_grow;
 mod chat_sync;
 mod game_create_ui;
+mod game_presets_ui;
 mod game_sync;
 mod game_ui;
 mod generation_ui;

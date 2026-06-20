@@ -5,6 +5,7 @@ use web_sys::{HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::api;
+use crate::game_presets_ui::GmTonePresetPicker;
 use crate::game_sync::should_replace_detail_from_sse;
 use crate::generation_ui::{game_notice, GenerationStatusBar};
 use crate::markdown::render_message_content;
@@ -681,6 +682,28 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                                 }}
                             />
                         </label>
+                        <GmTonePresetPicker on_apply={Callback::from({
+                            let detail_state = detail_state.clone();
+                            let premise = game_detail.game.premise.clone();
+                            let opening_message = game_detail.game.opening_message.clone();
+                            move |(setting, gm_style)| {
+                                let detail_state = detail_state.clone();
+                                let premise = premise.clone();
+                                let opening_message = opening_message.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let payload = GameUpdate {
+                                        premise: Some(premise),
+                                        opening_message: Some(opening_message),
+                                        setting: Some(setting),
+                                        gm_style: Some(gm_style),
+                                        ..Default::default()
+                                    };
+                                    if let Ok(d) = api::update_game(game_id, &payload).await {
+                                        detail_state.emit(d);
+                                    }
+                                });
+                            }
+                        })} />
                         <label class="field"><span class="muted">{"Setting / tone"}</span>
                             <textarea
                                 class="input"

@@ -4,6 +4,7 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
+use crate::game_presets_ui::GmTonePresetPicker;
 
 #[derive(Properties, PartialEq)]
 pub struct ScenariosPageProps {
@@ -412,10 +413,12 @@ fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
 }
 
 fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
-    let fields = [
+    let fields_before_tone = [
         ("title", "Title", false),
         ("opening_message", "Opening message", true),
         ("premise", "Premise / scenario", true),
+    ];
+    let fields_after_tone = [
         ("setting", "Setting / world", true),
         ("gm_style", "GM style", true),
         ("pc_name", "Default PC name", false),
@@ -423,7 +426,30 @@ fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     ];
     html! {
         <>
-            { for fields.iter().map(|(key, label, multiline)| {
+            { for fields_before_tone.iter().map(|(key, label, multiline)| {
+                let key = *key;
+                let draft = draft.clone();
+                html! {
+                    <label class="field">
+                        <span class="muted">{ *label }</span>
+                        if *multiline {
+                            <textarea value={scenario_draft_field(draft.clone(), key)} oninput={scenario_draft_oninput(draft, key)} />
+                        } else {
+                            <input type="text" value={scenario_draft_field(draft.clone(), key)} oninput={scenario_draft_oninput(draft, key)} />
+                        }
+                    </label>
+                }
+            }) }
+            <GmTonePresetPicker on_apply={Callback::from({
+                let draft = draft.clone();
+                move |(setting, gm_style)| {
+                    let mut next = (*draft).clone();
+                    next.setting = setting;
+                    next.gm_style = gm_style;
+                    draft.set(next);
+                }
+            })} />
+            { for fields_after_tone.iter().map(|(key, label, multiline)| {
                 let key = *key;
                 let draft = draft.clone();
                 html! {
