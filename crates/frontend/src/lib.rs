@@ -1677,6 +1677,19 @@ fn app() -> Html {
                             }
                         })}
                         on_start_chat={start_chat.clone()}
+                        on_create_scenario={Callback::from({
+                            let navigate = navigate.clone();
+                            move |scenario: Scenario| {
+                                navigate.emit((
+                                    AppRoute::Scenarios {
+                                        scenario_id: Some(scenario.id),
+                                        game_id: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            }
+                        })}
                         on_chat_created={Callback::from({
                             let chats = chats.clone();
                             let navigate = navigate.clone();
@@ -2108,6 +2121,7 @@ struct CharactersPageProps {
     on_back: Callback<()>,
     on_character_change: Callback<(i64, i64)>,
     on_start_chat: Callback<(i64, String)>,
+    on_create_scenario: Callback<Scenario>,
     on_chat_created: Callback<i64>,
     on_chats_changed: Callback<()>,
     on_characters_changed: Callback<()>,
@@ -2120,7 +2134,7 @@ fn characters_page(props: &CharactersPageProps) -> Html {
             <header class="header">
                 <button class="btn secondary" onclick={props.on_back.reform(|_| ())}>{"← Back"}</button>
                 <h1 class="header-title">{"Characters"}</h1>
-                <p class="header-subtitle muted">{"Create, edit, and import character cards for your chats."}</p>
+                <p class="header-subtitle muted">{"Create, edit, and import character cards for chats, scenarios, and games."}</p>
             </header>
             <div class="characters-page-body">
                 <CharacterPanel
@@ -2128,6 +2142,7 @@ fn characters_page(props: &CharactersPageProps) -> Html {
                     chat_id={props.chat_id}
                     on_character_change={props.on_character_change.clone()}
                     on_start_chat={props.on_start_chat.clone()}
+                    on_create_scenario={props.on_create_scenario.clone()}
                     on_chat_created={props.on_chat_created.clone()}
                     on_chats_changed={props.on_chats_changed.clone()}
                     on_characters_changed={props.on_characters_changed.clone()}
@@ -3154,6 +3169,7 @@ struct CharacterPanelProps {
     chat_id: Option<i64>,
     on_character_change: Callback<(i64, i64)>,
     on_start_chat: Callback<(i64, String)>,
+    on_create_scenario: Callback<Scenario>,
     on_chat_created: Callback<i64>,
     on_chats_changed: Callback<()>,
     on_characters_changed: Callback<()>,
@@ -3274,6 +3290,29 @@ fn character_panel(props: &CharacterPanelProps) -> Html {
                                     on_start_chat.emit((id, name.clone()));
                                 })
                             }}>{"Chat"}</button>
+                            <button class="btn secondary btn-compact" onclick={{
+                                let character = c.clone();
+                                let on_create_scenario = props.on_create_scenario.clone();
+                                Callback::from(move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    let character = character.clone();
+                                    let on_create_scenario = on_create_scenario.clone();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        let payload =
+                                            scenario_create_from_character_record(&character);
+                                        match api::create_scenario(&payload).await {
+                                            Ok(scenario) => on_create_scenario.emit(scenario),
+                                            Err(err) => {
+                                                if let Some(window) = web_sys::window() {
+                                                    let _ = window.alert_with_message(&format!(
+                                                        "Could not create scenario: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    });
+                                })
+                            }}>{"Scenario"}</button>
                             <button class="btn secondary btn-compact" onclick={{
                                 let characters = characters.clone();
                                 let draft = draft.clone();

@@ -1,4 +1,4 @@
-use crate::{default_game_traits, CharacterCreate, GameCreate, ScenarioCreate};
+use crate::{default_game_traits, Character, CharacterCreate, GameCreate, ScenarioCreate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameCharacterImportMode {
@@ -35,6 +35,21 @@ pub fn scenario_create_from_character(payload: CharacterCreate) -> ScenarioCreat
         traits: default_game_traits(),
         character_id: None,
     }
+}
+
+pub fn scenario_create_from_character_record(character: &Character) -> ScenarioCreate {
+    let mut create = scenario_create_from_character(CharacterCreate {
+        name: character.name.clone(),
+        description: character.description.clone(),
+        personality: character.personality.clone(),
+        scenario: character.scenario.clone(),
+        first_message: character.first_message.clone(),
+        example_dialogue: character.example_dialogue.clone(),
+        system_prompt: character.system_prompt.clone(),
+        avatar_url: character.avatar_url.clone(),
+    });
+    create.character_id = Some(character.id);
+    create
 }
 
 pub fn game_create_from_character(
@@ -107,6 +122,26 @@ mod tests {
         );
         assert!(scenario.setting.contains("cyberpunk"));
         assert!(scenario.gm_style.contains("tension high"));
+    }
+
+    #[test]
+    fn maps_saved_character_record_into_scenario() {
+        let character = Character {
+            id: 9,
+            name: "Neon District".into(),
+            description: "A rain-soaked cyberpunk sprawl.".into(),
+            personality: "Gritty.".into(),
+            scenario: "Sector 7.".into(),
+            first_message: "Steam rises.".into(),
+            example_dialogue: String::new(),
+            system_prompt: "Noir.".into(),
+            avatar_url: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let scenario = scenario_create_from_character_record(&character);
+        assert_eq!(scenario.character_id, Some(9));
+        assert_eq!(scenario.opening_message, "Steam rises.");
     }
 
     #[test]
