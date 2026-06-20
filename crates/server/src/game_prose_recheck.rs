@@ -6,19 +6,21 @@ use tokio::sync::mpsc;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
+use crate::game_prompts::scenario_context_block;
 use crate::game_resolution::tier_str;
 use crate::inference::chat_completion;
 
 const PROSE_RECHECK_OK: &str = "OK";
 
-const RECHECK_SYSTEM_PROMPT: &str = r#"You review game turn prose against scene beats and resolved roll tiers.
+const RECHECK_SYSTEM_PROMPT: &str = r#"You review game turn prose against scene beats, resolved roll tiers, and the defined scenario.
 
-Given the scene beats, roll outcomes, and current prose, decide whether the prose fully implements the beats and honors the roll tiers.
+Given the scene beats, roll outcomes, scenario parameters, and current prose, decide whether the prose fully implements the beats and honors the roll tiers.
 
 Rules:
 - Every scene beat must be represented in the prose
 - A fail tier cannot be narrated as unqualified success; mixed outcomes need visible cost
 - Prose must not introduce major events not listed in the scene beats
+- Match GM style and setting/tone — do not inject peril or adventure escalation absent from the beats or scenario
 - If the prose already matches, output exactly: OK
 - If prose misses beats, contradicts tiers, or adds unplanned plot, output corrected full prose
 - Match the established tone and second-person POV
@@ -67,13 +69,15 @@ fn format_scene_beats(beats: &[String]) -> String {
 }
 
 fn build_recheck_prompt(
+    game: &dreamwell_types::Game,
     scene_beats: &str,
     checks_text: &str,
     prose: &str,
     guidance: &str,
 ) -> Vec<serde_json::Value> {
     let mut user = format!(
-        "Scene beats:\n{scene_beats}\n\nRoll outcomes:\n{checks_text}\n\nCurrent turn prose:\n{prose}"
+        "Scenario parameters:\n{}\n\nScene beats:\n{scene_beats}\n\nRoll outcomes:\n{checks_text}\n\nCurrent turn prose:\n{prose}",
+        scenario_context_block(game, false)
     );
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the player:\n");
@@ -153,6 +157,7 @@ pub async fn run_turn_prose_recheck_job(
     let model =
         crate::game_turn::model_for_phase(&game, settings, crate::game_turn::GameModelPhase::Prose);
     let prompt = build_recheck_prompt(
+        &game,
         &format_scene_beats(&turn.scene_beats),
         &format_checks_for_recheck(&turn.checks),
         &turn.prose,
@@ -221,17 +226,42 @@ mod tests {
     }
 
     #[test]
-    fn recheck_prompt_includes_beats_tiers_and_prose() {
+    fn recheck_prompt_includes_beats_tiers_prose_and_scenario() {
+        let game = dreamwell_types::Game {
+            id: 1,
+            title: "Tea Shop".into(),
+            premise: "Quiet afternoon shift.".into(),
+            setting: "Cozy and low-stakes.".into(),
+            gm_style: "Gentle pacing.".into(),
+            opening_message: String::new(),
+            character_id: None,
+            scenario_id: None,
+            resolution_system: dreamwell_types::ResolutionSystem::Pbta2d6,
+            modifier_min: -2,
+            modifier_max: 3,
+            merge_resolve_scene: true,
+            step_mode: false,
+            model_checks: String::new(),
+            model_resolve: String::new(),
+            model_prose: String::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            active_job: None,
+            queued_jobs: 0,
+        };
         let prompt = build_recheck_prompt(
+            &game,
             "- The lock clicks.\n",
             "- Pick lock: mixed",
             "You hear the lock turn.",
-            "Keep tension high.",
+            "Stay cozy.",
         );
         let user = prompt[1]["content"].as_str().unwrap();
+        assert!(user.contains("Scenario parameters:"));
+        assert!(user.contains("Cozy and low-stakes"));
         assert!(user.contains("Scene beats:"));
         assert!(user.contains("Roll outcomes:"));
         assert!(user.contains("You hear the lock turn."));
-        assert!(user.contains("Keep tension high."));
+        assert!(user.contains("Stay cozy."));
     }
 }

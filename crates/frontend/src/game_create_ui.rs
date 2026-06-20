@@ -3,6 +3,7 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
+use crate::game_presets_ui::GmTonePresetPicker;
 
 #[derive(Properties, PartialEq)]
 pub struct GameCreateModalProps {
@@ -221,6 +222,15 @@ pub fn game_create_modal(props: &GameCreateModalProps) -> Html {
                         <span class="muted">{"Premise / scenario"}</span>
                         <textarea rows="3" value={draft.premise.clone()} oninput={draft_input(draft.clone(), DraftField::Premise)} />
                     </label>
+                    <GmTonePresetPicker on_apply={Callback::from({
+                        let draft = draft.clone();
+                        move |(setting, gm_style)| {
+                            let mut next = (*draft).clone();
+                            next.setting = setting;
+                            next.gm_style = gm_style;
+                            draft.set(next);
+                        }
+                    })} />
                     <label class="field">
                         <span class="muted">{"Setting / tone"}</span>
                         <textarea rows="3" value={draft.setting.clone()} oninput={draft_input(draft.clone(), DraftField::Setting)} />

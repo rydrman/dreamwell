@@ -2,11 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 mod game_import;
+mod game_presets;
 mod macros;
 
 pub use game_import::{
-    game_create_from_character, scenario_create_from_character, GameCharacterImportMode,
+    game_create_from_character, scenario_create_from_character,
+    scenario_create_from_character_record, GameCharacterImportMode,
 };
+pub use game_presets::{game_tone_preset_by_id, GameTonePreset, GAME_TONE_PRESETS};
 pub use macros::{substitute_macros, MacroContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
