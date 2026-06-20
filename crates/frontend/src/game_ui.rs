@@ -981,7 +981,7 @@ pub fn game_creation_modal(props: &GameCreationModalProps) -> Html {
         let error = error.clone();
         let on_created = props.on_created.clone();
         Callback::from(move |_| {
-            if (*draft).title.trim().is_empty() {
+            if draft.title.trim().is_empty() {
                 error.set(Some("Title is required.".to_string()));
                 return;
             }
