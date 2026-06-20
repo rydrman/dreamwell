@@ -1,0 +1,1 @@
+ALTER TABLE scenarios ADD COLUMN traits TEXT NOT NULL DEFAULT '{}';

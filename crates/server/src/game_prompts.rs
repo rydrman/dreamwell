@@ -8,7 +8,8 @@ const DECLARE_CHECKS_SYSTEM: &str = r#"You are a tabletop RPG rules assistant. G
 Rules:
 - Use 2d6 + modifier PbtA-style resolution
 - Propose skill, modifier, stakes, and justification for each check
-- Modifier is situational only (skill base is on the character sheet); keep modifiers modest
+- Modifier is situational only (trait base is on the character sheet); keep modifiers modest
+- Only propose checks using trait names listed on the PC sheet
 - Return empty checks array with no_check_reason for pure narrative actions
 - Output ONLY valid JSON matching the schema"#;
 
@@ -51,6 +52,18 @@ pub fn build_declare_checks_messages(
     );
     if let Some(pc) = pc {
         user.push_str(&format!("\n\nPC: {} — {}", pc.name, pc.description));
+        if !pc.skills.is_empty() {
+            let mut traits: Vec<_> = pc
+                .skills
+                .iter()
+                .map(|(name, value)| format!("{name} ({value:+})"))
+                .collect();
+            traits.sort();
+            user.push_str(&format!(
+                "\n\nAvailable traits for checks (use only these names): {}",
+                traits.join(", ")
+            ));
+        }
     }
     if !guidance.trim().is_empty() {
         user.push_str(&format!("\n\nGM guidance: {guidance}"));

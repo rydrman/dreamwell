@@ -1,4 +1,5 @@
 use dreamwell_types::*;
+use std::collections::HashMap;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -192,6 +193,7 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                 }) }
             </div>
             { scenario_fields(&draft) }
+            { scenario_traits_editor(&draft) }
             <button class="btn" style="margin-top:0.5rem;" onclick={{
                 let draft = draft.clone();
                 let editing_id = editing_id.clone();
@@ -237,7 +239,7 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
     }
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, PartialEq)]
 struct ScenarioDraft {
     title: String,
     premise: String,
@@ -245,6 +247,21 @@ struct ScenarioDraft {
     gm_style: String,
     pc_name: String,
     pc_description: String,
+    trait_rows: Vec<(String, i64)>,
+}
+
+impl Default for ScenarioDraft {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            premise: String::new(),
+            setting: String::new(),
+            gm_style: String::new(),
+            pc_name: String::new(),
+            pc_description: String::new(),
+            trait_rows: sorted_trait_rows(&default_game_traits()),
+        }
+    }
 }
 
 impl ScenarioDraft {
@@ -256,7 +273,20 @@ impl ScenarioDraft {
             gm_style: scenario.gm_style.clone(),
             pc_name: scenario.pc_name.clone(),
             pc_description: scenario.pc_description.clone(),
+            trait_rows: sorted_trait_rows(&scenario.traits),
         }
+    }
+
+    fn traits_map(&self) -> HashMap<String, i64> {
+        let mut traits = HashMap::new();
+        for (name, value) in &self.trait_rows {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            traits.insert(name.to_string(), *value);
+        }
+        traits
     }
 
     fn to_create(&self) -> ScenarioCreate {
@@ -267,6 +297,7 @@ impl ScenarioDraft {
             gm_style: self.gm_style.clone(),
             pc_name: self.pc_name.clone(),
             pc_description: self.pc_description.clone(),
+            traits: self.traits_map(),
             character_id: None,
         }
     }
@@ -279,8 +310,99 @@ impl ScenarioDraft {
             gm_style: Some(self.gm_style.clone()),
             pc_name: Some(self.pc_name.clone()),
             pc_description: Some(self.pc_description.clone()),
+            traits: Some(self.traits_map()),
             character_id: None,
         }
+    }
+}
+
+fn sorted_trait_rows(traits: &HashMap<String, i64>) -> Vec<(String, i64)> {
+    let mut rows: Vec<_> = traits.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    rows
+}
+
+fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
+    html! {
+        <div class="scenario-traits">
+            <div class="scenario-traits-header">
+                <span class="muted">{"Traits / roles"}</span>
+                <p class="muted scenario-traits-help">{"These names are used for dice checks when you play this scenario. Default sheet modifiers can be negative or positive."}</p>
+            </div>
+            <div class="scenario-traits-grid">
+                { for draft.trait_rows.iter().enumerate().map(|(index, (name, value))| {
+                    let name = name.clone();
+                    let value = *value;
+                    html! {
+                        <div class="scenario-trait-row" key={index}>
+                            <input
+                                type="text"
+                                class="input"
+                                placeholder="Trait name"
+                                value={name.clone()}
+                                oninput={{
+                                    let draft = draft.clone();
+                                    Callback::from(move |e: InputEvent| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let mut next = (*draft).clone();
+                                        if let Some(row) = next.trait_rows.get_mut(index) {
+                                            row.0 = input.value();
+                                        }
+                                        draft.set(next);
+                                    })
+                                }}
+                            />
+                            <input
+                                type="number"
+                                class="input input-compact scenario-trait-mod"
+                                value={value.to_string()}
+                                oninput={{
+                                    let draft = draft.clone();
+                                    Callback::from(move |e: InputEvent| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let parsed = input.value().parse::<i64>().unwrap_or(0);
+                                        let mut next = (*draft).clone();
+                                        if let Some(row) = next.trait_rows.get_mut(index) {
+                                            row.1 = parsed;
+                                        }
+                                        draft.set(next);
+                                    })
+                                }}
+                            />
+                            <button
+                                type="button"
+                                class="btn secondary btn-compact"
+                                onclick={{
+                                    let draft = draft.clone();
+                                    Callback::from(move |_| {
+                                        let mut next = (*draft).clone();
+                                        next.trait_rows.remove(index);
+                                        draft.set(next);
+                                    })
+                                }}
+                            >
+                                {"Remove"}
+                            </button>
+                        </div>
+                    }
+                }) }
+            </div>
+            <button
+                type="button"
+                class="btn secondary"
+                style="margin-top:0.5rem;"
+                onclick={{
+                    let draft = draft.clone();
+                    Callback::from(move |_| {
+                        let mut next = (*draft).clone();
+                        next.trait_rows.push((String::new(), 0));
+                        draft.set(next);
+                    })
+                }}
+            >
+                {"Add trait"}
+            </button>
+        </div>
     }
 }
 
@@ -377,5 +499,6 @@ pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCrea
         scenario_id: Some(scenario.id),
         pc_name: scenario.pc_name.clone(),
         pc_description: scenario.pc_description.clone(),
+        pc_traits: scenario.traits.clone(),
     }
 }

@@ -1,4 +1,4 @@
-use dreamwell_types::{CharacterCreate, ScenarioCreate};
+use dreamwell_types::{default_game_traits, CharacterCreate, ScenarioCreate};
 
 fn join_nonempty_sections(sections: &[(&str, &str)]) -> String {
     sections
@@ -26,6 +26,7 @@ pub fn scenario_create_from_character(payload: CharacterCreate) -> ScenarioCreat
         ]),
         pc_name: String::new(),
         pc_description: String::new(),
+        traits: default_game_traits(),
         character_id: None,
     }
 }

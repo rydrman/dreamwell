@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use dreamwell_types::{
-    AppliedStateChange, Game, GameActor, GameActorUpdate, GameCreate, GameDetail, GameScene,
-    GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck, GameUpdate, Job, JobType,
-    ResolutionSystem, StateKind, SubmitTurnRequest,
+    normalize_game_traits, AppliedStateChange, Game, GameActor, GameActorUpdate, GameCreate,
+    GameDetail, GameScene, GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck,
+    GameUpdate, Job, JobType, ResolutionSystem, StateKind, SubmitTurnRequest,
 };
 use sqlx::SqlitePool;
 
@@ -12,6 +12,11 @@ use crate::db::{get_job, job_type_str, parse_dt, JobRow};
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_SKILLS: &str = r#"{"Finesse":0,"Force":0,"Flair":0,"Focus":0,"Sway":0}"#;
+
+fn pc_traits_json(payload: &GameCreate) -> String {
+    let traits = normalize_game_traits(payload.pc_traits.clone());
+    serde_json::to_string(&traits).unwrap_or_else(|_| DEFAULT_SKILLS.to_string())
+}
 
 pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
     let rows = sqlx::query_as::<_, GameRow>(
@@ -118,7 +123,7 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
     .bind(id)
     .bind(&payload.pc_name)
     .bind(&payload.pc_description)
-    .bind(DEFAULT_SKILLS)
+    .bind(pc_traits_json(&payload))
     .bind(&actor_now)
     .execute(pool)
     .await?;

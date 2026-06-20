@@ -655,6 +655,46 @@ input.header-title {
   -webkit-overflow-scrolling: touch;
 }
 
+.scenario-traits {
+  margin-top: 1rem;
+}
+
+.scenario-traits-header {
+  margin-bottom: 0.5rem;
+}
+
+.scenario-traits-help {
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+}
+
+.scenario-traits-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.scenario-trait-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.scenario-trait-mod {
+  width: 4.5rem;
+}
+
+@media (max-width: 640px) {
+  .scenario-trait-row {
+    grid-template-columns: 1fr;
+  }
+
+  .scenario-trait-mod {
+    width: 100%;
+  }
+}
+
 .queue-list {
   display: flex;
   flex-direction: column;

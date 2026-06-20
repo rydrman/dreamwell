@@ -1,5 +1,5 @@
 use chrono::Utc;
-use dreamwell_types::{Scenario, ScenarioCreate, ScenarioUpdate};
+use dreamwell_types::{normalize_game_traits, Scenario, ScenarioCreate, ScenarioUpdate};
 use sqlx::SqlitePool;
 
 use crate::db::parse_dt;
@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 
 pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
     let rows = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, pc_name, pc_description, character_id, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -16,7 +16,7 @@ pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
 
 pub async fn get_scenario(pool: &SqlitePool, id: i64) -> AppResult<Scenario> {
     let row = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, pc_name, pc_description, character_id, created_at, updated_at FROM scenarios WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -27,8 +27,10 @@ pub async fn get_scenario(pool: &SqlitePool, id: i64) -> AppResult<Scenario> {
 
 pub async fn create_scenario(pool: &SqlitePool, payload: ScenarioCreate) -> AppResult<Scenario> {
     let now = Utc::now().to_rfc3339();
+    let traits_json = serde_json::to_string(&normalize_game_traits(payload.traits.clone()))
+        .unwrap_or_else(|_| "{}".to_string());
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO scenarios (title, premise, setting, gm_style, pc_name, pc_description, character_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8) RETURNING id",
+        "INSERT INTO scenarios (title, premise, setting, gm_style, pc_name, pc_description, traits, character_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
@@ -36,6 +38,7 @@ pub async fn create_scenario(pool: &SqlitePool, payload: ScenarioCreate) -> AppR
     .bind(&payload.gm_style)
     .bind(&payload.pc_name)
     .bind(&payload.pc_description)
+    .bind(&traits_json)
     .bind(payload.character_id)
     .bind(&now)
     .fetch_one(pool)
@@ -56,12 +59,17 @@ pub async fn update_scenario(
         gm_style: payload.gm_style.unwrap_or(existing.gm_style),
         pc_name: payload.pc_name.unwrap_or(existing.pc_name),
         pc_description: payload.pc_description.unwrap_or(existing.pc_description),
+        traits: payload
+            .traits
+            .map(normalize_game_traits)
+            .unwrap_or(existing.traits),
         character_id: payload.character_id.unwrap_or(existing.character_id),
         updated_at: Utc::now(),
         ..existing
     };
+    let traits_json = serde_json::to_string(&updated.traits).unwrap_or_else(|_| "{}".to_string());
     sqlx::query(
-        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, pc_name=?5, pc_description=?6, character_id=?7, updated_at=?8 WHERE id=?9",
+        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, pc_name=?5, pc_description=?6, traits=?7, character_id=?8, updated_at=?9 WHERE id=?10",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
@@ -69,6 +77,7 @@ pub async fn update_scenario(
     .bind(&updated.gm_style)
     .bind(&updated.pc_name)
     .bind(&updated.pc_description)
+    .bind(&traits_json)
     .bind(updated.character_id)
     .bind(updated.updated_at.to_rfc3339())
     .bind(id)
@@ -89,6 +98,7 @@ pub async fn delete_scenario(pool: &SqlitePool, id: i64) -> AppResult<()> {
 }
 
 fn scenario_from_row(row: ScenarioRow) -> AppResult<Scenario> {
+    let traits = serde_json::from_str(&row.traits).unwrap_or_default();
     Ok(Scenario {
         id: row.id,
         title: row.title,
@@ -97,6 +107,7 @@ fn scenario_from_row(row: ScenarioRow) -> AppResult<Scenario> {
         gm_style: row.gm_style,
         pc_name: row.pc_name,
         pc_description: row.pc_description,
+        traits: normalize_game_traits(traits),
         character_id: row.character_id,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
@@ -112,6 +123,7 @@ struct ScenarioRow {
     gm_style: String,
     pc_name: String,
     pc_description: String,
+    traits: String,
     character_id: Option<i64>,
     created_at: String,
     updated_at: String,
