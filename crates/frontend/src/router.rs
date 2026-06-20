@@ -6,7 +6,6 @@ use yew::prelude::*;
 pub enum Overlay {
     Variables,
     NewChat,
-    NewGame,
     State,
 }
 
@@ -51,6 +50,11 @@ pub enum AppRoute {
         chat_id: Option<i64>,
         sidebar: bool,
     },
+    Scenarios {
+        scenario_id: Option<i64>,
+        game_id: Option<i64>,
+        sidebar: bool,
+    },
 }
 
 impl Default for AppRoute {
@@ -72,6 +76,7 @@ impl AppRoute {
             Self::Queue { .. } => crate::queue_ui::AppMode::Queue,
             Self::Settings { .. } => crate::queue_ui::AppMode::Settings,
             Self::Characters { .. } => crate::queue_ui::AppMode::Characters,
+            Self::Scenarios { .. } => crate::queue_ui::AppMode::Scenarios,
         }
     }
 
@@ -79,7 +84,10 @@ impl AppRoute {
         match self {
             Self::Chats { overlay, .. } | Self::Stories { overlay, .. } => *overlay,
             Self::Games { overlay, .. } => *overlay,
-            Self::Queue { .. } | Self::Settings { .. } | Self::Characters { .. } => None,
+            Self::Queue { .. }
+            | Self::Settings { .. }
+            | Self::Characters { .. }
+            | Self::Scenarios { .. } => None,
         }
     }
 
@@ -122,6 +130,15 @@ impl AppRoute {
                 chat_id: *chat_id,
                 sidebar: *sidebar,
             },
+            Self::Scenarios {
+                scenario_id,
+                game_id,
+                sidebar,
+            } => Self::Scenarios {
+                scenario_id: *scenario_id,
+                game_id: *game_id,
+                sidebar: *sidebar,
+            },
         }
     }
 
@@ -152,7 +169,10 @@ impl AppRoute {
                 overlay: Some(overlay),
                 sidebar,
             },
-            Self::Queue { .. } | Self::Settings { .. } | Self::Characters { .. } => self,
+            Self::Queue { .. }
+            | Self::Settings { .. }
+            | Self::Characters { .. }
+            | Self::Scenarios { .. } => self,
         }
     }
 
@@ -192,6 +212,15 @@ impl AppRoute {
             } => Self::Characters {
                 character_id,
                 chat_id,
+                sidebar,
+            },
+            Self::Scenarios {
+                scenario_id,
+                game_id,
+                ..
+            } => Self::Scenarios {
+                scenario_id,
+                game_id,
                 sidebar,
             },
         }
@@ -319,19 +348,9 @@ impl AppRoute {
             } => "/games".to_string(),
             Self::Games {
                 game_id: None,
-                overlay: Some(Overlay::NewGame),
-                sidebar: false,
-            } => "/games/new".to_string(),
-            Self::Games {
-                game_id: None,
                 overlay: None,
                 sidebar: true,
             } => "/games/sidebar".to_string(),
-            Self::Games {
-                game_id: None,
-                overlay: Some(Overlay::NewGame),
-                sidebar: true,
-            } => "/games/new/sidebar".to_string(),
             Self::Games {
                 game_id: Some(id),
                 overlay: None,
@@ -396,6 +415,46 @@ impl AppRoute {
                 chat_id: Some(chat_id),
                 sidebar: true,
             } => format!("/characters/{id}/chat/{chat_id}/sidebar"),
+            Self::Scenarios {
+                scenario_id: None,
+                game_id: None,
+                sidebar: false,
+            } => "/scenarios".to_string(),
+            Self::Scenarios {
+                scenario_id: None,
+                game_id: None,
+                sidebar: true,
+            } => "/scenarios/sidebar".to_string(),
+            Self::Scenarios {
+                scenario_id: Some(id),
+                game_id: None,
+                sidebar: false,
+            } => format!("/scenarios/{id}"),
+            Self::Scenarios {
+                scenario_id: Some(id),
+                game_id: None,
+                sidebar: true,
+            } => format!("/scenarios/{id}/sidebar"),
+            Self::Scenarios {
+                scenario_id: None,
+                game_id: Some(game_id),
+                sidebar: false,
+            } => format!("/scenarios/game/{game_id}"),
+            Self::Scenarios {
+                scenario_id: None,
+                game_id: Some(game_id),
+                sidebar: true,
+            } => format!("/scenarios/game/{game_id}/sidebar"),
+            Self::Scenarios {
+                scenario_id: Some(id),
+                game_id: Some(game_id),
+                sidebar: false,
+            } => format!("/scenarios/{id}/game/{game_id}"),
+            Self::Scenarios {
+                scenario_id: Some(id),
+                game_id: Some(game_id),
+                sidebar: true,
+            } => format!("/scenarios/{id}/game/{game_id}/sidebar"),
             Self::Stories {
                 story_id: None,
                 nav: StoryNav::Chapter(_) | StoryNav::Beat { .. },
@@ -450,8 +509,16 @@ impl AppRoute {
 fn overlay_segment(overlay: Overlay) -> &'static str {
     match overlay {
         Overlay::Variables => "variables",
-        Overlay::NewChat | Overlay::NewGame => "new",
+        Overlay::NewChat => "new",
         Overlay::State => "state",
+    }
+}
+
+fn scenarios_route(scenario_id: Option<i64>, game_id: Option<i64>, sidebar: bool) -> AppRoute {
+    AppRoute::Scenarios {
+        scenario_id,
+        game_id,
+        sidebar,
     }
 }
 
@@ -499,6 +566,7 @@ pub fn parse_path(path: &str) -> AppRoute {
         },
         Some("queue") => parse_queue(&segments[1..]),
         Some("characters") => parse_characters(&segments[1..]),
+        Some("scenarios") => parse_scenarios(&segments[1..]),
         Some("stories") => parse_stories(&segments[1..]),
         Some("games") => parse_games(&segments[1..]),
         Some("chats") | None => parse_chats(segments.get(1..).unwrap_or(&[])),
@@ -516,6 +584,21 @@ fn parse_overlay(value: &str) -> Option<Overlay> {
         "new" => Some(Overlay::NewChat),
         "state" => Some(Overlay::State),
         _ => None,
+    }
+}
+
+fn parse_scenarios(segments: &[&str]) -> AppRoute {
+    let (segments, sidebar) = strip_sidebar_suffix(segments);
+    match segments {
+        [] => scenarios_route(None, None, sidebar),
+        [id] if parse_id(id).is_some() => scenarios_route(parse_id(id), None, sidebar),
+        ["game", game_id] if parse_id(game_id).is_some() => {
+            scenarios_route(None, parse_id(game_id), sidebar)
+        }
+        [id, "game", game_id] if parse_id(id).is_some() && parse_id(game_id).is_some() => {
+            scenarios_route(parse_id(id), parse_id(game_id), sidebar)
+        }
+        _ => scenarios_route(None, None, sidebar),
     }
 }
 
@@ -611,16 +694,17 @@ fn parse_games(segments: &[&str]) -> AppRoute {
             overlay: None,
             sidebar,
         },
-        ["new"] => AppRoute::Games {
-            game_id: None,
-            overlay: Some(Overlay::NewGame),
-            sidebar,
-        },
+        ["scenario"] => scenarios_route(None, None, false),
+        ["scenario", "sidebar"] => scenarios_route(None, None, true),
         [id] if parse_id(id).is_some() => AppRoute::Games {
             game_id: parse_id(id),
             overlay: None,
             sidebar,
         },
+        [id, "scenario"] if parse_id(id).is_some() => scenarios_route(None, parse_id(id), false),
+        [id, "scenario", "sidebar"] if parse_id(id).is_some() => {
+            scenarios_route(None, parse_id(id), true)
+        }
         [id, overlay] if parse_id(id).is_some() && parse_game_overlay(overlay).is_some() => {
             AppRoute::Games {
                 game_id: parse_id(id),
@@ -639,7 +723,6 @@ fn parse_games(segments: &[&str]) -> AppRoute {
 fn parse_game_overlay(value: &str) -> Option<Overlay> {
     match value {
         "variables" => Some(Overlay::Variables),
-        "new" => Some(Overlay::NewGame),
         "state" => Some(Overlay::State),
         _ => None,
     }
@@ -1072,17 +1155,7 @@ mod tests {
             },
             AppRoute::Games {
                 game_id: None,
-                overlay: Some(Overlay::NewGame),
-                sidebar: false,
-            },
-            AppRoute::Games {
-                game_id: None,
                 overlay: None,
-                sidebar: true,
-            },
-            AppRoute::Games {
-                game_id: None,
-                overlay: Some(Overlay::NewGame),
                 sidebar: true,
             },
             AppRoute::Games {
@@ -1103,6 +1176,36 @@ mod tests {
             AppRoute::Games {
                 game_id: Some(7),
                 overlay: Some(Overlay::State),
+                sidebar: true,
+            },
+        ];
+        for route in routes {
+            let path = route.to_path();
+            assert_eq!(parse_path(&path), route, "path: {path}");
+        }
+    }
+
+    #[test]
+    fn round_trip_scenarios() {
+        let routes = [
+            AppRoute::Scenarios {
+                scenario_id: None,
+                game_id: None,
+                sidebar: false,
+            },
+            AppRoute::Scenarios {
+                scenario_id: Some(4),
+                game_id: None,
+                sidebar: false,
+            },
+            AppRoute::Scenarios {
+                scenario_id: None,
+                game_id: Some(9),
+                sidebar: true,
+            },
+            AppRoute::Scenarios {
+                scenario_id: Some(4),
+                game_id: Some(9),
                 sidebar: true,
             },
         ];

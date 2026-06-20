@@ -15,6 +15,8 @@ mod message_followups;
 mod prompts;
 mod queue;
 mod routes;
+mod scenario_db;
+mod scenario_import;
 mod story_beat_mechanical;
 mod story_beat_prose_recheck;
 mod story_prompts;
@@ -90,6 +92,7 @@ async fn main() {
         .nest("/jobs", routes::jobs::router())
         .nest("/stories", routes::stories::router())
         .nest("/games", routes::games::router())
+        .nest("/scenarios", routes::scenarios::router())
         .nest("/settings", routes::settings::router());
 
     if std::env::var("DREAMWELL_E2E").is_ok_and(|v| v == "1") {

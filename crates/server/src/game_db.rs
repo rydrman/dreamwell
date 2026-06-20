@@ -15,7 +15,7 @@ const DEFAULT_SKILLS: &str = r#"{"Finesse":0,"Force":0,"Flair":0,"Focus":0,"Sway
 
 pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
     let rows = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, character_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -28,7 +28,7 @@ pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
 
 pub async fn get_game(pool: &SqlitePool, id: i64) -> AppResult<Game> {
     let row = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, character_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -67,6 +67,7 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
         setting: row.setting,
         gm_style: row.gm_style,
         character_id: row.character_id,
+        scenario_id: row.scenario_id,
         resolution_system: parse_resolution_system(&row.resolution_system),
         modifier_min: row.modifier_min,
         modifier_max: row.modifier_max,
@@ -98,13 +99,14 @@ fn resolution_system_str(system: ResolutionSystem) -> &'static str {
 pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<GameDetail> {
     let now = Utc::now().to_rfc3339();
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO games (title, premise, setting, gm_style, character_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6) RETURNING id",
+        "INSERT INTO games (title, premise, setting, gm_style, character_id, scenario_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
     .bind(&payload.setting)
     .bind(&payload.gm_style)
     .bind(payload.character_id)
+    .bind(payload.scenario_id)
     .bind(&now)
     .fetch_one(pool)
     .await?;
@@ -788,6 +790,7 @@ struct GameRow {
     setting: String,
     gm_style: String,
     character_id: Option<i64>,
+    scenario_id: Option<i64>,
     resolution_system: String,
     modifier_min: i64,
     modifier_max: i64,

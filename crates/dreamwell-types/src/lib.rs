@@ -630,6 +630,60 @@ pub enum StateOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Scenario {
+    pub id: i64,
+    pub title: String,
+    pub premise: String,
+    pub setting: String,
+    pub gm_style: String,
+    pub pc_name: String,
+    pub pc_description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_id: Option<i64>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioCreate {
+    #[serde(default = "default_scenario_title")]
+    pub title: String,
+    #[serde(default)]
+    pub premise: String,
+    #[serde(default)]
+    pub setting: String,
+    #[serde(default)]
+    pub gm_style: String,
+    #[serde(default)]
+    pub pc_name: String,
+    #[serde(default)]
+    pub pc_description: String,
+    #[serde(default)]
+    pub character_id: Option<i64>,
+}
+
+fn default_scenario_title() -> String {
+    "Untitled Scenario".to_string()
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioUpdate {
+    pub title: Option<String>,
+    pub premise: Option<String>,
+    pub setting: Option<String>,
+    pub gm_style: Option<String>,
+    pub pc_name: Option<String>,
+    pub pc_description: Option<String>,
+    pub character_id: Option<Option<i64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportScenarioResponse {
+    pub scenario: Scenario,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Game {
     pub id: i64,
     pub title: String,
@@ -638,6 +692,8 @@ pub struct Game {
     pub gm_style: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_id: Option<i64>,
     pub resolution_system: ResolutionSystem,
     pub modifier_min: i64,
     pub modifier_max: i64,
@@ -768,6 +824,8 @@ pub struct GameCreate {
     pub gm_style: String,
     #[serde(default)]
     pub character_id: Option<i64>,
+    #[serde(default)]
+    pub scenario_id: Option<i64>,
     #[serde(default)]
     pub pc_name: String,
     #[serde(default)]

@@ -629,11 +629,13 @@ input.header-title {
   gap: 0.25rem;
 }
 
+.scenarios-page .header,
 .characters-page .header {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 0.25rem;
+  margin-bottom: 0.75rem;
 }
 
 .settings-page-body {
@@ -644,7 +646,8 @@ input.header-title {
   -webkit-overflow-scrolling: touch;
 }
 
-.characters-page-body {
+.characters-page-body,
+.scenarios-page-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;

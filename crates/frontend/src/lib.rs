@@ -14,6 +14,7 @@ mod notifications;
 mod queue_ui;
 mod resume_policy;
 mod router;
+mod scenario_ui;
 mod sidebar;
 mod sse_client;
 mod stories_ui;
@@ -36,7 +37,7 @@ use wasm_bindgen::JsCast;
 
 use chat_sync::{messages_stale_vs_chat, should_apply_messages_from_sse};
 use dreamwell_types::*;
-use game_ui::{GameCreationModal, GameShell};
+use game_ui::GameShell;
 use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
 };
@@ -46,6 +47,7 @@ use item_list::ChatList;
 use message_menu::MessageOptionsMenu;
 use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
+use scenario_ui::{default_game_title, game_create_from_scenario, ScenariosPage};
 use sidebar::AppSidebar;
 use stories_ui::StoriesShell;
 use story_save::{AutoSaveField, AutoSavePhase};
@@ -120,6 +122,7 @@ fn update_mobile_sidebar_inset(
         | AppMode::Queue
         | AppMode::Settings
         | AppMode::Characters
+        | AppMode::Scenarios
             if scroll_y > 0.0 =>
         {
             header_height
@@ -128,7 +131,8 @@ fn update_mobile_sidebar_inset(
         | AppMode::Game
         | AppMode::Queue
         | AppMode::Settings
-        | AppMode::Characters => topbar_height + header_height,
+        | AppMode::Characters
+        | AppMode::Scenarios => topbar_height + header_height,
     };
 
     set_app_layout_var(layout, "--sidebar-inset-top", &format!("{inset}px"));
@@ -176,6 +180,17 @@ fn game_id_from_route(route: &AppRoute) -> Option<i64> {
     }
 }
 
+fn scenarios_route_context(route: &AppRoute) -> (Option<i64>, Option<i64>) {
+    match route {
+        AppRoute::Scenarios {
+            scenario_id,
+            game_id,
+            ..
+        } => (*scenario_id, *game_id),
+        _ => (None, None),
+    }
+}
+
 fn characters_route_context(route: &AppRoute) -> (Option<i64>, Option<i64>) {
     match route {
         AppRoute::Characters {
@@ -213,6 +228,7 @@ fn sidebar_open_from_route(route: &AppRoute) -> bool {
             | AppRoute::Queue { sidebar: true }
             | AppRoute::Settings { sidebar: true }
             | AppRoute::Characters { sidebar: true, .. }
+            | AppRoute::Scenarios { sidebar: true, .. }
     )
 }
 
@@ -954,6 +970,34 @@ fn app() -> Html {
         })
     };
 
+    let open_scenarios = {
+        let navigate = navigate.clone();
+        Callback::from(move |_| {
+            navigate.emit((
+                AppRoute::Scenarios {
+                    scenario_id: None,
+                    game_id: None,
+                    sidebar: false,
+                },
+                true,
+            ))
+        })
+    };
+
+    let _open_scenarios_for_game = {
+        let navigate = navigate.clone();
+        Callback::from(move |(game_id, scenario_id): (i64, Option<i64>)| {
+            navigate.emit((
+                AppRoute::Scenarios {
+                    scenario_id,
+                    game_id: Some(game_id),
+                    sidebar: false,
+                },
+                true,
+            ))
+        })
+    };
+
     let toggle_sidebar = {
         let navigate = navigate.clone();
         let route = route.clone();
@@ -1019,6 +1063,11 @@ fn app() -> Html {
                     chat_id: None,
                     sidebar: false,
                 },
+                AppMode::Scenarios => AppRoute::Scenarios {
+                    scenario_id: None,
+                    game_id: None,
+                    sidebar: false,
+                },
             };
             navigate.emit((next, true));
         })
@@ -1053,6 +1102,40 @@ fn app() -> Html {
                         if let Some(window) = web_sys::window() {
                             let _ =
                                 window.alert_with_message(&format!("Could not create chat: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    let start_game = {
+        let games = games.clone();
+        let navigate = navigate.clone();
+        Callback::from(move |scenario: Scenario| {
+            let title = default_game_title(&scenario.title, scenario.id, &games);
+            let payload = game_create_from_scenario(&scenario, title);
+            let games = games.clone();
+            let navigate = navigate.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::create_game(&payload).await {
+                    Ok(detail) => {
+                        if let Ok(list) = api::list_games().await {
+                            games.set(list);
+                        }
+                        navigate.emit((
+                            AppRoute::Games {
+                                game_id: Some(detail.game.id),
+                                overlay: None,
+                                sidebar: false,
+                            },
+                            true,
+                        ));
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ =
+                                window.alert_with_message(&format!("Could not start game: {err}"));
                         }
                     }
                 }
@@ -1173,7 +1256,11 @@ fn app() -> Html {
     let sidebar_open = sidebar_open_from_route(&route);
     let overlay = route.overlay();
     let picker_open = overlay == Some(Overlay::NewChat);
-    let game_create_open = overlay == Some(Overlay::NewGame);
+
+    let (characters_character_id, characters_chat_id) = characters_route_context(&route);
+    let (scenarios_scenario_id, scenarios_game_id) = scenarios_route_context(&route);
+    let selected_character_id =
+        resolve_characters_selected_id(characters_character_id, characters_chat_id, &chats);
 
     let bump_stream = {
         let refresh_generation = refresh_generation.clone();
@@ -1187,10 +1274,6 @@ fn app() -> Html {
             navigate.emit((route.clone().with_overlay(overlay), true));
         })
     };
-
-    let (characters_character_id, characters_chat_id) = characters_route_context(&route);
-    let selected_character_id =
-        resolve_characters_selected_id(characters_character_id, characters_chat_id, &chats);
 
     html! {
         <div
@@ -1210,6 +1293,7 @@ fn app() -> Html {
                 on_open_settings={open_settings.clone()}
                 on_open_queue={open_queue.clone()}
                 on_open_characters={open_characters.clone()}
+                on_open_scenarios={open_scenarios.clone()}
             />
             if picker_open {
                 <CharacterPickerModal
@@ -1219,45 +1303,6 @@ fn app() -> Html {
                         let start_chat = start_chat.clone();
                         move |character: Character| {
                             start_chat.emit((character.id, character.name.clone()));
-                        }
-                    })}
-                />
-            }
-            if game_create_open {
-                <GameCreationModal
-                    characters={(*characters).clone()}
-                    default_title={format!("Game {}", games.len() + 1)}
-                    on_close={close_overlay.clone()}
-                    on_characters_changed={Callback::from({
-                        let characters = characters.clone();
-                        move |_| {
-                            let characters = characters.clone();
-                            wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(list) = api::list_characters().await {
-                                    characters.set(list);
-                                }
-                            });
-                        }
-                    })}
-                    on_created={Callback::from({
-                        let games = games.clone();
-                        let navigate = navigate.clone();
-                        move |detail: GameDetail| {
-                            let games = games.clone();
-                            let navigate = navigate.clone();
-                            wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(list) = api::list_games().await {
-                                    games.set(list);
-                                }
-                                navigate.emit((
-                                    AppRoute::Games {
-                                        game_id: Some(detail.game.id),
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            });
                         }
                     })}
                 />
@@ -1472,21 +1517,7 @@ fn app() -> Html {
                         ));
                     }
                 })}
-                on_new_game={Callback::from({
-                    let navigate = navigate.clone();
-                    let route = route.clone();
-                    move |_| {
-                        let sidebar = sidebar_open_from_route(&route);
-                        navigate.emit((
-                            AppRoute::Games {
-                                game_id: None,
-                                overlay: Some(Overlay::NewGame),
-                                sidebar,
-                            },
-                            true,
-                        ));
-                    }
-                })}
+                on_open_scenarios={open_scenarios.clone()}
                 on_delete_game={Callback::from({
                     let games = games.clone();
                     let navigate = navigate.clone();
@@ -1642,6 +1673,18 @@ fn app() -> Html {
                                 });
                             }
                         })}
+                    />
+                } else if mode == AppMode::Scenarios {
+                    <ScenariosPage
+                        selected_scenario_id={scenarios_scenario_id}
+                        game_id={scenarios_game_id}
+                        on_back={Callback::from({
+                            let router = router.clone();
+                            move |_| router.back()
+                        })}
+                        on_scenario_change={Callback::from(|_| ())}
+                        on_start_game={start_game.clone()}
+                        on_scenarios_changed={Callback::from(|_| ())}
                     />
                 } else if mode == AppMode::Stories {
                     <StoriesShell
@@ -1936,6 +1979,7 @@ struct ModeBarProps {
     on_open_settings: Callback<()>,
     on_open_queue: Callback<()>,
     on_open_characters: Callback<()>,
+    on_open_scenarios: Callback<()>,
 }
 
 #[function_component(ModeBar)]
@@ -1977,6 +2021,15 @@ fn mode_bar(props: &ModeBarProps) -> Html {
                     onclick={props.on_open_characters.reform(|_| ())}
                 >
                     <span class="mode-btn-icon-glyph">{"🎭"}</span>
+                </button>
+                <button
+                    type="button"
+                    class={classes!("mode-btn", "mode-btn-icon", (props.mode == AppMode::Scenarios).then_some("active"))}
+                    title="Scenarios"
+                    aria-label="Scenarios"
+                    onclick={props.on_open_scenarios.reform(|_| ())}
+                >
+                    <span class="mode-btn-icon-glyph">{"🗺"}</span>
                 </button>
                 <button
                     type="button"
