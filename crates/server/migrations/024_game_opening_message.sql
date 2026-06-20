@@ -1,0 +1,2 @@
+ALTER TABLE games ADD COLUMN opening_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE scenarios ADD COLUMN opening_message TEXT NOT NULL DEFAULT '';

@@ -245,6 +245,7 @@ struct ScenarioDraft {
     premise: String,
     setting: String,
     gm_style: String,
+    opening_message: String,
     pc_name: String,
     pc_description: String,
     trait_rows: Vec<(String, i64)>,
@@ -257,6 +258,7 @@ impl Default for ScenarioDraft {
             premise: String::new(),
             setting: String::new(),
             gm_style: String::new(),
+            opening_message: String::new(),
             pc_name: String::new(),
             pc_description: String::new(),
             trait_rows: sorted_trait_rows(&default_game_traits()),
@@ -271,6 +273,7 @@ impl ScenarioDraft {
             premise: scenario.premise.clone(),
             setting: scenario.setting.clone(),
             gm_style: scenario.gm_style.clone(),
+            opening_message: scenario.opening_message.clone(),
             pc_name: scenario.pc_name.clone(),
             pc_description: scenario.pc_description.clone(),
             trait_rows: sorted_trait_rows(&scenario.traits),
@@ -295,6 +298,7 @@ impl ScenarioDraft {
             premise: self.premise.clone(),
             setting: self.setting.clone(),
             gm_style: self.gm_style.clone(),
+            opening_message: self.opening_message.clone(),
             pc_name: self.pc_name.clone(),
             pc_description: self.pc_description.clone(),
             traits: self.traits_map(),
@@ -308,6 +312,7 @@ impl ScenarioDraft {
             premise: Some(self.premise.clone()),
             setting: Some(self.setting.clone()),
             gm_style: Some(self.gm_style.clone()),
+            opening_message: Some(self.opening_message.clone()),
             pc_name: Some(self.pc_name.clone()),
             pc_description: Some(self.pc_description.clone()),
             traits: Some(self.traits_map()),
@@ -409,6 +414,7 @@ fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
 fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     let fields = [
         ("title", "Title", false),
+        ("opening_message", "Opening message", true),
         ("premise", "Premise / scenario", true),
         ("setting", "Setting / world", true),
         ("gm_style", "GM style", true),
@@ -438,6 +444,7 @@ fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
 fn scenario_draft_field(draft: UseStateHandle<ScenarioDraft>, key: &str) -> String {
     match key {
         "title" => draft.title.clone(),
+        "opening_message" => draft.opening_message.clone(),
         "premise" => draft.premise.clone(),
         "setting" => draft.setting.clone(),
         "gm_style" => draft.gm_style.clone(),
@@ -455,6 +462,7 @@ fn scenario_draft_oninput(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Ca
         let mut next = (*draft).clone();
         match key.as_str() {
             "title" => next.title = value,
+            "opening_message" => next.opening_message = value,
             "premise" => next.premise = value,
             "setting" => next.setting = value,
             "gm_style" => next.gm_style = value,
@@ -495,6 +503,7 @@ pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCrea
         premise: scenario.premise.clone(),
         setting: scenario.setting.clone(),
         gm_style: scenario.gm_style.clone(),
+        opening_message: scenario.opening_message.clone(),
         character_id: scenario.character_id,
         scenario_id: Some(scenario.id),
         pc_name: scenario.pc_name.clone(),

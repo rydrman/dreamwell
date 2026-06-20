@@ -1,8 +1,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+mod game_import;
 mod macros;
 
+pub use game_import::{
+    game_create_from_character, scenario_create_from_character, GameCharacterImportMode,
+};
 pub use macros::{substitute_macros, MacroContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -636,6 +640,8 @@ pub struct Scenario {
     pub premise: String,
     pub setting: String,
     pub gm_style: String,
+    #[serde(default)]
+    pub opening_message: String,
     pub pc_name: String,
     pub pc_description: String,
     #[serde(default)]
@@ -656,6 +662,8 @@ pub struct ScenarioCreate {
     pub setting: String,
     #[serde(default)]
     pub gm_style: String,
+    #[serde(default)]
+    pub opening_message: String,
     #[serde(default)]
     pub pc_name: String,
     #[serde(default)]
@@ -699,6 +707,7 @@ pub struct ScenarioUpdate {
     pub premise: Option<String>,
     pub setting: Option<String>,
     pub gm_style: Option<String>,
+    pub opening_message: Option<String>,
     pub pc_name: Option<String>,
     pub pc_description: Option<String>,
     pub traits: Option<std::collections::HashMap<String, i64>>,
@@ -712,12 +721,20 @@ pub struct ImportScenarioResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportGameDraftResponse {
+    pub draft: GameCreate,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Game {
     pub id: i64,
     pub title: String,
     pub premise: String,
     pub setting: String,
     pub gm_style: String,
+    #[serde(default)]
+    pub opening_message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character_id: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -851,6 +868,8 @@ pub struct GameCreate {
     #[serde(default)]
     pub gm_style: String,
     #[serde(default)]
+    pub opening_message: String,
+    #[serde(default)]
     pub character_id: Option<i64>,
     #[serde(default)]
     pub scenario_id: Option<i64>,
@@ -872,6 +891,7 @@ pub struct GameUpdate {
     pub premise: Option<String>,
     pub setting: Option<String>,
     pub gm_style: Option<String>,
+    pub opening_message: Option<String>,
     pub modifier_min: Option<i64>,
     pub modifier_max: Option<i64>,
     pub merge_resolve_scene: Option<bool>,

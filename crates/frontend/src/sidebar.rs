@@ -24,6 +24,7 @@ pub struct AppSidebarProps {
     pub on_new_story: Callback<()>,
     pub on_open_characters: Callback<()>,
     pub on_open_scenarios: Callback<()>,
+    pub on_new_game: Callback<()>,
     pub on_delete_story: Callback<i64>,
     pub on_select_game: Callback<i64>,
     pub on_delete_game: Callback<i64>,
@@ -66,7 +67,8 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                     <button class="btn" onclick={props.on_new_story.reform(|_| ())}>{"New story"}</button>
                 } else if props.mode == AppMode::Game {
                     <>
-                        <button class="btn" onclick={props.on_open_scenarios.reform(|_| ())}>{"Scenarios"}</button>
+                        <button class="btn" onclick={props.on_new_game.reform(|_| ())}>{"New game"}</button>
+                        <button class="btn secondary" onclick={props.on_open_scenarios.reform(|_| ())}>{"Scenarios"}</button>
                     </>
                 }
             </div>

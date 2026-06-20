@@ -6,6 +6,7 @@ use yew::prelude::*;
 pub enum Overlay {
     Variables,
     NewChat,
+    NewGame,
     State,
 }
 
@@ -348,6 +349,16 @@ impl AppRoute {
             } => "/games".to_string(),
             Self::Games {
                 game_id: None,
+                overlay: Some(Overlay::NewGame),
+                sidebar: false,
+            } => "/games/new".to_string(),
+            Self::Games {
+                game_id: None,
+                overlay: Some(Overlay::NewGame),
+                sidebar: true,
+            } => "/games/new/sidebar".to_string(),
+            Self::Games {
+                game_id: None,
                 overlay: None,
                 sidebar: true,
             } => "/games/sidebar".to_string(),
@@ -510,6 +521,7 @@ fn overlay_segment(overlay: Overlay) -> &'static str {
     match overlay {
         Overlay::Variables => "variables",
         Overlay::NewChat => "new",
+        Overlay::NewGame => "new",
         Overlay::State => "state",
     }
 }
@@ -696,6 +708,11 @@ fn parse_games(segments: &[&str]) -> AppRoute {
         },
         ["scenario"] => scenarios_route(None, None, false),
         ["scenario", "sidebar"] => scenarios_route(None, None, true),
+        ["new"] => AppRoute::Games {
+            game_id: None,
+            overlay: Some(Overlay::NewGame),
+            sidebar,
+        },
         [id] if parse_id(id).is_some() => AppRoute::Games {
             game_id: parse_id(id),
             overlay: None,
@@ -1157,6 +1174,11 @@ mod tests {
                 game_id: None,
                 overlay: None,
                 sidebar: true,
+            },
+            AppRoute::Games {
+                game_id: None,
+                overlay: Some(Overlay::NewGame),
+                sidebar: false,
             },
             AppRoute::Games {
                 game_id: Some(7),
