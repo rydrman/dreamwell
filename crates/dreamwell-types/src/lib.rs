@@ -636,6 +636,8 @@ pub struct Game {
     pub premise: String,
     pub setting: String,
     pub gm_style: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_id: Option<i64>,
     pub resolution_system: ResolutionSystem,
     pub modifier_min: i64,
     pub modifier_max: i64,
@@ -764,6 +766,12 @@ pub struct GameCreate {
     pub setting: String,
     #[serde(default)]
     pub gm_style: String,
+    #[serde(default)]
+    pub character_id: Option<i64>,
+    #[serde(default)]
+    pub pc_name: String,
+    #[serde(default)]
+    pub pc_description: String,
 }
 
 fn default_game_title() -> String {

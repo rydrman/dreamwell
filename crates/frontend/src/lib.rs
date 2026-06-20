@@ -36,7 +36,7 @@ use wasm_bindgen::JsCast;
 
 use chat_sync::{messages_stale_vs_chat, should_apply_messages_from_sse};
 use dreamwell_types::*;
-use game_ui::GameShell;
+use game_ui::{GameCreationModal, GameShell};
 use generation_ui::{
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
 };
@@ -1173,6 +1173,7 @@ fn app() -> Html {
     let sidebar_open = sidebar_open_from_route(&route);
     let overlay = route.overlay();
     let picker_open = overlay == Some(Overlay::NewChat);
+    let game_create_open = overlay == Some(Overlay::NewGame);
 
     let bump_stream = {
         let refresh_generation = refresh_generation.clone();
@@ -1218,6 +1219,45 @@ fn app() -> Html {
                         let start_chat = start_chat.clone();
                         move |character: Character| {
                             start_chat.emit((character.id, character.name.clone()));
+                        }
+                    })}
+                />
+            }
+            if game_create_open {
+                <GameCreationModal
+                    characters={(*characters).clone()}
+                    default_title={format!("Game {}", games.len() + 1)}
+                    on_close={close_overlay.clone()}
+                    on_characters_changed={Callback::from({
+                        let characters = characters.clone();
+                        move |_| {
+                            let characters = characters.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(list) = api::list_characters().await {
+                                    characters.set(list);
+                                }
+                            });
+                        }
+                    })}
+                    on_created={Callback::from({
+                        let games = games.clone();
+                        let navigate = navigate.clone();
+                        move |detail: GameDetail| {
+                            let games = games.clone();
+                            let navigate = navigate.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(list) = api::list_games().await {
+                                    games.set(list);
+                                }
+                                navigate.emit((
+                                    AppRoute::Games {
+                                        game_id: Some(detail.game.id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            });
                         }
                     })}
                 />
@@ -1433,30 +1473,18 @@ fn app() -> Html {
                     }
                 })}
                 on_new_game={Callback::from({
-                    let games = games.clone();
                     let navigate = navigate.clone();
+                    let route = route.clone();
                     move |_| {
-                        let games = games.clone();
-                        let navigate = navigate.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let payload = GameCreate {
-                                title: format!("Game {}", games.len() + 1),
-                                ..Default::default()
-                            };
-                            if let Ok(d) = api::create_game(&payload).await {
-                                if let Ok(list) = api::list_games().await {
-                                    games.set(list);
-                                }
-                                navigate.emit((
-                                    AppRoute::Games {
-                                        game_id: Some(d.game.id),
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            }
-                        });
+                        let sidebar = sidebar_open_from_route(&route);
+                        navigate.emit((
+                            AppRoute::Games {
+                                game_id: None,
+                                overlay: Some(Overlay::NewGame),
+                                sidebar,
+                            },
+                            true,
+                        ));
                     }
                 })}
                 on_delete_game={Callback::from({

@@ -6,6 +6,7 @@ use yew::prelude::*;
 pub enum Overlay {
     Variables,
     NewChat,
+    NewGame,
     State,
 }
 
@@ -318,9 +319,19 @@ impl AppRoute {
             } => "/games".to_string(),
             Self::Games {
                 game_id: None,
+                overlay: Some(Overlay::NewGame),
+                sidebar: false,
+            } => "/games/new".to_string(),
+            Self::Games {
+                game_id: None,
                 overlay: None,
                 sidebar: true,
             } => "/games/sidebar".to_string(),
+            Self::Games {
+                game_id: None,
+                overlay: Some(Overlay::NewGame),
+                sidebar: true,
+            } => "/games/new/sidebar".to_string(),
             Self::Games {
                 game_id: Some(id),
                 overlay: None,
@@ -439,7 +450,7 @@ impl AppRoute {
 fn overlay_segment(overlay: Overlay) -> &'static str {
     match overlay {
         Overlay::Variables => "variables",
-        Overlay::NewChat => "new",
+        Overlay::NewChat | Overlay::NewGame => "new",
         Overlay::State => "state",
     }
 }
@@ -600,15 +611,20 @@ fn parse_games(segments: &[&str]) -> AppRoute {
             overlay: None,
             sidebar,
         },
+        ["new"] => AppRoute::Games {
+            game_id: None,
+            overlay: Some(Overlay::NewGame),
+            sidebar,
+        },
         [id] if parse_id(id).is_some() => AppRoute::Games {
             game_id: parse_id(id),
             overlay: None,
             sidebar,
         },
-        [id, overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
+        [id, overlay] if parse_id(id).is_some() && parse_game_overlay(overlay).is_some() => {
             AppRoute::Games {
                 game_id: parse_id(id),
-                overlay: parse_overlay(overlay),
+                overlay: parse_game_overlay(overlay),
                 sidebar,
             }
         }
@@ -617,6 +633,15 @@ fn parse_games(segments: &[&str]) -> AppRoute {
             overlay: None,
             sidebar: false,
         },
+    }
+}
+
+fn parse_game_overlay(value: &str) -> Option<Overlay> {
+    match value {
+        "variables" => Some(Overlay::Variables),
+        "new" => Some(Overlay::NewGame),
+        "state" => Some(Overlay::State),
+        _ => None,
     }
 }
 
@@ -1047,7 +1072,17 @@ mod tests {
             },
             AppRoute::Games {
                 game_id: None,
+                overlay: Some(Overlay::NewGame),
+                sidebar: false,
+            },
+            AppRoute::Games {
+                game_id: None,
                 overlay: None,
+                sidebar: true,
+            },
+            AppRoute::Games {
+                game_id: None,
+                overlay: Some(Overlay::NewGame),
                 sidebar: true,
             },
             AppRoute::Games {

@@ -265,7 +265,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 } else {
                     <div class="settings-popover panel-overlay">
                         <div class="settings-header">
-                            <h2>{"Character & state"}</h2>
+                            <h2>{"World & state"}</h2>
                             <button class="btn secondary btn-compact" onclick={close_state_overlay.reform(|_| ())}>{"Close"}</button>
                         </div>
                         <p class="muted">{"Loading game…"}</p>
@@ -300,7 +300,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                             <div class="header-actions">
                                 <button
                                     class="btn secondary btn-compact header-icon-btn"
-                                    title="Character & state"
+                                    title="World & state"
                                     onclick={open_state_overlay.reform(|_| ())}
                                 >
                                     {"State"}
@@ -501,7 +501,23 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 } else if game_id.is_some() {
                     <p class="muted">{"Loading game…"}</p>
                 } else {
-                    <p class="muted">{"Select or create a game from the sidebar."}</p>
+                    <div class="empty-state muted">
+                        <p>{"No game selected. Start from a character card — many work well as world or scenario setups."}</p>
+                        <button class="btn" style="margin-top:0.75rem;" onclick={{
+                            let on_navigate = props.on_navigate.clone();
+                            let sidebar = matches!(props.route, AppRoute::Games { sidebar: true, .. });
+                            Callback::from(move |_| {
+                                on_navigate.emit((
+                                    AppRoute::Games {
+                                        game_id: None,
+                                        overlay: Some(Overlay::NewGame),
+                                        sidebar,
+                                    },
+                                    true,
+                                ));
+                            })
+                        }}>{"New game"}</button>
+                    </div>
                 }
             </div>
         </>
@@ -563,10 +579,102 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
     html! {
         <div id="game-state-panel" class="settings-popover panel-overlay">
             <div class="settings-header">
-                <h2>{"Character & state"}</h2>
+                <h2>{"World & state"}</h2>
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
             </div>
             <div class="panel-overlay-body">
+                <details class="game-world-panel" open=true>
+                    <summary>{"Scenario & world"}</summary>
+                    <div class="game-world-fields">
+                        <label class="field"><span class="muted">{"Premise / scenario"}</span>
+                            <textarea
+                                class="input"
+                                rows="3"
+                                value={game_detail.game.premise.clone()}
+                                onchange={{
+                                    let detail_state = detail_state.clone();
+                                    let setting = game_detail.game.setting.clone();
+                                    let gm_style = game_detail.game.gm_style.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        let setting = setting.clone();
+                                        let gm_style = gm_style.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                premise: Some(input.value()),
+                                                setting: Some(setting),
+                                                gm_style: Some(gm_style),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }}
+                            />
+                        </label>
+                        <label class="field"><span class="muted">{"Setting / tone"}</span>
+                            <textarea
+                                class="input"
+                                rows="3"
+                                value={game_detail.game.setting.clone()}
+                                onchange={{
+                                    let detail_state = detail_state.clone();
+                                    let premise = game_detail.game.premise.clone();
+                                    let gm_style = game_detail.game.gm_style.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        let premise = premise.clone();
+                                        let gm_style = gm_style.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                premise: Some(premise),
+                                                setting: Some(input.value()),
+                                                gm_style: Some(gm_style),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }}
+                            />
+                        </label>
+                        <label class="field"><span class="muted">{"GM style"}</span>
+                            <textarea
+                                class="input"
+                                rows="2"
+                                value={game_detail.game.gm_style.clone()}
+                                onchange={{
+                                    let detail_state = detail_state.clone();
+                                    let premise = game_detail.game.premise.clone();
+                                    let setting = game_detail.game.setting.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        let premise = premise.clone();
+                                        let setting = setting.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                premise: Some(premise),
+                                                setting: Some(setting),
+                                                gm_style: Some(input.value()),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }}
+                            />
+                        </label>
+                    </div>
+                </details>
                 { for game_detail.actors.iter().filter(|a| a.role == "pc").map(|actor| html! {
                     <div class="actor-sheet" key={actor.id}>
                         <h4>{ if actor.name.is_empty() { "Player character" } else { &actor.name } }</h4>
@@ -776,6 +884,338 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
 #[allow(dead_code)]
 pub fn merge_game_list(detail: &GameDetail, games: &[Game]) -> Vec<Game> {
     game_sync::game_list_with_detail(games, detail)
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub struct GameCreationDraft {
+    pub title: String,
+    pub premise: String,
+    pub setting: String,
+    pub gm_style: String,
+    pub pc_name: String,
+    pub pc_description: String,
+    pub character_id: Option<i64>,
+}
+
+pub fn game_draft_from_character(character: &Character) -> GameCreationDraft {
+    let setting = join_nonempty_sections(&[
+        ("World", character.description.trim()),
+        ("Tone", character.personality.trim()),
+    ]);
+    let premise = join_nonempty_sections(&[
+        ("Scenario", character.scenario.trim()),
+        (
+            "Opening hook",
+            if character.first_message.trim().is_empty() {
+                ""
+            } else {
+                character.first_message.trim()
+            },
+        ),
+    ]);
+    let gm_style = join_nonempty_sections(&[
+        ("GM instructions", character.system_prompt.trim()),
+        ("Example dialogue", character.example_dialogue.trim()),
+    ]);
+    GameCreationDraft {
+        title: character.name.clone(),
+        premise,
+        setting,
+        gm_style,
+        pc_name: String::new(),
+        pc_description: String::new(),
+        character_id: Some(character.id),
+    }
+}
+
+fn join_nonempty_sections(sections: &[(&str, &str)]) -> String {
+    sections
+        .iter()
+        .filter(|(_, body)| !body.is_empty())
+        .map(|(label, body)| format!("{label}:\n{body}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+#[derive(Properties, PartialEq)]
+pub struct GameCreationModalProps {
+    pub characters: Vec<Character>,
+    pub default_title: String,
+    pub on_close: Callback<()>,
+    pub on_characters_changed: Callback<()>,
+    pub on_created: Callback<GameDetail>,
+}
+
+#[function_component(GameCreationModal)]
+pub fn game_creation_modal(props: &GameCreationModalProps) -> Html {
+    let draft = use_state(|| GameCreationDraft {
+        title: props.default_title.clone(),
+        ..Default::default()
+    });
+    let characters = use_state(|| props.characters.clone());
+    let creating = use_state(|| false);
+    let error = use_state(|| None::<String>);
+    let file_input = use_node_ref();
+    let selected_source = use_state(|| None::<String>);
+
+    {
+        let characters = characters.clone();
+        use_effect_with(props.characters.clone(), move |list| {
+            characters.set(list.clone());
+            || ()
+        });
+    }
+
+    let apply_character = {
+        let draft = draft.clone();
+        let selected_source = selected_source.clone();
+        Callback::from(move |character: Character| {
+            draft.set(game_draft_from_character(&character));
+            selected_source.set(Some(character.name.clone()));
+        })
+    };
+
+    let on_create = {
+        let draft = draft.clone();
+        let creating = creating.clone();
+        let error = error.clone();
+        let on_created = props.on_created.clone();
+        Callback::from(move |_| {
+            if (*draft).title.trim().is_empty() {
+                error.set(Some("Title is required.".to_string()));
+                return;
+            }
+            creating.set(true);
+            error.set(None);
+            let payload = GameCreate {
+                title: draft.title.trim().to_string(),
+                premise: draft.premise.clone(),
+                setting: draft.setting.clone(),
+                gm_style: draft.gm_style.clone(),
+                character_id: draft.character_id,
+                pc_name: draft.pc_name.clone(),
+                pc_description: draft.pc_description.clone(),
+            };
+            let creating = creating.clone();
+            let error = error.clone();
+            let on_created = on_created.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::create_game(&payload).await {
+                    Ok(detail) => on_created.emit(detail),
+                    Err(err) => {
+                        error.set(Some(err));
+                        creating.set(false);
+                    }
+                }
+            });
+        })
+    };
+
+    html! {
+        <>
+            <div class="modal-backdrop" onclick={props.on_close.reform(|_| ())} />
+            <div class="modal modal-wide game-create-modal">
+                <h2>{"New game"}</h2>
+                <p class="muted game-create-lead">{"Import or pick a character card as your world or scenario, then add game-specific details."}</p>
+
+                <div class="game-create-source">
+                    <div class="game-create-source-actions">
+                        <button
+                            type="button"
+                            class="btn secondary"
+                            onclick={{
+                                let file_input = file_input.clone();
+                                Callback::from(move |_| {
+                                    if let Some(input) = file_input.cast::<web_sys::HtmlInputElement>() {
+                                        input.click();
+                                    }
+                                })
+                            }}
+                        >
+                            {"Import card"}
+                        </button>
+                        if let Some(name) = (*selected_source).clone() {
+                            <span class="muted game-create-source-label">{ format!("From: {name}") }</span>
+                        }
+                    </div>
+                    <input
+                        type="file"
+                        accept=".json,.png"
+                        style="display:none;"
+                        ref={file_input.clone()}
+                        onchange={{
+                            let characters = characters.clone();
+                            let apply_character = apply_character.clone();
+                            let on_characters_changed = props.on_characters_changed.clone();
+                            Callback::from(move |e: Event| {
+                                let input: HtmlInputElement = e.target_unchecked_into();
+                                if let Some(file) = input.files().and_then(|f| f.get(0)) {
+                                    let characters = characters.clone();
+                                    let apply_character = apply_character.clone();
+                                    let on_characters_changed = on_characters_changed.clone();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        if let Ok(character) = api::import_character(&file).await {
+                                            if let Ok(list) = api::list_characters().await {
+                                                characters.set(list);
+                                            }
+                                            on_characters_changed.emit(());
+                                            apply_character.emit(character);
+                                        }
+                                    });
+                                }
+                            })
+                        }}
+                    />
+                    if !(*characters).is_empty() {
+                        <div class="modal-list game-create-character-list">
+                            { for (*characters).iter().map(|c| {
+                                let character = c.clone();
+                                let selected = draft.character_id == Some(c.id);
+                                html! {
+                                    <div
+                                        class={classes!("modal-item", selected.then_some("modal-item-selected"))}
+                                        onclick={{
+                                            let apply_character = apply_character.clone();
+                                            let character = character.clone();
+                                            Callback::from(move |_| apply_character.emit(character.clone()))
+                                        }}
+                                    >
+                                        <span>{ &c.name }</span>
+                                        if !c.scenario.trim().is_empty() {
+                                            <span class="muted game-create-card-hint">{"scenario"}</span>
+                                        } else if !c.description.trim().is_empty() {
+                                            <span class="muted game-create-card-hint">{"world"}</span>
+                                        }
+                                    </div>
+                                }
+                            }) }
+                        </div>
+                    } else {
+                        <p class="muted">{"No saved cards yet — import a JSON or PNG character card to seed the world."}</p>
+                    }
+                </div>
+
+                <div class="game-create-form story-form">
+                    <label class="field"><span class="muted">{"Title"}</span>
+                        <input
+                            type="text"
+                            class="input"
+                            value={draft.title.clone()}
+                            oninput={{
+                                let draft = draft.clone();
+                                Callback::from(move |e: InputEvent| {
+                                    let input: HtmlInputElement = e.target_unchecked_into();
+                                    let mut next = (*draft).clone();
+                                    next.title = input.value();
+                                    draft.set(next);
+                                })
+                            }}
+                        />
+                    </label>
+                    <label class="field"><span class="muted">{"Premise / scenario"}</span>
+                        <textarea
+                            class="input"
+                            rows="3"
+                            placeholder="Starting situation, hooks, and scene context"
+                            value={draft.premise.clone()}
+                            oninput={{
+                                let draft = draft.clone();
+                                Callback::from(move |e: InputEvent| {
+                                    let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                    let mut next = (*draft).clone();
+                                    next.premise = input.value();
+                                    draft.set(next);
+                                })
+                            }}
+                        />
+                    </label>
+                    <label class="field"><span class="muted">{"Setting / world"}</span>
+                        <textarea
+                            class="input"
+                            rows="3"
+                            placeholder="World description, tone, and rules"
+                            value={draft.setting.clone()}
+                            oninput={{
+                                let draft = draft.clone();
+                                Callback::from(move |e: InputEvent| {
+                                    let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                    let mut next = (*draft).clone();
+                                    next.setting = input.value();
+                                    draft.set(next);
+                                })
+                            }}
+                        />
+                    </label>
+                    <label class="field"><span class="muted">{"GM style"}</span>
+                        <textarea
+                            class="input"
+                            rows="2"
+                            placeholder="Pacing, voice, and narration notes"
+                            value={draft.gm_style.clone()}
+                            oninput={{
+                                let draft = draft.clone();
+                                Callback::from(move |e: InputEvent| {
+                                    let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                    let mut next = (*draft).clone();
+                                    next.gm_style = input.value();
+                                    draft.set(next);
+                                })
+                            }}
+                        />
+                    </label>
+                    <div class="game-create-pc-grid">
+                        <label class="field"><span class="muted">{"Player character name"}</span>
+                            <input
+                                type="text"
+                                class="input"
+                                placeholder="Optional"
+                                value={draft.pc_name.clone()}
+                                oninput={{
+                                    let draft = draft.clone();
+                                    Callback::from(move |e: InputEvent| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let mut next = (*draft).clone();
+                                        next.pc_name = input.value();
+                                        draft.set(next);
+                                    })
+                                }}
+                            />
+                        </label>
+                        <label class="field"><span class="muted">{"Player character description"}</span>
+                            <textarea
+                                class="input"
+                                rows="2"
+                                placeholder="Optional — who you play as in this world"
+                                value={draft.pc_description.clone()}
+                                oninput={{
+                                    let draft = draft.clone();
+                                    Callback::from(move |e: InputEvent| {
+                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                        let mut next = (*draft).clone();
+                                        next.pc_description = input.value();
+                                        draft.set(next);
+                                    })
+                                }}
+                            />
+                        </label>
+                    </div>
+                </div>
+
+                if let Some(err) = (*error).clone() {
+                    <p class="muted" style="color:var(--danger, #c44);">{ err }</p>
+                }
+
+                <div class="modal-actions">
+                    <button class="btn" disabled={*creating} onclick={on_create}>
+                        { if *creating { "Creating…" } else { "Create game" } }
+                    </button>
+                    <button class="btn secondary" disabled={*creating} onclick={props.on_close.reform(|_| ())}>
+                        {"Cancel"}
+                    </button>
+                </div>
+            </div>
+        </>
+    }
 }
 
 mod game_sync {
