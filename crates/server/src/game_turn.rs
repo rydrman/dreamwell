@@ -163,8 +163,7 @@ async fn run_turn_from_checks(
     let mut rolled_checks = Vec::new();
     for (i, check) in declared.checks.iter().enumerate() {
         let validated = validate_declared_check(check, pc, &game);
-        let seed = turn_id * 1000 + i as i64 + 1;
-        let roll = roll_dice("2d6", validated.modifier, seed);
+        let roll = roll_dice("2d6", validated.modifier);
         let game_check = GameTurnCheck {
             id: 0,
             turn_id,
@@ -174,7 +173,7 @@ async fn run_turn_from_checks(
             stakes: validated.stakes.clone(),
             justification: validated.justification.clone(),
             dice_expr: "2d6".to_string(),
-            seed,
+            seed: 0,
             rolls: roll.as_ref().map(|r| r.rolls.clone()).unwrap_or_default(),
             total: roll.as_ref().map(|r| r.total).unwrap_or(0),
             tier: roll.as_ref().map(|r| r.tier),

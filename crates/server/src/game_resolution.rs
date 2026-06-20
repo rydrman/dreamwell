@@ -1,9 +1,9 @@
 use dreamwell_types::CheckTier;
+use rand::Rng;
 
 /// Roll result for a single check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollResult {
-    pub seed: i64,
     pub rolls: Vec<i64>,
     pub modifier: i64,
     pub total: i64,
@@ -25,21 +25,12 @@ pub fn parse_dice_expr(expr: &str) -> Option<(u32, u32)> {
     Some((count, sides))
 }
 
-/// Deterministic seeded roll using a simple LCG.
-fn seeded_die(seed: i64, sides: i64) -> (i64, i64) {
-    let next = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-    let roll = (next.abs() % sides) + 1;
-    (roll, next)
-}
-
-pub fn roll_dice(expr: &str, modifier: i64, seed: i64) -> Option<RollResult> {
+pub fn roll_dice(expr: &str, modifier: i64) -> Option<RollResult> {
     let (count, sides) = parse_dice_expr(expr)?;
-    let mut current_seed = seed;
+    let mut rng = rand::rng();
     let mut rolls = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let (roll, next) = seeded_die(current_seed, sides as i64);
-        rolls.push(roll);
-        current_seed = next;
+        rolls.push(rng.random_range(1..=sides as i64));
     }
     let raw_total: i64 = rolls.iter().sum();
     let total = raw_total + modifier;
@@ -52,7 +43,6 @@ pub fn roll_dice(expr: &str, modifier: i64, seed: i64) -> Option<RollResult> {
     let natural_boon = raw_total >= 12 && count == 2 && sides == 6;
     let natural_snag = raw_total == 2 && count == 2 && sides == 6;
     Some(RollResult {
-        seed,
         rolls,
         modifier,
         total,
@@ -120,17 +110,13 @@ mod tests {
     }
 
     #[test]
-    fn roll_is_deterministic() {
-        let a = roll_dice("2d6", 1, 42).expect("roll");
-        let b = roll_dice("2d6", 1, 42).expect("roll");
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn different_seeds_differ() {
-        let a = roll_dice("2d6", 0, 1).expect("roll");
-        let b = roll_dice("2d6", 0, 2).expect("roll");
-        assert_ne!(a.rolls, b.rolls);
+    fn roll_produces_valid_faces() {
+        let roll = roll_dice("2d6", 0).expect("roll");
+        assert_eq!(roll.rolls.len(), 2);
+        for face in &roll.rolls {
+            assert!((1..=6).contains(face));
+        }
+        assert_eq!(roll.total, roll.rolls.iter().sum::<i64>());
     }
 
     #[test]
@@ -142,13 +128,13 @@ mod tests {
 
     #[test]
     fn natural_boon_and_snag_flags() {
-        let mut boon = roll_dice("2d6", 0, 1).expect("roll");
+        let mut boon = roll_dice("2d6", 0).expect("roll");
         boon.rolls = vec![6, 6];
         boon.total = 12;
         boon.natural_boon = boon.rolls.iter().sum::<i64>() >= 12;
         assert!(boon.natural_boon);
 
-        let mut snag = roll_dice("2d6", 0, 2).expect("roll");
+        let mut snag = roll_dice("2d6", 0).expect("roll");
         snag.rolls = vec![1, 1];
         snag.total = 2;
         snag.natural_snag = snag.rolls.iter().sum::<i64>() == 2;

@@ -593,6 +593,7 @@ pub async fn prepare_regenerate_turn(
         &detail.actors,
     )
     .await?;
+    reroll_turn_checks(pool, turn_id, &turn.checks).await?;
     sqlx::query(
         "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', phase='rolled', updated_at=?1 WHERE id=?2",
     )
@@ -715,6 +716,32 @@ pub async fn clear_turn_checks(pool: &SqlitePool, turn_id: i64) -> AppResult<()>
         .bind(turn_id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+pub async fn reroll_turn_checks(
+    pool: &SqlitePool,
+    turn_id: i64,
+    checks: &[GameTurnCheck],
+) -> AppResult<()> {
+    for check in checks {
+        let Some(roll) = crate::game_resolution::roll_dice(&check.dice_expr, check.modifier) else {
+            continue;
+        };
+        let rolls = serde_json::to_string(&roll.rolls).unwrap_or_else(|_| "[]".to_string());
+        let tier = crate::game_resolution::tier_str(roll.tier).to_string();
+        sqlx::query(
+            "UPDATE game_turn_checks SET seed=0, rolls=?1, total=?2, tier=?3, margin=?4 WHERE id=?5 AND turn_id=?6",
+        )
+        .bind(&rolls)
+        .bind(roll.total)
+        .bind(&tier)
+        .bind(roll.margin)
+        .bind(check.id)
+        .bind(turn_id)
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 
