@@ -32,6 +32,18 @@ fn seeded_die(seed: i64, sides: i64) -> (i64, i64) {
     (roll, next)
 }
 
+/// Deterministic seed for a check roll within a game turn.
+///
+/// Mixes `game_id`, `turn_id`, and check index so nearby turn IDs do not
+/// collide on the same dice faces (the naive `turn_id * 1000` formula did).
+pub fn check_roll_seed(game_id: i64, turn_id: i64, check_index: usize) -> i64 {
+    let mixed = game_id
+        .wrapping_mul(1_000_003)
+        .wrapping_add(turn_id.wrapping_mul(10_007))
+        .wrapping_add((check_index as i64 + 1).wrapping_mul(997));
+    mixed.wrapping_mul(1_103_515_245).wrapping_add(12_345)
+}
+
 pub fn roll_dice(expr: &str, modifier: i64, seed: i64) -> Option<RollResult> {
     let (count, sides) = parse_dice_expr(expr)?;
     let mut current_seed = seed;
@@ -131,6 +143,25 @@ mod tests {
         let a = roll_dice("2d6", 0, 1).expect("roll");
         let b = roll_dice("2d6", 0, 2).expect("roll");
         assert_ne!(a.rolls, b.rolls);
+    }
+
+    #[test]
+    fn check_roll_seed_varies_by_turn_and_game() {
+        let turn1 = roll_dice("2d6", 0, check_roll_seed(1, 1, 0)).expect("roll");
+        let turn4 = roll_dice("2d6", 0, check_roll_seed(1, 4, 0)).expect("roll");
+        let other_game = roll_dice("2d6", 0, check_roll_seed(2, 1, 0)).expect("roll");
+        assert_ne!(turn1.rolls, turn4.rolls);
+        assert_ne!(turn1.rolls, other_game.rolls);
+    }
+
+    #[test]
+    fn legacy_turn_id_seeds_collide_on_dice_faces() {
+        let a = roll_dice("2d6", 0, 1001).expect("roll");
+        let b = roll_dice("2d6", 0, 4001).expect("roll");
+        assert_eq!(
+            a.rolls, b.rolls,
+            "documents the bug fixed by check_roll_seed"
+        );
     }
 
     #[test]
