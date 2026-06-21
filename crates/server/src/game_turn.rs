@@ -151,7 +151,8 @@ async fn run_turn_from_checks(
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
 
-    let messages = build_declare_checks_messages(&game, &detail, &turn, &job.guidance_notes);
+    let messages =
+        build_declare_checks_messages(&game, &detail, &turn, &job.guidance_notes, settings);
     let checks_model = model_for_phase(&game, settings, GameModelPhase::Checks);
     let declared: DeclareChecksResponse = chat_completion_json(
         &settings.inference_url,
@@ -241,7 +242,14 @@ async fn run_resolve_and_prose(
     let game = detail.game.clone();
     let checks = turn.checks.clone();
 
-    let messages = build_resolve_messages(&game, &detail, &turn, &checks, &job.guidance_notes);
+    let messages = build_resolve_messages(
+        &game,
+        &detail,
+        &turn,
+        &checks,
+        &job.guidance_notes,
+        settings,
+    );
     let resolve_model = model_for_phase(&game, settings, GameModelPhase::Resolve);
     let resolved: dreamwell_types::ResolveTurnResponse = chat_completion_json(
         &settings.inference_url,
