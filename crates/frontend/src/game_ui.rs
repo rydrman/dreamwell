@@ -357,29 +357,24 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let display_prose = if turn.prose.is_empty() {
                                     String::new()
                                 } else if is_opening {
-                                    let pc_name = game_detail
-                                        .actors
-                                        .iter()
-                                        .find(|actor| actor.role == "pc")
-                                        .map(|actor| actor.name.as_str())
-                                        .filter(|name| !name.is_empty())
-                                        .unwrap_or("Character");
-                                    if let Some(settings) = props.settings.as_ref() {
-                                        substitute_macros(
-                                            turn.prose.as_str(),
-                                            &MacroContext {
-                                                char_name: pc_name,
-                                                user_name: settings.user_name.as_str(),
-                                                persona: settings.persona_description.as_str(),
-                                                description: "",
-                                                personality: "",
-                                                scenario: "",
-                                                first_message: turn.prose.as_str(),
-                                            },
-                                        )
-                                    } else {
-                                        turn.prose.clone()
-                                    }
+                                    let (user_name, persona) = props
+                                        .settings
+                                        .as_ref()
+                                        .map(|settings| {
+                                            (
+                                                settings.user_name.as_str(),
+                                                settings.persona_description.as_str(),
+                                            )
+                                        })
+                                        .unwrap_or(("", ""));
+                                    substitute_macros(
+                                        turn.prose.as_str(),
+                                        &MacroContext::from_game_detail(
+                                            &game_detail,
+                                            user_name,
+                                            persona,
+                                        ),
+                                    )
                                 } else {
                                     turn.prose.clone()
                                 };
