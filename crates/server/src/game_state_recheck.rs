@@ -1,3 +1,4 @@
+use dreamwell_state::{state_recheck_schema, RECHECK_SYSTEM_PROMPT, STATE_TARGET_RULES};
 use dreamwell_types::{Job, Settings, StateChangeRequest};
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -6,7 +7,6 @@ use tokio::sync::mpsc;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::game_prompts::resolve_schema;
 use crate::game_state::{apply_state_changes, build_state_block};
 use crate::inference::chat_completion_json;
 
@@ -39,37 +39,13 @@ fn build_recheck_prompt(prose: &str, state_block: &str, guidance: &str) -> Vec<s
     vec![
         json!({
             "role": "system",
-            "content": RECHECK_SYSTEM_PROMPT,
+            "content": format!("{RECHECK_SYSTEM_PROMPT}\n\n{STATE_TARGET_RULES}"),
         }),
         json!({
             "role": "user",
             "content": user,
         }),
     ]
-}
-
-const RECHECK_SYSTEM_PROMPT: &str = r#"You review game turn prose against typed game state.
-
-Given the prose and current state, output ONLY a JSON object with state_changes that correct, add, or remove state entries that should persist.
-
-Rules:
-- target: "pc" for the player character, "world" for global scope
-- kind: resource|condition|fact|clock; op: set|add|remove
-- Resource/clock deltas are numeric; conditions/facts use value strings
-- Fix values that contradict the prose
-- Add state for facts in prose but missing from state
-- Do not repeat changes for values already correct
-- Return {"state_changes": []} if no corrections are needed
-- Output ONLY valid JSON matching the schema"#;
-
-fn state_recheck_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "state_changes": resolve_schema()["properties"]["state_changes"].clone()
-        },
-        "required": ["state_changes"]
-    })
 }
 
 pub async fn enqueue_turn_state_recheck(

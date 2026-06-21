@@ -101,9 +101,9 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                             *had_active_job.borrow_mut() = true;
                         }
                         let job_just_finished = (was_active && !now_active)
-                            || (*detail)
-                                .as_ref()
-                                .is_some_and(|d| detail_stale_vs_sse(d, payload.active_job.as_ref()));
+                            || (*detail).as_ref().is_some_and(|d| {
+                                detail_stale_vs_sse(d, payload.active_job.as_ref())
+                            });
                         if job_just_finished {
                             let detail_ref = detail.clone();
                             wasm_bindgen_futures::spawn_local(async move {
@@ -156,7 +156,8 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     }
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
-                            let _ = window.alert_with_message(&format!("Could not submit turn: {err}"));
+                            let _ =
+                                window.alert_with_message(&format!("Could not submit turn: {err}"));
                         }
                     }
                 }
@@ -188,7 +189,8 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     Ok(d) => detail.set(Some(d)),
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
-                            let _ = window.alert_with_message(&format!("Could not retry turn: {err}"));
+                            let _ =
+                                window.alert_with_message(&format!("Could not retry turn: {err}"));
                         }
                     }
                 }
@@ -507,16 +509,6 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.state_changes.is_empty() {
-                                                <PhaseSection
-                                                    label={"State changes".to_string()}
-                                                    expanded={Some(expanded_phases.contains(&(turn_id, "state".to_string())))}
-                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "state".to_string())))}
-                                                >
-                                                    <StateChangesList changes={turn.state_changes.clone()} />
-                                                </PhaseSection>
-                                            }
-
                                             if !turn.scene_beats.is_empty() {
                                                 <PhaseSection
                                                     label={"Scene".to_string()}
@@ -528,6 +520,16 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                         label={"Scene".to_string()}
                                                         inline={true}
                                                     />
+                                                </PhaseSection>
+                                            }
+
+                                            if !turn.state_changes.is_empty() {
+                                                <PhaseSection
+                                                    label={"State changes".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "state".to_string())))}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "state".to_string())))}
+                                                >
+                                                    <StateChangesList changes={turn.state_changes.clone()} />
                                                 </PhaseSection>
                                             }
 

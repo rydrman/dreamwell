@@ -1,9 +1,55 @@
+pub const STATE_TARGET_RULES: &str = r#"State target rules:
+- "pc" (or "user"): the player character ONLY — their clothing, mood, inventory, injuries, held items
+- "world": scene facts not owned by one person — location, weather, time, room layout, institution/quest stage
+- Named character (e.g. "Maya", "Ryan"): NPCs — use the character's name as target; unknown names auto-create an NPC actor
+- Do NOT store one character's attributes on world
+- Do NOT pack multiple people or attributes into one key/value
+
+BAD targeting / packing:
+- target=world, key=clothing_state, value="Ryan's shirt is green"
+- target=world, key=characters, value="Ryan is angry and Maya has a key"
+- target=pc, key=scene_notes, value="Ryan talks to the bartender about the mine"
+
+GOOD (actor-scoped, atomic):
+- target=Ryan, key=shirt_color, value=green
+- target=pc, key=mood, value=irritated
+- target=world, key=location, value=tavern common room
+- target=Maya, key=has_cellar_key, value=true"#;
+
 pub const STATE_CHANGE_RULES: &str = r#"State change rules:
-- target: "pc" for the player character, "world" for global scope, or a named actor
 - kind: resource|condition|fact|clock; op: set|add|remove
+- One atomic scalar per (target, kind, key): single subject, single attribute — no lists or sentences in value
+- Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
+- value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"
 - Resource/clock use numeric delta or set values; conditions/facts use value strings
-- One scalar value per (target, kind, key) — no multi-item lists in a single entry
 - Resource and clock values clamp to 0..max"#;
+
+pub const STATE_CHANGE_PROMPT: &str = r#"State change rules:
+- target: "pc" for the player character, "world" for global scope, or a named NPC
+- kind: resource|condition|fact|clock; op: set|add|remove
+- One atomic scalar per (target, kind, key): single subject, single attribute — no lists or sentences in value
+- Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
+- value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"
+- Prefer actor targets over world for anything about a specific person
+- Resource/clock use numeric delta or set values; conditions/facts use value strings
+- Resource and clock values clamp to 0..max
+
+State target rules:
+- "pc" (or "user"): the player character ONLY — their clothing, mood, inventory, injuries, held items
+- "world": scene facts not owned by one person — location, weather, time, room layout, institution/quest stage
+- Named character (e.g. "Maya", "Ryan"): NPCs — use the character's name as target; unknown names auto-create an NPC actor
+- Do NOT store one character's attributes on world
+- Do NOT pack multiple people or attributes into one key/value
+
+BAD targeting / packing:
+- target=world, key=clothing_state, value="Ryan's shirt is green"
+- target=world, key=characters, value="Ryan is angry and Maya has a key"
+
+GOOD (actor-scoped, atomic):
+- target=Ryan, key=shirt_color, value=green
+- target=pc, key=mood, value=irritated
+- target=world, key=location, value=tavern common room
+- target=Maya, key=has_cellar_key, value=true"#;
 
 pub const PLAN_BEAT_RULES: &str = r#"Plan beat rules:
 - Each beat is one concrete thing THIS output must cover — not a reusable template for any turn
@@ -13,18 +59,37 @@ pub const PLAN_BEAT_RULES: &str = r#"Plan beat rules:
 - GOOD (specific): "Answer whether the cellar door is still locked and mention the key on the windowsill", "Have the character agree to meet at the bridge at dusk", "Describe the smell of rain on the coat they asked about"
 - Typically 3–6 beats for a normal reply; fewer when the user message is simple
 - Do not plan future turns, unprompted plot twists, or beats that ignore what the user just said
-- State changes should capture durable facts/resources the beats establish — not restate beat wording"#;
+- State changes should capture durable facts/resources the beats establish — prefer named actor targets for character-specific facts, one attribute per key"#;
 
 pub const RECHECK_SYSTEM_PROMPT: &str = r#"You review prose against typed session state.
 
 Given the prose and current state, output ONLY a JSON object with state_changes that correct, add, or remove state entries that should persist.
 
 Rules:
-- target: "pc" for the player character, "world" for global scope
-- kind: resource|condition|fact|clock; op: set|add|remove
-- Resource/clock deltas are numeric; conditions/facts use value strings
 - Fix values that contradict the prose
 - Add state for facts in prose but missing from state
 - Do not repeat changes for values already correct
 - Return {"state_changes": []} if no corrections are needed
-- Output ONLY valid JSON matching the schema"#;
+- Output ONLY valid JSON matching the schema
+
+When adding or correcting entries:
+- Prefer actor targets ("pc" or a named NPC) for facts about a specific person — not world
+- One atomic attribute per key; split packed world entries onto the right actor
+- Use short snake_case keys; values hold only the attribute, not full sentences"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_change_prompt_discourages_world_character_blobs() {
+        assert!(STATE_CHANGE_PROMPT.contains("clothing_state"));
+        assert!(STATE_CHANGE_PROMPT.contains("shirt_color"));
+        assert!(STATE_CHANGE_PROMPT.contains("Prefer actor targets"));
+    }
+
+    #[test]
+    fn recheck_prompt_mentions_actor_targets() {
+        assert!(RECHECK_SYSTEM_PROMPT.contains("named NPC"));
+    }
+}
