@@ -101,10 +101,7 @@ fn format_state_change_value(sc: &AppliedStateChange) -> String {
             if sc.op == StateOp::Remove {
                 sc.prev_value.clone().unwrap_or_default()
             } else if let Some(prev) = sc.prev_value.as_ref().filter(|p| !p.is_empty()) {
-                format!(
-                    "{prev} → {}",
-                    sc.value.as_deref().unwrap_or_default()
-                )
+                format!("{prev} → {}", sc.value.as_deref().unwrap_or_default())
             } else {
                 sc.value.clone().unwrap_or_default()
             }

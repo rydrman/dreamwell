@@ -57,7 +57,8 @@ async fn prepare_on_startup_conn(setup: &mut sqlx::sqlite::SqliteConnection) -> 
 fn is_sqlite_locked(err: &sqlx::Error) -> bool {
     match err {
         sqlx::Error::Database(e) => {
-            e.code().is_some_and(|c| c == "5" || c == "517" || c == "261")
+            e.code()
+                .is_some_and(|c| c == "5" || c == "517" || c == "261")
                 || e.message().contains("database is locked")
         }
         _ => false,
@@ -1422,7 +1423,9 @@ pub async fn claim_jobs(pool: &SqlitePool, limit: i64) -> AppResult<Vec<i64>> {
             Err(err) => return Err(err.into()),
         }
     }
-    Err(AppError::internal("claim_jobs timed out waiting for database lock"))
+    Err(AppError::internal(
+        "claim_jobs timed out waiting for database lock",
+    ))
 }
 
 async fn claim_jobs_once(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>, sqlx::Error> {
