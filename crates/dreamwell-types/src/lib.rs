@@ -933,6 +933,8 @@ pub struct GameTurn {
     pub prose: String,
     pub state_changes: Vec<AppliedStateChange>,
     pub checks: Vec<GameTurnCheck>,
+    #[serde(default)]
+    pub is_opening: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_error: Option<String>,
     pub created_at: DateTime<Utc>,

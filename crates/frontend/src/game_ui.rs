@@ -275,33 +275,6 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         .as_ref()
         .is_some_and(|s| s.model.trim().is_empty());
     let state_overlay_open = props.route.overlay() == Some(Overlay::State);
-    let opening_message = game_detail.as_ref().and_then(|detail| {
-        let text = detail.game.opening_message.trim();
-        if text.is_empty() {
-            return None;
-        }
-        let pc_name = detail
-            .actors
-            .iter()
-            .find(|actor| actor.role == "pc")
-            .map(|actor| actor.name.as_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("Character");
-        let macro_ctx = props.settings.as_ref().map(|settings| MacroContext {
-            char_name: pc_name,
-            user_name: settings.user_name.as_str(),
-            persona: settings.persona_description.as_str(),
-            description: "",
-            personality: "",
-            scenario: "",
-            first_message: detail.game.opening_message.as_str(),
-        });
-        Some(if let Some(ctx) = macro_ctx {
-            substitute_macros(text, &ctx)
-        } else {
-            text.to_string()
-        })
-    });
 
     html! {
         <>
@@ -364,16 +337,10 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 
                     <div class="content-scroll">
                         <div class="messages game-turn-feed">
-                            if let Some(opening_message) = opening_message {
-                                <div class="game-opening message assistant">
-                                    <div class="game-prose markdown-body">
-                                        { render_message_content(&opening_message) }
-                                    </div>
-                                </div>
-                            }
                             { for game_detail.turns.iter().map(|turn| {
                                 let turn_id = turn.id;
-                                let is_active = !matches!(turn.phase.as_str(), "done" | "failed");
+                                let is_opening = turn.is_opening;
+                                let is_active = !is_opening && !matches!(turn.phase.as_str(), "done" | "failed");
                                 let step_paused = turn.phase.ends_with("_pause");
                                 let show_continue = step_paused;
                                 let show_regenerate = turn.phase == "done";
@@ -382,71 +349,104 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                     && !turn.prose.is_empty()
                                     && !turn.scene_beats.is_empty();
                                 let show_recheck_state = turn.phase == "done" && !turn.prose.is_empty();
-                                let can_menu = show_continue
+                                let can_menu = !is_opening && (show_continue
                                     || show_regenerate
                                     || show_retry
                                     || show_align_prose
-                                    || show_recheck_state;
+                                    || show_recheck_state);
+                                let display_prose = if turn.prose.is_empty() {
+                                    String::new()
+                                } else if is_opening {
+                                    let pc_name = game_detail
+                                        .actors
+                                        .iter()
+                                        .find(|actor| actor.role == "pc")
+                                        .map(|actor| actor.name.as_str())
+                                        .filter(|name| !name.is_empty())
+                                        .unwrap_or("Character");
+                                    if let Some(settings) = props.settings.as_ref() {
+                                        substitute_macros(
+                                            turn.prose.as_str(),
+                                            &MacroContext {
+                                                char_name: pc_name,
+                                                user_name: settings.user_name.as_str(),
+                                                persona: settings.persona_description.as_str(),
+                                                description: "",
+                                                personality: "",
+                                                scenario: "",
+                                                first_message: turn.prose.as_str(),
+                                            },
+                                        )
+                                    } else {
+                                        turn.prose.clone()
+                                    }
+                                } else {
+                                    turn.prose.clone()
+                                };
                                 html! {
-                                    <div key={turn_id} class="game-turn-pair">
-                                        <div class="message user">
-                                            { &turn.player_action }
-                                        </div>
-                                        <div class="message assistant">
-                                            <div class="message-header">
-                                                <div class="message-meta muted">
-                                                    { format!("Phase: {}", phase_label(&turn.phase)) }
-                                                </div>
-                                                if can_menu {
-                                                    <MessageOptionsMenu title="Turn options">
-                                                        if show_continue {
-                                                            <button
-                                                                type="button"
-                                                                class="message-menu-item"
-                                                                onclick={on_continue.reform(move |_| turn_id)}
-                                                            >
-                                                                {"Continue turn"}
-                                                            </button>
-                                                        }
-                                                        if show_regenerate {
-                                                            <button
-                                                                type="button"
-                                                                class="message-menu-item"
-                                                                onclick={on_regenerate.reform(move |_| turn_id)}
-                                                            >
-                                                                {"Regenerate"}
-                                                            </button>
-                                                        }
-                                                        if show_retry {
-                                                            <button
-                                                                type="button"
-                                                                class="message-menu-item"
-                                                                onclick={on_regenerate.reform(move |_| turn_id)}
-                                                            >
-                                                                {"Retry"}
-                                                            </button>
-                                                        }
-                                                        if show_align_prose {
-                                                            <button
-                                                                type="button"
-                                                                class="message-menu-item"
-                                                                onclick={on_recheck_prose.reform(move |_| turn_id)}
-                                                            >
-                                                                {"Align prose"}
-                                                            </button>
-                                                        }
-                                                        if show_recheck_state {
-                                                            <button
-                                                                type="button"
-                                                                class="message-menu-item"
-                                                                onclick={on_recheck_state.reform(move |_| turn_id)}
-                                                            >
-                                                                {"Recheck state"}
-                                                            </button>
-                                                        }
-                                                    </MessageOptionsMenu>
-                                                }
+                                    <div key={turn_id} class={classes!("game-turn-pair", is_opening.then_some("game-opening"))}>
+                                        if !is_opening && !turn.player_action.trim().is_empty() {
+                                            <div class="message user">
+                                                { &turn.player_action }
                                             </div>
+                                        }
+                                        <div class="message assistant">
+                                            if !is_opening {
+                                                <div class="message-header">
+                                                    <div class="message-meta muted">
+                                                        { format!("Phase: {}", phase_label(&turn.phase)) }
+                                                    </div>
+                                                    if can_menu {
+                                                        <MessageOptionsMenu title="Turn options">
+                                                            if show_continue {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_continue.reform(move |_| turn_id)}
+                                                                >
+                                                                    {"Continue turn"}
+                                                                </button>
+                                                            }
+                                                            if show_regenerate {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_regenerate.reform(move |_| turn_id)}
+                                                                >
+                                                                    {"Regenerate"}
+                                                                </button>
+                                                            }
+                                                            if show_retry {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_regenerate.reform(move |_| turn_id)}
+                                                                >
+                                                                    {"Retry"}
+                                                                </button>
+                                                            }
+                                                            if show_align_prose {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_recheck_prose.reform(move |_| turn_id)}
+                                                                >
+                                                                    {"Align prose"}
+                                                                </button>
+                                                            }
+                                                            if show_recheck_state {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_recheck_state.reform(move |_| turn_id)}
+                                                                >
+                                                                    {"Recheck state"}
+                                                                </button>
+                                                            }
+                                                        </MessageOptionsMenu>
+                                                    }
+                                                </div>
+                                            }
                                             if turn.phase == "failed" {
                                                 if let Some(error) = turn.generation_error.as_deref() {
                                                     <div class="message-error" role="alert">
@@ -533,9 +533,9 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.prose.is_empty() || turn.phase == "prose" {
+                                            if !display_prose.is_empty() || turn.phase == "prose" {
                                                 <div class="game-prose markdown-body">
-                                                    { render_message_content(&turn.prose) }
+                                                    { render_message_content(&display_prose) }
                                                 </div>
                                             }
                                         </div>
