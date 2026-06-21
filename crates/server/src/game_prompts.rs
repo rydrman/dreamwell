@@ -1,3 +1,4 @@
+use dreamwell_state::STATE_CHANGE_PROMPT;
 use dreamwell_types::{Game, GameDetail, GameTurn, GameTurnCheck, Settings};
 use serde_json::json;
 
@@ -22,9 +23,6 @@ Rules:
 - Scene beats must match the scenario's genre, scale, and tone — do not default to peril, combat, or action-movie escalation
 - Scene beats must honor the roll tiers (fail cannot be clean success)
 - State changes should reflect scenario-appropriate consequences; avoid health/stress harm or new threats unless warranted
-- state_changes use targets: "pc" for player character, "world" for global
-- kind: resource|condition|fact|clock; op: set|add|remove
-- Resource/clock deltas are numeric; conditions/facts use value strings
 - Output ONLY valid JSON matching the schema"#;
 
 const PROSE_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose rendering the scene beats.
@@ -142,7 +140,10 @@ pub fn build_resolve_messages(
     }
     let user = user_message_with_scenario(game, false, &body);
     vec![
-        json!({ "role": "system", "content": RESOLVE_SYSTEM }),
+        json!({
+            "role": "system",
+            "content": format!("{RESOLVE_SYSTEM}\n\n{STATE_CHANGE_PROMPT}"),
+        }),
         json!({ "role": "user", "content": user }),
     ]
 }

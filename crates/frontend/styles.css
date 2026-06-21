@@ -911,7 +911,7 @@ input.header-title {
 }
 
 .game-phase-section .message-thought-toggle {
-  padding: 0.2rem 0.75rem;
+  padding: 0.5rem 0.75rem;
 }
 
 .message-thought-toggle:hover {
@@ -1300,10 +1300,6 @@ input.header-title {
   align-items: center;
   gap: 0.5rem;
   margin-top: 0.5rem;
-}
-
-.message-body> :first-child {
-  margin-top: 0;
 }
 
 .message-body> :last-child {

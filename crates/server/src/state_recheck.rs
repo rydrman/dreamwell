@@ -10,7 +10,7 @@ use crate::inference::chat_completion_json;
 use crate::story_state::{
     apply_state_changes as apply_story_state_changes, build_state_block as build_story_state_block,
 };
-use dreamwell_state::{state_recheck_schema, RECHECK_SYSTEM_PROMPT};
+use dreamwell_state::{state_recheck_schema, RECHECK_SYSTEM_PROMPT, STATE_TARGET_RULES};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct StateRecheckResponse {
@@ -30,7 +30,7 @@ fn build_recheck_prompt(prose: &str, state_block: &str) -> Vec<serde_json::Value
     vec![
         json!({
             "role": "system",
-            "content": RECHECK_SYSTEM_PROMPT,
+            "content": format!("{RECHECK_SYSTEM_PROMPT}\n\n{STATE_TARGET_RULES}"),
         }),
         json!({
             "role": "user",

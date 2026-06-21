@@ -9,7 +9,10 @@ pub use apply::{
     RevertMutation, VivifyActor,
 };
 pub use format::build_state_block;
-pub use prompt::{PLAN_BEAT_RULES, RECHECK_SYSTEM_PROMPT, STATE_CHANGE_RULES};
+pub use prompt::{
+    PLAN_BEAT_RULES, RECHECK_SYSTEM_PROMPT, STATE_CHANGE_PROMPT, STATE_CHANGE_RULES,
+    STATE_TARGET_RULES,
+};
 pub use resolve::{
     normalize_target, resolve_actor_id, should_vivify_actor, skill_modifier, validate_skill,
 };

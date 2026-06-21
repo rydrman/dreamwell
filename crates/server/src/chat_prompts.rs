@@ -1,4 +1,4 @@
-use dreamwell_state::{plan_schema, PLAN_BEAT_RULES, STATE_CHANGE_RULES};
+use dreamwell_state::{plan_schema, PLAN_BEAT_RULES, STATE_CHANGE_PROMPT};
 use dreamwell_types::{Character, MacroContext, Settings};
 use serde_json::json;
 
@@ -59,6 +59,22 @@ pub async fn build_plan_messages(
     if !state_block.is_empty() {
         context.push_str(&format!("Current typed state:\n{state_block}\n\n"));
     }
+    if !actors.is_empty() {
+        context.push_str("Session actors (use pc or a name as state target):\n");
+        for actor in &actors {
+            context.push_str(&format!(
+                "- {} ({}){}\n",
+                actor.name,
+                actor.role,
+                if actor.description.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", actor.description)
+                }
+            ));
+        }
+        context.push('\n');
+    }
     if let Some(user_msg) = latest_user {
         context.push_str("Latest user message (plan the reply to THIS turn):\n");
         context.push_str(&user_msg.content);
@@ -87,7 +103,7 @@ pub async fn build_plan_messages(
     Ok(vec![
         json!({
             "role": "system",
-            "content": format!("{PLAN_SYSTEM}\n\n{PLAN_BEAT_RULES}\n\n{STATE_CHANGE_RULES}"),
+            "content": format!("{PLAN_SYSTEM}\n\n{PLAN_BEAT_RULES}\n\n{STATE_CHANGE_PROMPT}"),
         }),
         json!({
             "role": "user",

@@ -1,4 +1,4 @@
-use dreamwell_state::{plan_schema, PLAN_BEAT_RULES, STATE_CHANGE_RULES};
+use dreamwell_state::{plan_schema, PLAN_BEAT_RULES, STATE_CHANGE_PROMPT};
 use dreamwell_types::{Story, StoryActor, StoryBeat, StoryChapter};
 use serde_json::{json, Value};
 
@@ -783,7 +783,7 @@ pub fn build_story_plan_messages(
     vec![
         json!({
             "role": "system",
-            "content": format!("{STORY_PLAN_SYSTEM}\n\n{PLAN_BEAT_RULES}\n\n{STATE_CHANGE_RULES}"),
+            "content": format!("{STORY_PLAN_SYSTEM}\n\n{PLAN_BEAT_RULES}\n\n{STATE_CHANGE_PROMPT}"),
         }),
         json!({
             "role": "user",
