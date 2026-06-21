@@ -1,5 +1,7 @@
 use dreamwell_state::STATE_CHANGE_PROMPT;
-use dreamwell_types::{Game, GameDetail, GameScene, GameTurn, GameTurnCheck, Settings};
+use dreamwell_types::{
+    substitute_macros, Game, GameDetail, GameScene, GameTurn, GameTurnCheck, MacroContext, Settings,
+};
 use serde_json::json;
 
 use crate::game_state::build_state_block;
@@ -73,19 +75,28 @@ Rules:
 - Output only the summary text"#;
 
 /// Shared scenario parameters included in every GM phase prompt.
-pub(crate) fn scenario_context_block(game: &Game) -> String {
+pub(crate) fn scenario_context_block(game: &Game, ctx: &MacroContext<'_>) -> String {
     [
-        format!("Premise / scenario:\n{}", game.premise.trim()),
-        format!("Setting / tone:\n{}", game.setting.trim()),
-        format!("GM style:\n{}", game.gm_style.trim()),
+        format!(
+            "Premise / scenario:\n{}",
+            substitute_macros(game.premise.trim(), ctx)
+        ),
+        format!(
+            "Setting / tone:\n{}",
+            substitute_macros(game.setting.trim(), ctx)
+        ),
+        format!(
+            "GM style:\n{}",
+            substitute_macros(game.gm_style.trim(), ctx)
+        ),
     ]
     .join("\n\n")
 }
 
-fn user_message_with_scenario(game: &Game, body: &str) -> String {
+fn user_message_with_scenario(game: &Game, body: &str, ctx: &MacroContext<'_>) -> String {
     format!(
         "Scenario parameters:\n{}\n\n{}",
-        scenario_context_block(game),
+        scenario_context_block(game, ctx),
         body
     )
 }
@@ -98,8 +109,9 @@ pub fn build_declare_checks_messages(
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
     let pc = detail.actors.iter().find(|a| a.role == "pc");
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
     let state_block = build_state_block(&detail.state, &detail.actors);
-    let context = build_turn_context_tiers(&detail.turns, &detail.scenes, turn.id, settings);
+    let context = build_turn_context_tiers(&detail.turns, &detail.scenes, turn.id, settings, &ctx);
     let mut body = format!(
         "Current state:\n{state_block}\n\n{}\n\nPlayer action: {}",
         format_turn_context_sections(&context),
@@ -123,7 +135,7 @@ pub fn build_declare_checks_messages(
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
-    let user = user_message_with_scenario(game, &body);
+    let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": DECLARE_CHECKS_SYSTEM }),
         json!({ "role": "user", "content": user }),
@@ -138,6 +150,7 @@ pub fn build_resolve_messages(
     guidance: &str,
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
     let state_block = build_state_block(&detail.state, &detail.actors);
     let budget = turn_context_budget(settings);
     let context = build_turn_context_tiers_with_budget(
@@ -149,6 +162,7 @@ pub fn build_resolve_messages(
             beats_chars: budget.beats_chars,
         },
         0,
+        &ctx,
     );
     let checks_text = if checks.is_empty() {
         "No checks — pure narration.".to_string()
@@ -179,7 +193,7 @@ pub fn build_resolve_messages(
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
-    let user = user_message_with_scenario(game, &body);
+    let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({
             "role": "system",
@@ -197,6 +211,7 @@ pub fn build_prose_messages(
     guidance: &str,
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
     let state_block = build_state_block(&detail.state, &detail.actors);
     let beats = turn.scene_beats.join("\n- ");
     let context = build_turn_context_tiers_with_budget(
@@ -205,6 +220,7 @@ pub fn build_prose_messages(
         turn.id,
         turn_context_budget(settings),
         1,
+        &ctx,
     );
     let tiers = checks
         .iter()
@@ -222,22 +238,30 @@ pub fn build_prose_messages(
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
-    let user = user_message_with_scenario(game, &body);
+    let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": PROSE_SYSTEM }),
         json!({ "role": "user", "content": user }),
     ]
 }
 
-pub fn build_scene_summarize_messages(detail: &GameDetail) -> Vec<serde_json::Value> {
+pub fn build_scene_summarize_messages(
+    detail: &GameDetail,
+    settings: &Settings,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
     let transcript: String = detail
         .turns
         .iter()
         .filter(|t| !t.prose.trim().is_empty())
-        .map(format_prior_prose_chunk)
+        .map(|turn| format_prior_prose_chunk(turn, &ctx))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let user = user_message_with_scenario(&detail.game, &format!("Turn transcript:\n{transcript}"));
+    let user = user_message_with_scenario(
+        &detail.game,
+        &format!("Turn transcript:\n{transcript}"),
+        &ctx,
+    );
     vec![
         json!({ "role": "system", "content": SCENE_SUMMARIZE_SYSTEM }),
         json!({ "role": "user", "content": user }),
@@ -265,8 +289,16 @@ pub(crate) fn build_turn_context_tiers(
     scenes: &[GameScene],
     before_id: i64,
     settings: &Settings,
+    ctx: &MacroContext<'_>,
 ) -> TurnContextTiers {
-    build_turn_context_tiers_with_budget(turns, scenes, before_id, turn_context_budget(settings), 0)
+    build_turn_context_tiers_with_budget(
+        turns,
+        scenes,
+        before_id,
+        turn_context_budget(settings),
+        0,
+        ctx,
+    )
 }
 
 fn build_turn_context_tiers_with_budget(
@@ -275,6 +307,7 @@ fn build_turn_context_tiers_with_budget(
     before_id: i64,
     budget: TurnContextBudget,
     min_recent_prose: usize,
+    ctx: &MacroContext<'_>,
 ) -> TurnContextTiers {
     TurnContextTiers {
         long_term: long_term_memory_context(scenes),
@@ -284,6 +317,7 @@ fn build_turn_context_tiers_with_budget(
             before_id,
             budget.prose_chars,
             min_recent_prose,
+            ctx,
         ),
     }
 }
@@ -311,11 +345,12 @@ pub(crate) fn format_turn_context_sections(tiers: &TurnContextTiers) -> String {
     sections.join("\n\n")
 }
 
-fn format_prior_prose_chunk(turn: &GameTurn) -> String {
+fn format_prior_prose_chunk(turn: &GameTurn, ctx: &MacroContext<'_>) -> String {
+    let prose = substitute_macros(turn.prose.trim(), ctx);
     if turn.is_opening {
-        format!("Opening:\n{}", turn.prose.trim())
+        format!("Opening:\n{prose}")
     } else {
-        format!("Turn: {}\n{}", turn.player_action.trim(), turn.prose.trim())
+        format!("Turn: {}\n{}", turn.player_action.trim(), prose)
     }
 }
 
@@ -347,6 +382,7 @@ fn recent_prose_context_with_budget(
     before_id: i64,
     budget: usize,
     min_sections: usize,
+    ctx: &MacroContext<'_>,
 ) -> String {
     let mut sections = Vec::new();
     let mut used = 0usize;
@@ -355,7 +391,7 @@ fn recent_prose_context_with_budget(
         .filter(|t| t.id < before_id && !t.prose.trim().is_empty())
         .rev()
     {
-        let chunk = format_prior_prose_chunk(turn);
+        let chunk = format_prior_prose_chunk(turn, ctx);
         if used + chunk.len() > budget && !sections.is_empty() {
             break;
         }
@@ -365,7 +401,7 @@ fn recent_prose_context_with_budget(
 
     let mut result = cap_turn_context_sections(sections, budget);
     if min_sections > 0 && prose_section_count(&result) < min_sections {
-        if let Some(chunk) = most_recent_prior_prose(turns, before_id) {
+        if let Some(chunk) = most_recent_prior_prose(turns, before_id, ctx) {
             result = chunk;
         }
     }
@@ -380,12 +416,16 @@ fn prose_section_count(text: &str) -> usize {
     }
 }
 
-fn most_recent_prior_prose(turns: &[GameTurn], before_id: i64) -> Option<String> {
+fn most_recent_prior_prose(
+    turns: &[GameTurn],
+    before_id: i64,
+    ctx: &MacroContext<'_>,
+) -> Option<String> {
     turns
         .iter()
         .filter(|t| t.id < before_id && !t.prose.trim().is_empty())
         .next_back()
-        .map(format_prior_prose_chunk)
+        .map(|turn| format_prior_prose_chunk(turn, ctx))
 }
 
 fn cap_turn_context_sections(mut sections: Vec<String>, max_chars: usize) -> String {
@@ -562,7 +602,7 @@ mod tests {
             max_tokens: 1024,
             system_prompt_prefix: String::new(),
             system_prompt_suffix: String::new(),
-            user_name: String::new(),
+            user_name: "Alex".into(),
             persona_description: String::new(),
             summarize_enabled: false,
             summarize_adaptive: false,
@@ -575,6 +615,10 @@ mod tests {
             auto_context_on_model_change: false,
             max_concurrent_jobs: 1,
         }
+    }
+
+    fn test_macro_ctx<'a>(detail: &'a GameDetail, settings: &'a Settings) -> MacroContext<'a> {
+        MacroContext::from_game_detail_and_settings(detail, settings)
     }
 
     #[test]
@@ -668,6 +712,15 @@ mod tests {
                 beats_chars: 4096,
             },
             0,
+            &MacroContext {
+                char_name: "Mira",
+                user_name: "Alex",
+                persona: "",
+                description: "",
+                personality: "",
+                scenario: "",
+                first_message: "",
+            },
         );
         assert!(!tiers.recent_prose.contains("Steam curls"));
         assert!(tiers.recent_prose.contains("Prose chunk for turn 7"));
@@ -684,11 +737,14 @@ mod tests {
         };
         let current = sample_turn_with_id(4);
         let scenes = vec![sample_scene("Mira runs a quiet shop.", true)];
+        let settings = test_settings();
+        let detail = sample_detail(sample_game());
         let tiers = build_turn_context_tiers(
             &[sample_opening_turn(), prior],
             &scenes,
             current.id,
-            &test_settings(),
+            &settings,
+            &test_macro_ctx(&detail, &settings),
         );
         assert!(tiers.long_term.contains("quiet shop"));
         assert!(tiers.recent_beats.contains("Mira pours tea"));
@@ -771,10 +827,38 @@ mod tests {
         }
         let current_id = 8;
         let settings = test_settings();
-        let tiers = build_turn_context_tiers(&turns, &[], current_id, &settings);
+        let detail = sample_detail(sample_game());
+        let tiers = build_turn_context_tiers(
+            &turns,
+            &[],
+            current_id,
+            &settings,
+            &test_macro_ctx(&detail, &settings),
+        );
         let beat_turn_count = tiers.recent_beats.matches("Turn:").count();
         let prose_turn_count = tiers.recent_prose.matches("Turn:").count();
         assert!(beat_turn_count > prose_turn_count);
+    }
+
+    #[test]
+    fn scenario_context_expands_user_macros() {
+        let mut game = sample_game();
+        game.setting = "Welcome {{User}} to the shop.".into();
+        game.opening_message = "Hello {{user}}, says {{char}}.".into();
+        let mut detail = sample_detail(game.clone());
+        detail.turns = vec![GameTurn {
+            prose: "Hello {{user}}, says {{char}}.".into(),
+            is_opening: true,
+            ..sample_opening_turn()
+        }];
+        let settings = test_settings();
+        let messages = build_declare_checks_messages(&game, &detail, &sample_turn(), "", &settings);
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("Welcome Alex to the shop."));
+        assert!(user.contains("Opening:"));
+        assert!(user.contains("Hello Alex, says Mira."));
+        assert!(!user.contains("{{User}}"));
+        assert!(!user.contains("{{user}}"));
     }
 
     #[test]
