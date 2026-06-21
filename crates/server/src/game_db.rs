@@ -12,6 +12,7 @@ use crate::db::{get_job, job_type_str, parse_dt, JobRow};
 use crate::error::{AppError, AppResult};
 
 const DEFAULT_SKILLS: &str = r#"{"Finesse":0,"Force":0,"Flair":0,"Focus":0,"Sway":0}"#;
+const OPENING_TURN_SORT_ORDER: i64 = -1;
 
 fn pc_traits_json(payload: &GameCreate) -> String {
     let traits = normalize_game_traits(payload.pc_traits.clone());
@@ -158,11 +159,73 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
     .execute(pool)
     .await?;
 
+    seed_opening_turn(pool, id, &payload.opening_message, &now).await?;
+
     get_game_detail(pool, id).await
+}
+
+async fn seed_opening_turn(
+    pool: &SqlitePool,
+    game_id: i64,
+    opening_message: &str,
+    now: &str,
+) -> AppResult<()> {
+    if opening_message.trim().is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO game_turns (game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, created_at, updated_at) VALUES (?1,?2,'','done','[]',?3,'[]',1,?4,?4)",
+    )
+    .bind(game_id)
+    .bind(OPENING_TURN_SORT_ORDER)
+    .bind(opening_message.trim())
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn opening_turn_id(pool: &SqlitePool, game_id: i64) -> AppResult<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM game_turns WHERE game_id = ?1 AND is_opening = 1 LIMIT 1",
+    )
+    .bind(game_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn sync_opening_turn(
+    pool: &SqlitePool,
+    game_id: i64,
+    opening_message: &str,
+) -> AppResult<()> {
+    let trimmed = opening_message.trim();
+    if let Some(turn_id) = opening_turn_id(pool, game_id).await? {
+        if trimmed.is_empty() {
+            sqlx::query("DELETE FROM game_turns WHERE id = ?1")
+                .bind(turn_id)
+                .execute(pool)
+                .await?;
+        } else {
+            let now = Utc::now().to_rfc3339();
+            sqlx::query(
+                "UPDATE game_turns SET prose = ?1, phase = 'done', updated_at = ?2 WHERE id = ?3",
+            )
+            .bind(trimmed)
+            .bind(&now)
+            .bind(turn_id)
+            .execute(pool)
+            .await?;
+        }
+    } else if !trimmed.is_empty() {
+        seed_opening_turn(pool, game_id, trimmed, &Utc::now().to_rfc3339()).await?;
+    }
+    Ok(())
 }
 
 pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> AppResult<Game> {
     let existing = get_game(pool, id).await?;
+    let opening_message_updated = payload.opening_message.is_some();
     let updated = Game {
         title: payload.title.unwrap_or(existing.title),
         premise: payload.premise.unwrap_or(existing.premise),
@@ -204,6 +267,9 @@ pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> App
     .bind(id)
     .execute(pool)
     .await?;
+    if opening_message_updated {
+        sync_opening_turn(pool, id, &updated.opening_message).await?;
+    }
     get_game(pool, id).await
 }
 
@@ -367,7 +433,7 @@ pub async fn update_state_entry(
 
 async fn list_turns(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<GameTurn>> {
     let rows = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, created_at, updated_at FROM game_turns WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
+        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, created_at, updated_at FROM game_turns WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
     )
     .bind(game_id)
     .fetch_all(pool)
@@ -401,6 +467,7 @@ async fn turn_from_row(pool: &SqlitePool, row: TurnRow) -> AppResult<GameTurn> {
         prose: row.prose,
         state_changes: parse_state_changes(&row.state_changes),
         checks,
+        is_opening: row.is_opening != 0,
         generation_error,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
@@ -542,7 +609,7 @@ pub async fn prepare_submit_turn(
     .await?;
     let now = Utc::now().to_rfc3339();
     let turn_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO game_turns (game_id, sort_order, player_action, phase, created_at, updated_at) VALUES (?1,?2,?3,'pending',?4,?4) RETURNING id",
+        "INSERT INTO game_turns (game_id, sort_order, player_action, phase, is_opening, created_at, updated_at) VALUES (?1,?2,?3,'pending',0,?4,?4) RETURNING id",
     )
     .bind(game_id)
     .bind(sort_order)
@@ -561,6 +628,7 @@ pub async fn prepare_submit_turn(
             scene_beats: "[]".to_string(),
             prose: String::new(),
             state_changes: "[]".to_string(),
+            is_opening: 0,
             created_at: now.clone(),
             updated_at: now,
         },
@@ -607,6 +675,9 @@ pub async fn prepare_regenerate_turn(
     turn_id: i64,
 ) -> AppResult<Job> {
     let turn = get_turn(pool, game_id, turn_id).await?;
+    if turn.is_opening {
+        return Err(AppError::bad_request("Opening scene cannot be regenerated"));
+    }
     if turn.phase == "failed" {
         return prepare_retry_turn(pool, game_id, turn_id, &turn).await;
     }
@@ -698,7 +769,7 @@ async fn prepare_retry_turn(
 
 pub async fn get_turn(pool: &SqlitePool, game_id: i64, turn_id: i64) -> AppResult<GameTurn> {
     let row = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, created_at, updated_at FROM game_turns WHERE id = ?1 AND game_id = ?2",
+        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, created_at, updated_at FROM game_turns WHERE id = ?1 AND game_id = ?2",
     )
     .bind(turn_id)
     .bind(game_id)
@@ -920,6 +991,7 @@ struct TurnRow {
     scene_beats: String,
     prose: String,
     state_changes: String,
+    is_opening: i64,
     created_at: String,
     updated_at: String,
 }
