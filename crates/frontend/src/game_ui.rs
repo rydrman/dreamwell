@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use dreamwell_types::*;
 use web_sys::{HtmlInputElement, HtmlTextAreaElement};
@@ -6,11 +8,15 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::game_presets_ui::GmTonePresetPicker;
-use crate::game_sync::should_replace_detail_from_sse;
+use crate::game_sync::{detail_stale_vs_sse, should_replace_detail_from_sse};
 use crate::generation_ui::{game_notice, GenerationStatusBar};
 use crate::markdown::render_message_content;
 use crate::message_menu::MessageOptionsMenu;
 use crate::router::{AppRoute, Overlay};
+use crate::state_ui::{
+    sort_state_rows, PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel,
+    StateEntryRow,
+};
 use crate::title_editor::TitleEditor;
 
 #[derive(Properties, PartialEq)]
@@ -58,28 +64,9 @@ fn phase_label(phase: &str) -> &str {
     }
 }
 
-fn state_kind_order(kind: StateKind) -> u8 {
-    match kind {
-        StateKind::Resource => 0,
-        StateKind::Condition => 1,
-        StateKind::Fact => 2,
-        StateKind::Clock => 3,
-    }
-}
-
 fn sorted_skills(skills: &std::collections::HashMap<String, i64>) -> Vec<(String, i64)> {
     let mut rows: Vec<_> = skills.iter().map(|(k, v)| (k.clone(), *v)).collect();
     rows.sort_by(|left, right| left.0.cmp(&right.0));
-    rows
-}
-
-fn sorted_state_entries(state: &[GameStateEntry]) -> Vec<GameStateEntry> {
-    let mut rows = state.to_vec();
-    rows.sort_by(|left, right| {
-        state_kind_order(left.kind)
-            .cmp(&state_kind_order(right.kind))
-            .then_with(|| left.key.cmp(&right.key))
-    });
     rows
 }
 
@@ -105,8 +92,27 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 });
                 stream = Some(api::GameStream::new(game_id, {
                     let detail = detail.clone();
+                    let had_active_job = Rc::new(RefCell::new(false));
+                    let had_active_job = had_active_job.clone();
                     move |payload| {
-                        if should_replace_detail_from_sse(payload.active_job.as_ref())
+                        let was_active = *had_active_job.borrow();
+                        let now_active = payload.active_job.is_some();
+                        if now_active {
+                            *had_active_job.borrow_mut() = true;
+                        }
+                        let job_just_finished = (was_active && !now_active)
+                            || (*detail)
+                                .as_ref()
+                                .is_some_and(|d| detail_stale_vs_sse(d, payload.active_job.as_ref()));
+                        if job_just_finished {
+                            let detail_ref = detail.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(d) = api::get_game(game_id).await {
+                                    detail_ref.set(Some(d));
+                                }
+                            });
+                            *had_active_job.borrow_mut() = false;
+                        } else if should_replace_detail_from_sse(payload.active_job.as_ref())
                             || (*detail).is_none()
                         {
                             detail.set(Some(payload.detail));
@@ -143,9 +149,16 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     player_action: action,
                     guidance_notes: guidance,
                 };
-                if let Ok(d) = api::submit_turn(game_id, &payload).await {
-                    detail.set(Some(d));
-                    action_input.set(String::new());
+                match api::submit_turn(game_id, &payload).await {
+                    Ok(d) => {
+                        detail.set(Some(d));
+                        action_input.set(String::new());
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&format!("Could not submit turn: {err}"));
+                        }
+                    }
                 }
                 submitting.set(false);
             });
@@ -171,8 +184,13 @@ pub fn game_shell(props: &GameShellProps) -> Html {
             let Some(game_id) = game_id else { return };
             let detail = detail.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(d) = api::regenerate_turn(game_id, turn_id).await {
-                    detail.set(Some(d));
+                match api::regenerate_turn(game_id, turn_id).await {
+                    Ok(d) => detail.set(Some(d)),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&format!("Could not retry turn: {err}"));
+                        }
+                    }
                 }
             });
         })
@@ -250,6 +268,10 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 
     let game_detail = (*detail).clone();
     let notice = game_detail.as_ref().and_then(game_notice);
+    let model_missing = props
+        .settings
+        .as_ref()
+        .is_some_and(|s| s.model.trim().is_empty());
     let state_overlay_open = props.route.overlay() == Some(Overlay::State);
     let opening_message = game_detail.as_ref().and_then(|detail| {
         let text = detail.game.opening_message.trim();
@@ -353,12 +375,14 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let step_paused = turn.phase.ends_with("_pause");
                                 let show_continue = step_paused;
                                 let show_regenerate = turn.phase == "done";
+                                let show_retry = turn.phase == "failed";
                                 let show_align_prose = turn.phase == "done"
                                     && !turn.prose.is_empty()
                                     && !turn.scene_beats.is_empty();
                                 let show_recheck_state = turn.phase == "done" && !turn.prose.is_empty();
                                 let can_menu = show_continue
                                     || show_regenerate
+                                    || show_retry
                                     || show_align_prose
                                     || show_recheck_state;
                                 html! {
@@ -391,6 +415,15 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                 {"Regenerate"}
                                                             </button>
                                                         }
+                                                        if show_retry {
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item"
+                                                                onclick={on_regenerate.reform(move |_| turn_id)}
+                                                            >
+                                                                {"Retry"}
+                                                            </button>
+                                                        }
                                                         if show_align_prose {
                                                             <button
                                                                 type="button"
@@ -412,13 +445,40 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                     </MessageOptionsMenu>
                                                 }
                                             </div>
+                                            if turn.phase == "failed" {
+                                                if let Some(error) = turn.generation_error.as_deref() {
+                                                    <div class="message-error" role="alert">
+                                                        <strong>{"Generation failed"}</strong>
+                                                        <span>{ error }</span>
+                                                        <button
+                                                            type="button"
+                                                            class="btn secondary btn-compact"
+                                                            style="margin-top:0.5rem;"
+                                                            onclick={on_regenerate.reform(move |_| turn_id)}
+                                                        >
+                                                            {"Retry"}
+                                                        </button>
+                                                    </div>
+                                                } else {
+                                                    <div class="message-error" role="alert">
+                                                        <strong>{"Generation failed"}</strong>
+                                                        <span>{"The turn did not complete. Use Retry to try again."}</span>
+                                                        <button
+                                                            type="button"
+                                                            class="btn secondary btn-compact"
+                                                            style="margin-top:0.5rem;"
+                                                            onclick={on_regenerate.reform(move |_| turn_id)}
+                                                        >
+                                                            {"Retry"}
+                                                        </button>
+                                                    </div>
+                                                }
+                                            }
                                             if !turn.checks.is_empty() {
-                                                <GamePhaseSection
-                                                    turn_id={turn_id}
-                                                    phase_key={"checks".to_string()}
-                                                    label={"Checks"}
-                                                    expanded={expanded_phases.contains(&(turn_id, "checks".to_string())) || is_active}
-                                                    on_toggle={toggle_phase.clone()}
+                                                <PhaseSection
+                                                    label={"Checks".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "checks".to_string())) || is_active)}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "checks".to_string())))}
                                                 >
                                                     { for turn.checks.iter().map(|c| html! {
                                                         <div class="check-item">
@@ -428,16 +488,14 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                             <div class="muted small">{ &c.justification }</div>
                                                         </div>
                                                     }) }
-                                                </GamePhaseSection>
+                                                </PhaseSection>
                                             }
 
                                             if turn.checks.iter().any(|c| !c.rolls.is_empty()) {
-                                                <GamePhaseSection
-                                                    turn_id={turn_id}
-                                                    phase_key={"roll".to_string()}
-                                                    label={"Roll"}
-                                                    expanded={expanded_phases.contains(&(turn_id, "roll".to_string())) || is_active}
-                                                    on_toggle={toggle_phase.clone()}
+                                                <PhaseSection
+                                                    label={"Roll".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "roll".to_string())) || is_active)}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "roll".to_string())))}
                                                 >
                                                     { for turn.checks.iter().map(|c| html! {
                                                         <div class={classes!("roll-result", tier_class(c.tier))}>
@@ -446,46 +504,31 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                             <span class="tier-badge">{ tier_label(c.tier) }</span>
                                                         </div>
                                                     }) }
-                                                </GamePhaseSection>
+                                                </PhaseSection>
                                             }
 
                                             if !turn.state_changes.is_empty() {
-                                                <GamePhaseSection
-                                                    turn_id={turn_id}
-                                                    phase_key={"state".to_string()}
-                                                    label={"State changes"}
-                                                    expanded={expanded_phases.contains(&(turn_id, "state".to_string()))}
-                                                    on_toggle={toggle_phase.clone()}
+                                                <PhaseSection
+                                                    label={"State changes".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "state".to_string())))}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "state".to_string())))}
                                                 >
-                                                    { for turn.state_changes.iter().map(|sc| html! {
-                                                        <div class="state-delta">
-                                                            { format!("{} {}.{} {:?} ", sc.target, format!("{:?}", sc.kind).to_lowercase(), sc.key, sc.op) }
-                                                            if let Some(prev) = sc.prev_num {
-                                                                { format!("{prev} → ") }
-                                                            }
-                                                            if let Some(delta) = sc.delta {
-                                                                { format!("Δ{delta}") }
-                                                            }
-                                                            if let Some(val) = &sc.value {
-                                                                { val.clone() }
-                                                            }
-                                                        </div>
-                                                    }) }
-                                                </GamePhaseSection>
+                                                    <StateChangesList changes={turn.state_changes.clone()} />
+                                                </PhaseSection>
                                             }
 
                                             if !turn.scene_beats.is_empty() {
-                                                <GamePhaseSection
-                                                    turn_id={turn_id}
-                                                    phase_key={"scene".to_string()}
-                                                    label={"Scene"}
-                                                    expanded={expanded_phases.contains(&(turn_id, "scene".to_string()))}
-                                                    on_toggle={toggle_phase.clone()}
+                                                <PhaseSection
+                                                    label={"Scene".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "scene".to_string())))}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "scene".to_string())))}
                                                 >
-                                                    <ul class="scene-beats">
-                                                        { for turn.scene_beats.iter().map(|b| html! { <li>{ b }</li> }) }
-                                                    </ul>
-                                                </GamePhaseSection>
+                                                    <PlanBeatsList
+                                                        beats={turn.scene_beats.clone()}
+                                                        label={"Scene".to_string()}
+                                                        inline={true}
+                                                    />
+                                                </PhaseSection>
                                             }
 
                                             if !turn.prose.is_empty() || turn.phase == "prose" {
@@ -501,6 +544,12 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 
                         if let Some(notice) = notice {
                             <GenerationStatusBar notice={notice} />
+                        }
+                        if model_missing {
+                            <div class="message-error composer-notice" role="alert">
+                                <strong>{"No model configured"}</strong>
+                                <span>{"Open Settings and choose a model before taking actions."}</span>
+                            </div>
                         }
                         <div class="composer game-composer">
                             <textarea
@@ -529,7 +578,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                     }
                                 })}
                             />
-                            <button class="btn" disabled={*submitting} onclick={on_submit}>
+                            <button class="btn" disabled={*submitting || model_missing} onclick={on_submit}>
                                 { if *submitting { "Submitting…" } else { "Take action" } }
                             </button>
                         </div>
@@ -560,44 +609,6 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 }
 
 #[derive(Properties, PartialEq)]
-struct GamePhaseSectionProps {
-    turn_id: i64,
-    phase_key: String,
-    label: &'static str,
-    expanded: bool,
-    on_toggle: Callback<(i64, String)>,
-    children: Children,
-}
-
-#[function_component(GamePhaseSection)]
-fn game_phase_section(props: &GamePhaseSectionProps) -> Html {
-    let turn_id = props.turn_id;
-    let phase_key = props.phase_key.clone();
-    let on_toggle = props.on_toggle.clone();
-    let expanded = props.expanded;
-
-    html! {
-        <div class="message-thought game-phase-section">
-            <button
-                type="button"
-                class="message-thought-toggle"
-                onclick={Callback::from(move |_| on_toggle.emit((turn_id, phase_key.clone())))}
-            >
-                <span class="message-thought-label">{ props.label }</span>
-                <span class="message-thought-chevron" aria-hidden="true">
-                    { if expanded { "▾" } else { "▸" } }
-                </span>
-            </button>
-            if expanded {
-                <div class="message-thought-body game-phase-section-body">
-                    { for props.children.iter() }
-                </div>
-            }
-        </div>
-    }
-}
-
-#[derive(Properties, PartialEq)]
 pub struct GameStateOverlayProps {
     pub game_detail: GameDetail,
     pub on_close: Callback<()>,
@@ -609,7 +620,7 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
     let game_detail = &props.game_detail;
     let detail_state = props.on_detail.clone();
     let game_id = game_detail.game.id;
-    let state_entries = sorted_state_entries(&game_detail.state);
+    let state_rows = sort_state_rows(game_detail.state.iter().map(StateEntryRow::from).collect());
 
     html! {
         <div id="game-state-panel" class="settings-popover panel-overlay">
@@ -775,22 +786,7 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                         </div>
                     </div>
                 }) }
-                <div class="state-entries">
-                    { for state_entries.iter().map(|entry| {
-                        let label = format!("{:?}", entry.kind).to_lowercase();
-                        let value_text = if matches!(entry.kind, StateKind::Resource | StateKind::Clock) {
-                            format!(" {}/{}", entry.num_value.unwrap_or(0), entry.max_value.unwrap_or(0))
-                        } else {
-                            format!(" {}", entry.value)
-                        };
-                        html! {
-                            <div class="state-entry" key={entry.id}>
-                                <span class="state-key">{ format!("{label}: {}", entry.key) }</span>
-                                <span>{ value_text }</span>
-                            </div>
-                        }
-                    }) }
-                </div>
+                <StateEntriesPanel entries={state_rows} />
                 <label class="step-mode-toggle">
                     <input
                         type="checkbox"

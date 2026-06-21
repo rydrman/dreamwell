@@ -171,6 +171,8 @@ mod tests {
         let detail = StoryDetail {
             story: detail_story,
             chapters: vec![],
+            actors: vec![],
+            state: vec![],
         };
         let list_story = sample_story(1, "List");
         assert!(detail_stale_vs_story_list(&detail, &list_story));
@@ -184,6 +186,8 @@ mod tests {
         let detail = StoryDetail {
             story: detail_story,
             chapters: vec![],
+            actors: vec![],
+            state: vec![],
         };
         let mut list_story = sample_story(1, "List");
         list_story.active_job = Some(job);
@@ -196,6 +200,8 @@ mod tests {
         let detail = StoryDetail {
             story: sample_story(1, "Fresh"),
             chapters: vec![],
+            actors: vec![],
+            state: vec![],
         };
         let merged = story_list_with_detail(&stories, &detail);
         assert_eq!(merged[0].title, "Fresh");

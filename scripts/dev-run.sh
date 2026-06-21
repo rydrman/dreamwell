@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Bind-mounted repo is owned by the host user; the dev container runs as root.
+git config --global --add safe.directory "$(pwd)"
+
 TRUNK="${CARGO_HOME:-/usr/local/cargo}/bin/trunk"
 
 trunk_pid=
@@ -29,6 +32,8 @@ cargo watch \
   -w crates/dreamwell-types \
   -w Cargo.toml \
   -w Cargo.lock \
+  -d 2 \
+  --no-restart \
   -x 'run --release -p dreamwell-server'
 
 cleanup

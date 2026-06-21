@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/dreamwell-types", "crates/server", "crates/frontend"]
+members = [
+    "crates/dreamwell-types",
+    "crates/dreamwell-state",
+    "crates/server",
+    "crates/frontend",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +14,7 @@ license = "MIT"
 
 [workspace.dependencies]
 dreamwell-types = { path = "crates/dreamwell-types" }
+dreamwell-state = { path = "crates/dreamwell-state" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }

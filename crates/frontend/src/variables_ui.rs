@@ -1753,6 +1753,8 @@ mod tests {
                 queued_jobs: 0,
             },
             chapters: vec![],
+            actors: vec![],
+            state: vec![],
         }
     }
 

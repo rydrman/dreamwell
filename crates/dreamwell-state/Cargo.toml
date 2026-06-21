@@ -1,0 +1,12 @@
+[package]
+name = "dreamwell-state"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dreamwell-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }

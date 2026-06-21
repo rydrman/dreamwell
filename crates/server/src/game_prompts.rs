@@ -270,28 +270,7 @@ pub fn declare_checks_schema() -> serde_json::Value {
 }
 
 pub fn resolve_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "scene_beats": { "type": "array", "items": { "type": "string" } },
-            "state_changes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "target": { "type": "string" },
-                        "kind": { "type": "string", "enum": ["resource", "condition", "fact", "clock"] },
-                        "key": { "type": "string" },
-                        "op": { "type": "string", "enum": ["set", "add", "remove"] },
-                        "value": { "type": "string" },
-                        "delta": { "type": "integer" }
-                    },
-                    "required": ["target", "kind", "key", "op"]
-                }
-            }
-        },
-        "required": ["scene_beats", "state_changes"]
-    })
+    dreamwell_state::resolve_schema()
 }
 
 #[cfg(test)]
@@ -357,6 +336,7 @@ mod tests {
             prose: String::new(),
             state_changes: vec![],
             checks: vec![],
+            generation_error: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

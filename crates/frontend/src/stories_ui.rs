@@ -18,6 +18,9 @@ use crate::generation_ui::{
 };
 use crate::item_list::StoryList;
 use crate::router::{AppRoute, Overlay, StoryNav};
+use crate::state_ui::{
+    PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow,
+};
 use crate::story_save::{
     draft_is_dirty, fail_auto_save, finish_auto_save, use_autosave_tab_flush, AutoSaveController,
     AutoSaveField, AutoSaveOutcome, AutoSavePhase,
@@ -2533,6 +2536,19 @@ fn beat_editor(props: &BeatEditorProps) -> Html {
                     )}
                 />
             </div>
+            if !beat.state_changes.is_empty() {
+                <PhaseSection label={"State changes".to_string()} default_expanded={false}>
+                    <StateChangesList changes={beat.state_changes.clone()} />
+                </PhaseSection>
+            }
+            if !beat.plan_beats.is_empty() {
+                <PhaseSection
+                    label={"Plan".to_string()}
+                    default_expanded={streaming || prose_value.trim().is_empty()}
+                >
+                    <PlanBeatsList beats={beat.plan_beats.clone()} inline={true} />
+                </PhaseSection>
+            }
             <label class="field"><span class="muted">{"Prose"}</span>
                 <div class="prose-editor-wrap">
                     <AutoSaveField phase={*save_phase} error={(*save_error).clone()}>
@@ -3127,6 +3143,11 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
     let (on_save, on_delete) =
         make_story_variable_handlers(story_id, variables, Some(props.on_detail.clone()));
 
+    let state_rows: Vec<StateEntryRow> = detail
+        .as_ref()
+        .map(|detail| detail.state.iter().map(StateEntryRow::from).collect())
+        .unwrap_or_default();
+
     html! {
         <div id="story-variables-panel" class="settings-popover panel-overlay" ref={panel_ref} oninput={container_input_callback()}>
             <div class="settings-header">
@@ -3134,6 +3155,7 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
             </div>
             <div class="panel-overlay-body">
+                <StateEntriesPanel entries={state_rows} />
                 <VariableList
                     rows={rows}
                     scope_options={scope_options}

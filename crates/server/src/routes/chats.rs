@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::time::Duration;
 
 use async_stream::stream;
@@ -12,9 +11,9 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    Chat, ChatCreate, ChatStreamPayload, ChatUpdate, ChatVariable, ChatVariableUpdate, Job,
-    Message, MessageRole, OkResponse, QueueStatus, RegenerateMessageRequest,
-    RegenerateSummaryRequest, SendMessageRequest, UpdateMessageRequest,
+    Chat, ChatCreate, ChatDetail, ChatStateEntryUpdate, ChatStreamPayload, ChatUpdate,
+    ChatVariable, ChatVariableUpdate, Job, Message, MessageRole, OkResponse, QueueStatus,
+    RegenerateMessageRequest, RegenerateSummaryRequest, SendMessageRequest, UpdateMessageRequest,
 };
 
 use crate::db;
@@ -52,6 +51,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/:id/variables", get(list_variables).put(upsert_variable))
         .route("/:id/variables/:variable_id", delete(delete_variable))
+        .route(
+            "/:id/state/:entry_id",
+            axum::routing::patch(update_state_entry),
+        )
         .route("/:id/summarize", post(summarize_chat))
         .route("/:id/summary", delete(delete_chat_summary))
         .route("/:id/summary/regenerate", post(regenerate_chat_summary))
@@ -80,8 +83,21 @@ async fn get_queue(State(state): State<AppState>) -> AppResult<Json<QueueStatus>
     Ok(Json(QueueStatus { running, queued }))
 }
 
-async fn get_chat(State(state): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Chat>> {
-    Ok(Json(db::get_chat(&state.pool, id).await?))
+async fn get_chat(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<ChatDetail>> {
+    Ok(Json(db::get_chat_detail(&state.pool, id).await?))
+}
+
+async fn update_state_entry(
+    State(state): State<AppState>,
+    Path((id, entry_id)): Path<(i64, i64)>,
+    Json(payload): Json<ChatStateEntryUpdate>,
+) -> AppResult<Json<ChatDetail>> {
+    db::update_chat_state_entry(&state.pool, id, entry_id, payload).await?;
+    db::touch_chat(&state.pool, id).await?;
+    Ok(Json(db::get_chat_detail(&state.pool, id).await?))
 }
 
 async fn update_chat(
@@ -225,12 +241,20 @@ async fn regenerate_message(
     }
 
     let variable_updates = message.variable_updates.clone();
+    let state_changes = message.state_changes.clone();
     let is_last = db::is_last_message(&state.pool, id, message_id).await?;
     if !is_last || payload.rewind {
         rewind_after_message(&state, id, message_id).await?;
     }
 
-    revert_message_variable_updates(&state.pool, id, message_id, &variable_updates).await?;
+    let settings = db::get_settings(&state.pool).await?;
+    if settings.variables_enabled && !state_changes.is_empty() {
+        let actors = db::list_chat_actors(&state.pool, id).await?;
+        crate::chat_state::revert_message_state_changes(&state.pool, id, &state_changes, &actors)
+            .await?;
+    } else {
+        revert_message_variable_updates(&state.pool, id, message_id, &variable_updates).await?;
+    }
 
     for job in db::list_active_jobs_for_message(&state.pool, message_id).await? {
         state.queue.cancel_job(&state.pool, job.id).await?;
@@ -239,6 +263,7 @@ async fn regenerate_message(
     db::update_message_content(&state.pool, message_id, "").await?;
     db::clear_message_thoughts(&state.pool, message_id).await?;
     db::clear_message_variable_updates(&state.pool, message_id).await?;
+    db::clear_message_typed_state(&state.pool, message_id).await?;
     let job = enqueue_generation(&state.pool, &state.queue, id, message_id).await?;
     db::touch_chat(&state.pool, id).await?;
     let mut updated = db::get_message(&state.pool, id, message_id).await?;
@@ -338,21 +363,26 @@ async fn stream_chat(
     let event_stream = stream! {
         let mut last_payload = String::new();
         loop {
-            let chat = match db::get_chat(&pool, id).await {
-                Ok(chat) => chat,
-                Err(_) => {
-                    yield Ok::<_, Infallible>(Event::default().event("error").data("{\"detail\":\"not found\"}"));
-                    break;
-                }
-            };
+            let detail = db::get_chat_detail(&pool, id).await;
             let messages = db::list_messages(&pool, id).await.unwrap_or_default();
             let active_job = db::get_active_job(&pool, id).await.ok().flatten();
             let has_active_job = active_job.is_some();
-            let payload = serde_json::to_string(&ChatStreamPayload {
-                chat,
-                messages,
-                active_job,
-            }).unwrap_or_default();
+            let payload = match detail {
+                Ok(detail) => serde_json::to_string(&ChatStreamPayload {
+                    chat: detail.chat,
+                    messages,
+                    actors: detail.actors,
+                    state: detail.state,
+                    active_job,
+                })
+                .unwrap_or_default(),
+                Err(_) => {
+                    yield Ok::<_, std::convert::Infallible>(
+                        Event::default().event("error").data("{\"detail\":\"not found\"}"),
+                    );
+                    break;
+                }
+            };
 
             if payload != last_payload {
                 last_payload = payload.clone();

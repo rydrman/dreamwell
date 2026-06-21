@@ -8,31 +8,56 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::chat_prompts::{build_plan_messages, build_prose_messages, chat_plan_schema};
+use crate::chat_state::{apply_state_changes, build_state_block};
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::inference::{chat_completion, stream_chat_completion};
+use crate::inference::{chat_completion, chat_completion_json, stream_chat_completion};
 use crate::message_followups::{enqueue_chat_followups, ChatGenerationComplete};
 use crate::prompts::build_messages_for_inference;
 use crate::story_prompts::{
-    build_beat_outline_messages, build_beat_prose_continue_messages, build_beat_prose_messages,
+    build_beat_outline_messages, build_beat_prose_continue_messages,
+    build_beat_prose_continue_typed_messages, build_beat_prose_messages,
     build_chapter_outline_messages, build_propose_beats_messages, build_propose_chapters_messages,
-    parse_beats_proposal_json, parse_chapters_proposal_json, parse_outline_json,
+    build_story_plan_messages, build_story_prose_from_plan_messages, parse_beats_proposal_json,
+    parse_chapters_proposal_json, parse_outline_json, story_plan_schema,
+};
+use crate::story_state::{
+    apply_state_changes as apply_story_state_changes, build_state_block as build_story_state_block,
 };
 use crate::summarize::{
     enqueue_regenerate_summary_for_chat, enqueue_summarize_for_chat, run_summarize_job,
     summarize_job_kind,
 };
 use crate::thoughts::{parse_thought_blocks, strip_thought_blocks};
-use crate::variable_recheck::{enqueue_variable_recheck_for_message, run_variable_recheck_job};
-use crate::variables::{
-    apply_variable_updates, build_message_variable_updates, parse_variable_updates,
-    visible_text_without_variables,
-};
+use crate::variable_recheck::enqueue_variable_recheck_for_message;
 
 /// Slightly above inference request timeout so hung jobs do not block the queue forever.
 const STUCK_JOB_MAX_AGE_SECS: i64 = 920;
 const QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// Limit how often streaming generation writes partial content (SSE polls every ~250ms).
+const STREAM_DB_FLUSH_INTERVAL: Duration = Duration::from_millis(200);
+
+struct StreamDbThrottle {
+    last_flush: Instant,
+}
+
+impl StreamDbThrottle {
+    fn new() -> Self {
+        Self {
+            last_flush: Instant::now() - STREAM_DB_FLUSH_INTERVAL,
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.last_flush.elapsed() >= STREAM_DB_FLUSH_INTERVAL
+    }
+
+    fn mark_flushed(&mut self) {
+        self.last_flush = Instant::now();
+    }
+}
 
 fn generation_max_retries() -> u32 {
     config::GENERATION_MAX_RETRIES
@@ -572,11 +597,15 @@ async fn fail_job(
         | JobType::StoryBeatMechanical
         | JobType::StoryBeatVariableRecheck
         | JobType::StoryBeatProseRecheck
-        | JobType::GameTurnCheck
+        |         JobType::GameTurnCheck
         | JobType::GameTurnResolve
         | JobType::GameTurnScenePlan
-        | JobType::GameTurnProse
-        | JobType::GameSceneSummarize
+        | JobType::GameTurnProse => {
+            if let Some(turn_id) = job.turn_id {
+                let _ = db::update_turn_phase(pool, turn_id, "failed").await;
+            }
+        }
+        JobType::GameSceneSummarize
         | JobType::GameProseRecheck
         | JobType::GameStateRecheck => {}
     }
@@ -600,7 +629,11 @@ async fn run_variable_recheck_job_handler(
         .message_id
         .ok_or_else(|| AppError::internal("variable recheck job missing message_id"))?;
 
-    match run_variable_recheck_job(pool, job_id, chat_id, message_id, settings).await {
+    match crate::state_recheck::run_chat_state_recheck_job(
+        pool, job_id, chat_id, message_id, settings,
+    )
+    .await
+    {
         Ok(()) => Ok(()),
         Err(err) => {
             fail_job(pool, job_id, job, &err.to_string()).await?;
@@ -731,6 +764,152 @@ async fn run_chat_generation_attempt(
     messages: &[serde_json::Value],
     token: &CancellationToken,
 ) -> AppResult<ChatGenerationOutcome> {
+    if settings.variables_enabled {
+        return run_chat_typed_generation_attempt(
+            pool, job_id, chat_id, message_id, settings, messages, token,
+        )
+        .await;
+    }
+    run_chat_legacy_generation_attempt(pool, job_id, chat_id, message_id, settings, messages, token)
+        .await
+}
+
+async fn run_chat_typed_generation_attempt(
+    pool: &SqlitePool,
+    job_id: i64,
+    chat_id: i64,
+    message_id: i64,
+    settings: &dreamwell_types::Settings,
+    _messages: &[serde_json::Value],
+    token: &CancellationToken,
+) -> AppResult<ChatGenerationOutcome> {
+    let chat = db::get_chat(pool, chat_id).await?;
+    let character = db::get_character(pool, chat.character_id).await.ok();
+
+    db::update_message_generation_phase(pool, message_id, "plan").await?;
+    let plan_messages =
+        build_plan_messages(pool, chat_id, &chat.summary, chat.character_id, settings).await?;
+
+    let plan: dreamwell_types::PlanPhaseResponse = match chat_completion_json(
+        &settings.inference_url,
+        &settings.model,
+        &plan_messages,
+        0.4,
+        settings.top_p,
+        structured_output_tokens(settings),
+        Some(&chat_plan_schema()),
+        generation_max_retries(),
+        token,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(err) => return Ok(ChatGenerationOutcome::Retryable(err.to_string())),
+    };
+
+    if token.is_cancelled() {
+        return Ok(ChatGenerationOutcome::Cancelled);
+    }
+
+    let actors = db::list_chat_actors(pool, chat_id).await?;
+    let current = db::list_chat_state_entries(pool, chat_id).await?;
+    let applied = apply_state_changes(
+        pool,
+        chat_id,
+        message_id,
+        &plan.state_changes,
+        &actors,
+        &current,
+    )
+    .await?;
+    db::save_message_plan(pool, message_id, &plan.beats, &applied).await?;
+
+    let state = db::list_chat_state_entries(pool, chat_id).await?;
+    let state_block = build_state_block(&state, &actors);
+    let prose_messages =
+        build_prose_messages(&plan.beats, &state_block, settings, character.as_ref());
+
+    let mut stream = match stream_chat_completion(
+        &settings.inference_url,
+        &settings.model,
+        &prose_messages,
+        settings.temperature,
+        settings.top_p,
+        settings.max_tokens,
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(err) => return Ok(ChatGenerationOutcome::Retryable(err.to_string())),
+    };
+
+    let mut accumulated = String::new();
+    let mut db_throttle = StreamDbThrottle::new();
+    while let Some(token_result) = stream.next().await {
+        if token.is_cancelled() {
+            return Ok(ChatGenerationOutcome::Cancelled);
+        }
+        match token_result {
+            Ok(piece) => {
+                accumulated.push_str(&piece);
+                if db_throttle.ready() {
+                    db::update_message_content(pool, message_id, &accumulated).await?;
+                    db::touch_chat(pool, chat_id).await?;
+                    db_throttle.mark_flushed();
+                }
+            }
+            Err(err) => {
+                if accumulated.is_empty() {
+                    return Ok(ChatGenerationOutcome::Retryable(err.to_string()));
+                }
+                db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
+                return Ok(ChatGenerationOutcome::Failed);
+            }
+        }
+    }
+
+    if token.is_cancelled() {
+        return Ok(ChatGenerationOutcome::Cancelled);
+    }
+
+    if accumulated.trim().is_empty() {
+        return Ok(ChatGenerationOutcome::Retryable(
+            "model returned no text".to_string(),
+        ));
+    }
+
+    db::finalize_message_typed_generation(
+        pool,
+        message_id,
+        &accumulated,
+        "",
+        None,
+        false,
+        &plan.beats,
+        &applied,
+    )
+    .await?;
+
+    Ok(ChatGenerationOutcome::Success)
+}
+
+fn structured_output_tokens(settings: &dreamwell_types::Settings) -> i64 {
+    if settings.context_tokens > 0 {
+        (settings.context_tokens / 8).clamp(256, 768)
+    } else {
+        512
+    }
+}
+
+async fn run_chat_legacy_generation_attempt(
+    pool: &SqlitePool,
+    job_id: i64,
+    chat_id: i64,
+    message_id: i64,
+    settings: &dreamwell_types::Settings,
+    messages: &[serde_json::Value],
+    token: &CancellationToken,
+) -> AppResult<ChatGenerationOutcome> {
     let mut stream = match stream_chat_completion(
         &settings.inference_url,
         &settings.model,
@@ -748,6 +927,7 @@ async fn run_chat_generation_attempt(
     let mut accumulated = String::new();
     let mut thought_started_at: Option<Instant> = None;
     let mut thought_duration_ms: Option<i64> = None;
+    let mut db_throttle = StreamDbThrottle::new();
     while let Some(token_result) = stream.next().await {
         if token.is_cancelled() {
             return Ok(ChatGenerationOutcome::Cancelled);
@@ -755,23 +935,26 @@ async fn run_chat_generation_attempt(
         match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
-                if settings.thought_blocks_enabled {
-                    let parsed = parse_thought_blocks(&accumulated);
-                    let (duration_ms, in_progress) =
-                        thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
-                    db::update_message_generation(
-                        pool,
-                        message_id,
-                        &parsed.reply,
-                        &parsed.thought,
-                        duration_ms,
-                        in_progress,
-                    )
-                    .await?;
-                } else {
-                    db::update_message_content(pool, message_id, &accumulated).await?;
+                if db_throttle.ready() {
+                    if settings.thought_blocks_enabled {
+                        let parsed = parse_thought_blocks(&accumulated);
+                        let (duration_ms, in_progress) =
+                            thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
+                        db::update_message_generation(
+                            pool,
+                            message_id,
+                            &parsed.reply,
+                            &parsed.thought,
+                            duration_ms,
+                            in_progress,
+                        )
+                        .await?;
+                    } else {
+                        db::update_message_content(pool, message_id, &accumulated).await?;
+                    }
+                    db::touch_chat(pool, chat_id).await?;
+                    db_throttle.mark_flushed();
                 }
-                db::touch_chat(pool, chat_id).await?;
             }
             Err(err) => {
                 if accumulated.is_empty() {
@@ -836,17 +1019,7 @@ async fn run_chat_generation_attempt(
         processed
     };
 
-    let updates = if settings.variables_enabled {
-        parse_variable_updates(&processed)
-    } else {
-        Vec::new()
-    };
-
-    let visible_text = if settings.variables_enabled {
-        visible_text_without_variables(&processed)
-    } else {
-        processed.clone()
-    };
+    let visible_text = processed.clone();
 
     if visible_text.trim().is_empty() {
         return Ok(ChatGenerationOutcome::Retryable(
@@ -854,16 +1027,7 @@ async fn run_chat_generation_attempt(
         ));
     }
 
-    let variable_updates = if settings.variables_enabled && !updates.is_empty() {
-        let updates_for_message =
-            build_message_variable_updates(pool, chat_id, message_id, &updates).await?;
-        apply_variable_updates(pool, chat_id, message_id, &updates).await?;
-        updates_for_message
-    } else {
-        Vec::new()
-    };
-    if settings.thought_blocks_enabled || settings.variables_enabled || !variable_updates.is_empty()
-    {
+    if settings.thought_blocks_enabled {
         db::finalize_message_generation(
             pool,
             message_id,
@@ -871,7 +1035,7 @@ async fn run_chat_generation_attempt(
             &thought_content,
             thought_duration_ms,
             false,
-            &variable_updates,
+            &[],
         )
         .await?;
     }
@@ -1217,6 +1381,128 @@ async fn run_story_beat_outline(
     Ok(())
 }
 
+async fn run_story_typed_beat_prose(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &dreamwell_types::Job,
+    settings: &dreamwell_types::Settings,
+    token: &CancellationToken,
+) -> AppResult<()> {
+    let story_id = job
+        .story_id
+        .ok_or_else(|| AppError::internal("missing story_id"))?;
+    let chapter_id = job
+        .chapter_id
+        .ok_or_else(|| AppError::internal("missing chapter_id"))?;
+    let beat_id = job
+        .beat_id
+        .ok_or_else(|| AppError::internal("missing beat_id"))?;
+
+    let detail = db::get_story_detail(pool, story_id).await?;
+    let chapter = detail
+        .chapters
+        .iter()
+        .find(|c| c.id == chapter_id)
+        .ok_or_else(|| AppError::internal("chapter not found"))?;
+    let beat = chapter
+        .beats
+        .iter()
+        .find(|b| b.id == beat_id)
+        .ok_or_else(|| AppError::internal("beat not found"))?;
+
+    let state_block = build_story_state_block(&detail.state, &detail.actors);
+    let plan_messages = build_story_plan_messages(
+        &detail.story,
+        &detail.chapters,
+        chapter,
+        beat,
+        &state_block,
+        &job.guidance_notes,
+    );
+
+    let plan: dreamwell_types::PlanPhaseResponse = chat_completion_json(
+        &settings.inference_url,
+        &settings.model,
+        &plan_messages,
+        0.4,
+        settings.top_p,
+        structured_output_tokens(settings),
+        Some(&story_plan_schema()),
+        generation_max_retries(),
+        token,
+    )
+    .await?;
+
+    if token.is_cancelled() {
+        return cancel_job_record(pool, job).await;
+    }
+
+    let applied = apply_story_state_changes(
+        pool,
+        story_id,
+        beat_id,
+        &plan.state_changes,
+        &detail.actors,
+        &detail.state,
+    )
+    .await?;
+    db::save_beat_plan(pool, beat_id, &plan.beats, &applied).await?;
+
+    let state = db::list_story_state_entries(pool, story_id).await?;
+    let actors = db::list_story_actors(pool, story_id).await?;
+    let state_block = build_story_state_block(&state, &actors);
+    let prose_messages = build_story_prose_from_plan_messages(
+        &detail.story,
+        chapter,
+        beat,
+        &plan.beats,
+        &state_block,
+        &job.guidance_notes,
+        &actors,
+    );
+
+    let mut stream = stream_chat_completion(
+        &settings.inference_url,
+        &settings.model,
+        &prose_messages,
+        settings.temperature,
+        settings.top_p,
+        settings.max_tokens,
+    )
+    .await?;
+
+    let mut accumulated = String::new();
+    let mut db_throttle = StreamDbThrottle::new();
+    while let Some(token_result) = stream.next().await {
+        if token.is_cancelled() {
+            return cancel_job_record(pool, job).await;
+        }
+        match token_result {
+            Ok(piece) => {
+                accumulated.push_str(&piece);
+                if db_throttle.ready() {
+                    db::update_beat_content(pool, beat_id, &accumulated).await?;
+                    db::touch_story(pool, story_id).await?;
+                    db_throttle.mark_flushed();
+                }
+            }
+            Err(err) => {
+                db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
+                return Ok(());
+            }
+        }
+    }
+
+    if accumulated.trim().is_empty() {
+        fail_job(pool, job_id, job, "model returned no text").await?;
+        return Ok(());
+    }
+
+    db::update_beat_content(pool, beat_id, &accumulated).await?;
+    db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+    Ok(())
+}
+
 async fn run_story_beat_prose(
     pool: &SqlitePool,
     job_id: i64,
@@ -1234,6 +1520,10 @@ async fn run_story_beat_prose(
         .beat_id
         .ok_or_else(|| AppError::internal("prose job missing beat_id"))?;
     let continuing = job.job_type == JobType::StoryBeatProseContinue;
+
+    if settings.variables_enabled && !continuing {
+        return run_story_typed_beat_prose(pool, job_id, job, settings, &token).await;
+    }
 
     let detail = db::get_story_detail(pool, story_id).await?;
     let chapter = detail
@@ -1268,15 +1558,27 @@ async fn run_story_beat_prose(
     };
 
     let messages = if continuing {
-        build_beat_prose_continue_messages(
-            &detail.story,
-            &detail.chapters,
-            chapter,
-            beat,
-            &job.guidance_notes,
-            &variables,
-            settings.variables_enabled,
-        )
+        if settings.variables_enabled {
+            let state_block = build_story_state_block(&detail.state, &detail.actors);
+            build_beat_prose_continue_typed_messages(
+                &detail.story,
+                &detail.chapters,
+                chapter,
+                beat,
+                &job.guidance_notes,
+                &state_block,
+            )
+        } else {
+            build_beat_prose_continue_messages(
+                &detail.story,
+                &detail.chapters,
+                chapter,
+                beat,
+                &job.guidance_notes,
+                &variables,
+                false,
+            )
+        }
     } else {
         build_beat_prose_messages(
             &detail.story,
@@ -1285,7 +1587,7 @@ async fn run_story_beat_prose(
             beat,
             &job.guidance_notes,
             &variables,
-            settings.variables_enabled,
+            false,
         )
     };
 
@@ -1317,7 +1619,6 @@ async fn run_story_beat_prose(
             job_id,
             story_id,
             chapter.sort_order,
-            beat.sort_order,
             beat_id,
             settings,
             &messages,
@@ -1355,7 +1656,6 @@ async fn run_beat_prose_generation_attempt(
     job_id: i64,
     story_id: i64,
     chapter_order: i64,
-    beat_order: i64,
     beat_id: i64,
     settings: &dreamwell_types::Settings,
     messages: &[serde_json::Value],
@@ -1379,6 +1679,7 @@ async fn run_beat_prose_generation_attempt(
     };
 
     let mut accumulated = String::new();
+    let mut db_throttle = StreamDbThrottle::new();
     while let Some(token_result) = stream.next().await {
         if token.is_cancelled() {
             return Ok(BeatProseOutcome::Cancelled);
@@ -1386,14 +1687,17 @@ async fn run_beat_prose_generation_attempt(
         match token_result {
             Ok(piece) => {
                 accumulated.push_str(&piece);
-                let new_display = display_beat_prose(settings, &accumulated, true);
-                let display = if append_base.is_some() {
-                    append_prose_continuation(base, &new_display)
-                } else {
-                    new_display
-                };
-                db::update_beat_content(pool, beat_id, &display).await?;
-                db::touch_story(pool, story_id).await?;
+                if db_throttle.ready() {
+                    let new_display = display_beat_prose(settings, &accumulated, true);
+                    let display = if append_base.is_some() {
+                        append_prose_continuation(base, &new_display)
+                    } else {
+                        new_display
+                    };
+                    db::update_beat_content(pool, beat_id, &display).await?;
+                    db::touch_story(pool, story_id).await?;
+                    db_throttle.mark_flushed();
+                }
             }
             Err(err) => {
                 if accumulated.is_empty() {
@@ -1425,59 +1729,15 @@ async fn run_beat_prose_generation_attempt(
     };
 
     if settings.variables_enabled {
-        let parsed = crate::variables::parse_variable_updates(&accumulated);
-        let detail = db::get_story_detail(pool, story_id).await?;
-        let current = crate::story_variables::variables_for_beat_generation(
+        db::finalize_beat_prose(
             pool,
-            &detail.chapters,
             story_id,
             chapter_order,
-            beat_order,
+            beat_id,
+            &display,
+            existing_variable_updates,
         )
         .await?;
-        let meaningful = crate::story_variables::filter_meaningful_story_updates(&parsed, &current);
-        if !meaningful.is_empty() {
-            let beat_updates = db::build_beat_variable_updates(
-                pool,
-                &detail.chapters,
-                story_id,
-                chapter_order,
-                beat_order,
-                &meaningful,
-            )
-            .await?;
-            db::apply_story_variable_updates(
-                pool,
-                story_id,
-                chapter_order,
-                beat_order,
-                &meaningful,
-            )
-            .await?;
-            let mut variable_updates = existing_variable_updates.to_vec();
-            variable_updates.extend(beat_updates);
-            db::finalize_beat_prose(
-                pool,
-                story_id,
-                chapter_order,
-                beat_id,
-                &display,
-                &variable_updates,
-            )
-            .await?;
-        } else if append_base.is_some() {
-            db::finalize_beat_prose(
-                pool,
-                story_id,
-                chapter_order,
-                beat_id,
-                &display,
-                existing_variable_updates,
-            )
-            .await?;
-        } else {
-            db::finalize_beat_prose(pool, story_id, chapter_order, beat_id, &display, &[]).await?;
-        }
     } else {
         db::finalize_beat_prose(pool, story_id, chapter_order, beat_id, &display, &[]).await?;
     }
@@ -1525,33 +1785,11 @@ async fn run_story_beat_variable_recheck_handler(
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("recheck job missing story_id"))?;
-    let chapter_id = job
-        .chapter_id
-        .ok_or_else(|| AppError::internal("recheck job missing chapter_id"))?;
     let beat_id = job
         .beat_id
         .ok_or_else(|| AppError::internal("recheck job missing beat_id"))?;
-    let detail = db::get_story_detail(pool, story_id).await?;
-    let chapter = detail
-        .chapters
-        .iter()
-        .find(|c| c.id == chapter_id)
-        .ok_or_else(|| AppError::internal("chapter not found"))?;
-    let beat = chapter
-        .beats
-        .iter()
-        .find(|b| b.id == beat_id)
-        .ok_or_else(|| AppError::internal("beat not found"))?;
-    match crate::story_variable_recheck::run_beat_variable_recheck_job(
-        pool,
-        job_id,
-        story_id,
-        chapter_id,
-        beat_id,
-        chapter.sort_order,
-        beat.sort_order,
-        &job.guidance_notes,
-        settings,
+    match crate::state_recheck::run_story_state_recheck_job(
+        pool, job_id, story_id, beat_id, settings,
     )
     .await
     {

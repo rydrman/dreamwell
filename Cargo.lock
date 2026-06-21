@@ -410,6 +410,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "dreamwell-state",
  "dreamwell-types",
  "futures-util",
  "http-body-util",
@@ -429,6 +430,16 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dreamwell-state"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dreamwell-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

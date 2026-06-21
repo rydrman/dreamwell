@@ -13,8 +13,8 @@ use axum::{
 };
 use dreamwell_types::{
     GenerateRequest, Job, OkResponse, Story, StoryBeatCreate, StoryBeatUpdate, StoryChapterCreate,
-    StoryChapterUpdate, StoryCreate, StoryDetail, StoryStreamPayload, StoryUpdate, StoryVariable,
-    StoryVariableUpdate,
+    StoryChapterUpdate, StoryCreate, StoryDetail, StoryStateEntryUpdate, StoryStreamPayload,
+    StoryUpdate, StoryVariable, StoryVariableUpdate,
 };
 
 use crate::db;
@@ -83,6 +83,20 @@ pub fn router() -> Router<AppState> {
             "/:id/variables/:variable_id",
             axum::routing::delete(delete_story_variable),
         )
+        .route(
+            "/:id/state/:entry_id",
+            axum::routing::patch(update_story_state_entry),
+        )
+}
+
+async fn update_story_state_entry(
+    State(state): State<AppState>,
+    Path((id, entry_id)): Path<(i64, i64)>,
+    Json(payload): Json<StoryStateEntryUpdate>,
+) -> AppResult<Json<StoryDetail>> {
+    db::update_story_state_entry(&state.pool, id, entry_id, payload).await?;
+    db::touch_story(&state.pool, id).await?;
+    Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
 
 async fn list_stories(State(state): State<AppState>) -> AppResult<Json<Vec<Story>>> {

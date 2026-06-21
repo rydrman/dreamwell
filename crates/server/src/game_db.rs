@@ -379,8 +379,18 @@ async fn list_turns(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<GameTurn>>
     Ok(turns)
 }
 
+async fn turn_generation_error(pool: &SqlitePool, turn_id: i64) -> AppResult<Option<String>> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT error FROM generation_jobs WHERE turn_id = ?1 AND status = 'failed' AND error IS NOT NULL ORDER BY completed_at DESC LIMIT 1",
+    )
+    .bind(turn_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
 async fn turn_from_row(pool: &SqlitePool, row: TurnRow) -> AppResult<GameTurn> {
     let checks = list_checks_for_turn(pool, row.id).await?;
+    let generation_error = turn_generation_error(pool, row.id).await?;
     Ok(GameTurn {
         id: row.id,
         game_id: row.game_id,
@@ -391,6 +401,7 @@ async fn turn_from_row(pool: &SqlitePool, row: TurnRow) -> AppResult<GameTurn> {
         prose: row.prose,
         state_changes: parse_state_changes(&row.state_changes),
         checks,
+        generation_error,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
     })
@@ -596,8 +607,67 @@ pub async fn prepare_regenerate_turn(
     turn_id: i64,
 ) -> AppResult<Job> {
     let turn = get_turn(pool, game_id, turn_id).await?;
+    if turn.phase == "failed" {
+        return prepare_retry_turn(pool, game_id, turn_id, &turn).await;
+    }
+    if turn.phase != "done" {
+        return Err(AppError::bad_request("Turn is not complete"));
+    }
     if has_active_turn_job(pool, turn_id).await? {
         return Err(AppError::bad_request("Turn already has an active job"));
+    }
+    let detail = get_game_detail(pool, game_id).await?;
+    crate::game_state::revert_turn_state_changes(
+        pool,
+        game_id,
+        turn_id,
+        &turn.state_changes,
+        &detail.actors,
+    )
+    .await?;
+    reroll_turn_checks(pool, turn_id, &turn.checks).await?;
+    sqlx::query(
+        "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', phase='rolled', updated_at=?1 WHERE id=?2",
+    )
+    .bind(Utc::now().to_rfc3339())
+    .bind(turn_id)
+    .execute(pool)
+    .await?;
+    enqueue_game_job(
+        pool,
+        JobType::GameTurnResolve,
+        game_id,
+        Some(turn_id),
+        String::new(),
+    )
+    .await
+}
+
+async fn prepare_retry_turn(
+    pool: &SqlitePool,
+    game_id: i64,
+    turn_id: i64,
+    turn: &GameTurn,
+) -> AppResult<Job> {
+    if has_active_turn_job(pool, turn_id).await? {
+        return Err(AppError::bad_request("Turn already has an active job"));
+    }
+    if turn.checks.is_empty() {
+        sqlx::query(
+            "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', phase='pending', updated_at=?1 WHERE id=?2",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(turn_id)
+        .execute(pool)
+        .await?;
+        return enqueue_game_job(
+            pool,
+            JobType::GameTurnCheck,
+            game_id,
+            Some(turn_id),
+            String::new(),
+        )
+        .await;
     }
     let detail = get_game_detail(pool, game_id).await?;
     crate::game_state::revert_turn_state_changes(

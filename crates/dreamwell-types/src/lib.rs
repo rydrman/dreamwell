@@ -239,6 +239,12 @@ pub struct Message {
     pub thought_in_progress: bool,
     #[serde(default)]
     pub variable_updates: Vec<MessageVariableUpdate>,
+    #[serde(default)]
+    pub reply_beats: Vec<String>,
+    #[serde(default)]
+    pub state_changes: Vec<AppliedStateChange>,
+    #[serde(default)]
+    pub generation_phase: String,
     pub is_summary: bool,
     /// True when this message has been folded into `chat.summary` (kept in UI, omitted from model context).
     #[serde(default)]
@@ -286,6 +292,48 @@ pub struct ChatVariableUpdate {
     /// `-1` or omitted = manual. Otherwise anchors the change to a message.
     #[serde(default)]
     pub source_message_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatActor {
+    pub id: i64,
+    pub chat_id: i64,
+    pub role: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub skills: std::collections::HashMap<String, i64>,
+    pub sort_order: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatStateEntry {
+    pub id: i64,
+    pub chat_id: i64,
+    pub actor_id: Option<i64>,
+    pub kind: StateKind,
+    pub key: String,
+    pub value: String,
+    pub num_value: Option<i64>,
+    pub max_value: Option<i64>,
+    pub source_message_id: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatStateEntryUpdate {
+    pub value: Option<String>,
+    pub num_value: Option<i64>,
+    pub max_value: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatDetail {
+    pub chat: Chat,
+    pub actors: Vec<ChatActor>,
+    pub state: Vec<ChatStateEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -358,6 +406,10 @@ pub struct StoryBeat {
     pub content: String,
     #[serde(default)]
     pub variable_updates: Vec<BeatVariableUpdate>,
+    #[serde(default)]
+    pub plan_beats: Vec<String>,
+    #[serde(default)]
+    pub state_changes: Vec<AppliedStateChange>,
     pub sort_order: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -389,6 +441,45 @@ pub struct StoryVariableUpdate {
 pub struct StoryDetail {
     pub story: Story,
     pub chapters: Vec<StoryChapter>,
+    #[serde(default)]
+    pub actors: Vec<StoryActor>,
+    #[serde(default)]
+    pub state: Vec<StoryStateEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryActor {
+    pub id: i64,
+    pub story_id: i64,
+    pub role: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub skills: std::collections::HashMap<String, i64>,
+    pub sort_order: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryStateEntry {
+    pub id: i64,
+    pub story_id: i64,
+    pub actor_id: Option<i64>,
+    pub kind: StateKind,
+    pub key: String,
+    pub value: String,
+    pub num_value: Option<i64>,
+    pub max_value: Option<i64>,
+    pub source_beat_id: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoryStateEntryUpdate {
+    pub value: Option<String>,
+    pub num_value: Option<i64>,
+    pub max_value: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -602,6 +693,10 @@ pub struct ImportCharacterResponse {
 pub struct ChatStreamPayload {
     pub chat: Chat,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub actors: Vec<ChatActor>,
+    #[serde(default)]
+    pub state: Vec<ChatStateEntry>,
     pub active_job: Option<Job>,
 }
 
@@ -772,6 +867,9 @@ pub struct GameActor {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Shared actor row used by chat, story, and game state engines.
+pub type SessionActor = GameActor;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameStateEntry {
     pub id: i64,
@@ -785,6 +883,9 @@ pub struct GameStateEntry {
     pub source_turn: i64,
     pub updated_at: DateTime<Utc>,
 }
+
+/// Shared materialized state entry used by chat, story, and game state engines.
+pub type StateEntry = GameStateEntry;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameTurnCheck {
@@ -832,6 +933,8 @@ pub struct GameTurn {
     pub prose: String,
     pub state_changes: Vec<AppliedStateChange>,
     pub checks: Vec<GameTurnCheck>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -955,6 +1058,20 @@ pub struct DeclaredCheck {
 pub struct ResolveTurnResponse {
     #[serde(default)]
     pub scene_beats: Vec<String>,
+    #[serde(default)]
+    pub state_changes: Vec<StateChangeRequest>,
+}
+
+/// Shared plan-phase JSON for chat, story, and game modes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanPhaseResponse {
+    #[serde(
+        default,
+        alias = "scene_beats",
+        alias = "reply_beats",
+        alias = "plan_beats"
+    )]
+    pub beats: Vec<String>,
     #[serde(default)]
     pub state_changes: Vec<StateChangeRequest>,
 }

@@ -41,6 +41,19 @@ pub fn model_for_phase(
     }
 }
 
+pub fn ensure_model_for_phase(
+    game: &dreamwell_types::Game,
+    settings: &Settings,
+    phase: GameModelPhase,
+) -> AppResult<()> {
+    if model_for_phase(game, settings, phase).trim().is_empty() {
+        return Err(AppError::bad_request(
+            "No model selected in settings (or game phase override)",
+        ));
+    }
+    Ok(())
+}
+
 fn max_retries() -> u32 {
     config::GENERATION_MAX_RETRIES
         .load(std::sync::atomic::Ordering::SeqCst)

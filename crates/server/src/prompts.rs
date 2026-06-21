@@ -5,7 +5,10 @@ use sqlx::SqlitePool;
 use crate::db;
 use crate::error::AppResult;
 
-fn build_character_system_prompt(character: &Character, ctx: &MacroContext<'_>) -> String {
+pub(crate) fn build_character_system_prompt(
+    character: &Character,
+    ctx: &MacroContext<'_>,
+) -> String {
     if !character.system_prompt.trim().is_empty() {
         return substitute_macros(character.system_prompt.trim(), ctx);
     }
@@ -79,21 +82,6 @@ pub fn parse_example_dialogue(text: &str, ctx: &MacroContext<'_>) -> Vec<(Messag
     messages
 }
 
-fn format_variables(variables: &[(String, String)]) -> String {
-    if variables.is_empty() {
-        return String::new();
-    }
-    let lines: Vec<String> = variables
-        .iter()
-        .map(|(key, value)| format!("- {key}: {value}"))
-        .collect();
-    format!("Current chat variables:\n{}", lines.join("\n"))
-}
-
-fn variables_instruction() -> &'static str {
-    "You may update chat variables using XML tags like <var key=\"location\">tavern</var>. Use the key attribute (not name). Reusing a key replaces its value. Remove a variable with <var key=\"location\" delete/>. Only emit var tags for mutable session state that should persist (location, inventory, quest stage, etc.), not for static lore."
-}
-
 /// Rough token budget for permanent prompt content (character card, system prompts).
 pub fn estimate_static_prompt_tokens(settings: &Settings, character: Option<&Character>) -> i64 {
     use dreamwell_types::estimate_token_count;
@@ -128,17 +116,13 @@ pub async fn build_messages_for_inference(
         &settings.persona_description,
     );
 
-    let messages = db::list_messages(pool, chat_id).await?;
-    let panel = if settings.variables_enabled {
-        db::list_variables(pool, chat_id).await?
+    let state_block = if settings.variables_enabled {
+        let actors = db::list_chat_actors(pool, chat_id).await?;
+        let state = db::list_chat_state_entries(pool, chat_id).await?;
+        crate::chat_state::build_state_block(&state, &actors)
     } else {
-        vec![]
+        String::new()
     };
-    let variables = crate::variable_state::pairs_sorted(crate::variable_state::chat_state_at(
-        &messages,
-        &panel,
-        i64::MAX,
-    ));
 
     let mut system_parts = Vec::new();
     if !settings.system_prompt_prefix.trim().is_empty() {
@@ -166,12 +150,8 @@ pub async fn build_messages_for_inference(
     if !summary.trim().is_empty() {
         system_parts.push(format!("Conversation summary so far:\n{summary}"));
     }
-    let variables_text = format_variables(&variables);
-    if !variables_text.is_empty() {
-        system_parts.push(variables_text);
-    }
-    if settings.variables_enabled {
-        system_parts.push(variables_instruction().to_string());
+    if !state_block.is_empty() {
+        system_parts.push(format!("Current typed state:\n{state_block}"));
     }
 
     let mut messages = Vec::new();

@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 dreamwell-types = { workspace = true }
+dreamwell-state = { workspace = true }
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
