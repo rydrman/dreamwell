@@ -1,4 +1,4 @@
-use dreamwell_types::{GameTurnCheck, Job, Settings};
+use dreamwell_types::{substitute_macros, GameTurnCheck, Job, MacroContext, Settings};
 use serde_json::json;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -74,10 +74,11 @@ fn build_recheck_prompt(
     checks_text: &str,
     prose: &str,
     guidance: &str,
+    ctx: &MacroContext<'_>,
 ) -> Vec<serde_json::Value> {
     let mut user = format!(
         "Scenario parameters:\n{}\n\nScene beats:\n{scene_beats}\n\nRoll outcomes:\n{checks_text}\n\nCurrent turn prose:\n{prose}",
-        scenario_context_block(game)
+        scenario_context_block(game, ctx)
     );
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the player:\n");
@@ -154,14 +155,17 @@ pub async fn run_turn_prose_recheck_job(
         return Ok(());
     }
 
+    let detail = db::get_game_detail(pool, game_id).await?;
+    let ctx = MacroContext::from_game_detail_and_settings(&detail, settings);
     let model =
         crate::game_turn::model_for_phase(&game, settings, crate::game_turn::GameModelPhase::Prose);
     let prompt = build_recheck_prompt(
         &game,
         &format_scene_beats(&turn.scene_beats),
         &format_checks_for_recheck(&turn.checks),
-        &turn.prose,
+        &substitute_macros(turn.prose.trim(), &ctx),
         guidance,
+        &ctx,
     );
     let max_attempts = max_retries();
     let mut raw = None;
@@ -249,12 +253,22 @@ mod tests {
             active_job: None,
             queued_jobs: 0,
         };
+        let ctx = MacroContext {
+            char_name: "Mira",
+            user_name: "Alex",
+            persona: "",
+            description: "",
+            personality: "",
+            scenario: "",
+            first_message: "",
+        };
         let prompt = build_recheck_prompt(
             &game,
             "- The lock clicks.\n",
             "- Pick lock: mixed",
             "You hear the lock turn.",
             "Stay cozy.",
+            &ctx,
         );
         let user = prompt[1]["content"].as_str().unwrap();
         assert!(user.contains("Scenario parameters:"));

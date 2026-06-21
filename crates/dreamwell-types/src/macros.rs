@@ -22,6 +22,45 @@ impl<'a> MacroContext<'a> {
         }
     }
 
+    pub fn from_game_detail(
+        detail: &'a crate::GameDetail,
+        user_name: &'a str,
+        persona: &'a str,
+    ) -> Self {
+        let pc = detail.actors.iter().find(|actor| actor.role == "pc");
+        let char_name = pc
+            .map(|actor| actor.name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                let title = detail.game.title.trim();
+                if title.is_empty() {
+                    "Character"
+                } else {
+                    title
+                }
+            });
+        Self {
+            char_name,
+            user_name,
+            persona,
+            description: pc.map(|actor| actor.description.as_str()).unwrap_or(""),
+            personality: "",
+            scenario: detail.game.premise.as_str(),
+            first_message: detail.game.opening_message.as_str(),
+        }
+    }
+
+    pub fn from_game_detail_and_settings(
+        detail: &'a crate::GameDetail,
+        settings: &'a crate::Settings,
+    ) -> Self {
+        Self::from_game_detail(
+            detail,
+            settings.user_name.as_str(),
+            settings.persona_description.as_str(),
+        )
+    }
+
     pub fn from_character_and_settings(
         character: Option<&'a crate::Character>,
         user_name: &'a str,
@@ -161,5 +200,57 @@ mod tests {
             ..ctx()
         };
         assert_eq!(substitute_macros("Hi {{user}}", &ctx), "Hi User");
+    }
+
+    #[test]
+    fn from_game_detail_uses_pc_and_settings() {
+        use crate::{Game, GameActor, GameDetail};
+        let detail = GameDetail {
+            game: Game {
+                id: 1,
+                title: "Tea Shop".into(),
+                premise: "Serve {{user}} at the counter.".into(),
+                setting: "Cozy.".into(),
+                gm_style: "Gentle.".into(),
+                opening_message: "Hello {{User}}, welcome to {{char}}.".into(),
+                character_id: None,
+                scenario_id: None,
+                resolution_system: crate::ResolutionSystem::Pbta2d6,
+                modifier_min: -2,
+                modifier_max: 3,
+                merge_resolve_scene: true,
+                step_mode: false,
+                model_checks: String::new(),
+                model_resolve: String::new(),
+                model_prose: String::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                active_job: None,
+                queued_jobs: 0,
+            },
+            actors: vec![GameActor {
+                id: 1,
+                game_id: 1,
+                role: "pc".into(),
+                name: "Mira".into(),
+                description: "Shopkeeper".into(),
+                skills: Default::default(),
+                sort_order: 0,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
+            state: vec![],
+            turns: vec![],
+            scenes: vec![],
+        };
+        let ctx = MacroContext::from_game_detail(&detail, "Alex", "A traveler.");
+        assert_eq!(
+            substitute_macros(&detail.game.opening_message, &ctx),
+            "Hello Alex, welcome to Mira."
+        );
+        assert_eq!(
+            substitute_macros(&detail.game.premise, &ctx),
+            "Serve Alex at the counter."
+        );
     }
 }

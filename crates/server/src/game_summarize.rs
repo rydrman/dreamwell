@@ -34,7 +34,7 @@ pub async fn run_game_scene_summarize_job(
         .first()
         .ok_or_else(|| AppError::internal("no scene found"))?;
 
-    let messages = build_scene_summarize_messages(&detail);
+    let messages = build_scene_summarize_messages(&detail, settings);
     let max_attempts = max_retries();
     let mut raw = None;
 
