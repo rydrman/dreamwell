@@ -151,13 +151,8 @@ async fn run_turn_from_checks(
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
 
-    let messages = build_declare_checks_messages(
-        &game,
-        &detail,
-        &turn,
-        &job.guidance_notes,
-        settings,
-    );
+    let messages =
+        build_declare_checks_messages(&game, &detail, &turn, &job.guidance_notes, settings);
     let checks_model = model_for_phase(&game, settings, GameModelPhase::Checks);
     let declared: DeclareChecksResponse = chat_completion_json(
         &settings.inference_url,

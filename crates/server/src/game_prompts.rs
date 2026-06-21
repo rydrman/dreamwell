@@ -539,8 +539,7 @@ mod tests {
         let game = sample_game();
         let detail = sample_detail(game.clone());
         let turn = sample_turn();
-        let messages =
-            build_declare_checks_messages(&game, &detail, &turn, "", &test_settings());
+        let messages = build_declare_checks_messages(&game, &detail, &turn, "", &test_settings());
         let user = messages[1]["content"].as_str().unwrap();
         assert!(user.contains("Scenario parameters:"));
         assert!(user.contains("Cozy, low-stakes"));
@@ -646,7 +645,9 @@ mod tests {
             turns.push(GameTurn {
                 id,
                 sort_order: id,
-                scene_beats: vec![format!("Beat detail for turn {id} with extra staging notes.")],
+                scene_beats: vec![format!(
+                    "Beat detail for turn {id} with extra staging notes."
+                )],
                 prose: "x".repeat(500),
                 player_action: format!("Action {id}"),
                 ..sample_turn()

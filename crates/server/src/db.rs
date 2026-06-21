@@ -1428,7 +1428,7 @@ pub async fn claim_jobs(pool: &SqlitePool, limit: i64) -> AppResult<Vec<i64>> {
 async fn claim_jobs_once(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>, sqlx::Error> {
     let mut conn = pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
-    let result = claim_jobs_in_tx(&mut *conn, limit).await;
+    let result = claim_jobs_in_tx(&mut conn, limit).await;
     if result.is_ok() {
         sqlx::query("COMMIT").execute(&mut *conn).await?;
     } else {
