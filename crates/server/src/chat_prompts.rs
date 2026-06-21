@@ -47,7 +47,11 @@ pub async fn build_plan_messages(
     let state = db::list_chat_state_entries(pool, chat_id).await?;
     let state_block = build_state_block(&state, &actors);
     let messages = db::list_messages(pool, chat_id).await?;
-    let latest_user = messages
+    let active_messages: Vec<_> = messages
+        .iter()
+        .filter(|msg| crate::summarize::is_active_for_context(msg))
+        .collect();
+    let latest_user = active_messages
         .iter()
         .rev()
         .find(|msg| msg.role == dreamwell_types::MessageRole::User);
@@ -81,7 +85,7 @@ pub async fn build_plan_messages(
         context.push_str("\n\n");
     }
     context.push_str("Recent messages (oldest first):\n");
-    for msg in messages.iter().rev().take(8).rev() {
+    for msg in active_messages.iter().rev().take(8).rev() {
         let role = match msg.role {
             dreamwell_types::MessageRole::User => "User",
             dreamwell_types::MessageRole::Assistant => "Assistant",
@@ -112,12 +116,15 @@ pub async fn build_plan_messages(
     ])
 }
 
-pub fn build_prose_messages(
+pub async fn build_prose_messages(
+    pool: &SqlitePool,
+    chat_id: i64,
+    summary: &str,
     beats: &[String],
     state_block: &str,
     settings: &Settings,
     character: Option<&Character>,
-) -> Vec<serde_json::Value> {
+) -> AppResult<Vec<serde_json::Value>> {
     let ctx = MacroContext::from_character_and_settings(
         character,
         &settings.user_name,
@@ -133,6 +140,30 @@ pub fn build_prose_messages(
             .join("\n")
     };
     let mut user = format!("Reply beats to cover:\n{beats_text}");
+    if !summary.trim().is_empty() {
+        user.push_str(&format!("\n\nConversation summary:\n{summary}"));
+    }
+    let messages = db::list_messages(pool, chat_id).await?;
+    let active_messages: Vec<_> = messages
+        .iter()
+        .filter(|msg| crate::summarize::is_active_for_context(msg))
+        .collect();
+    if !active_messages.is_empty() {
+        user.push_str("\n\nRecent conversation (oldest first):\n");
+        let keep = if settings.max_context_messages > 0 {
+            settings.max_context_messages as usize
+        } else {
+            12
+        };
+        for msg in active_messages.iter().rev().take(keep).rev() {
+            let role = match msg.role {
+                dreamwell_types::MessageRole::User => "User",
+                dreamwell_types::MessageRole::Assistant => "Assistant",
+                dreamwell_types::MessageRole::System => "System",
+            };
+            user.push_str(&format!("{role}: {}\n", msg.content));
+        }
+    }
     if !state_block.is_empty() {
         user.push_str(&format!("\n\nCurrent typed state:\n{state_block}"));
     }
@@ -143,7 +174,7 @@ pub fn build_prose_messages(
         }
     }
 
-    vec![
+    Ok(vec![
         json!({
             "role": "system",
             "content": PROSE_SYSTEM,
@@ -152,7 +183,7 @@ pub fn build_prose_messages(
             "role": "user",
             "content": user,
         }),
-    ]
+    ])
 }
 
 #[cfg(test)]

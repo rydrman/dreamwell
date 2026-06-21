@@ -66,6 +66,17 @@ fn parse_card_text(text: &str) -> AppResult<Value> {
 
 fn normalize_card(card: &Value) -> CharacterCreate {
     let data = card.get("data").unwrap_or(card);
+    let system_prompt = join_card_text_fields(&[
+        data.get("system_prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        data.get("post_history_instructions")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        data.get("creator_notes")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+    ]);
     CharacterCreate {
         name: data
             .get("name")
@@ -103,16 +114,21 @@ fn normalize_card(card: &Value) -> CharacterCreate {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
-        system_prompt: data
-            .get("system_prompt")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
+        system_prompt,
         avatar_url: data
             .get("avatar")
             .and_then(|v| v.as_str())
             .map(str::to_string),
     }
+}
+
+fn join_card_text_fields(fields: &[&str]) -> String {
+    fields
+        .iter()
+        .map(|field| field.trim())
+        .filter(|field| !field.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 #[cfg(test)]

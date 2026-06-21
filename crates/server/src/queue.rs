@@ -824,8 +824,16 @@ async fn run_chat_typed_generation_attempt(
 
     let state = db::list_chat_state_entries(pool, chat_id).await?;
     let state_block = build_state_block(&state, &actors);
-    let prose_messages =
-        build_prose_messages(&plan.beats, &state_block, settings, character.as_ref());
+    let prose_messages = build_prose_messages(
+        pool,
+        chat_id,
+        &chat.summary,
+        &plan.beats,
+        &state_block,
+        settings,
+        character.as_ref(),
+    )
+    .await?;
 
     let mut stream = match stream_chat_completion(
         &settings.inference_url,
