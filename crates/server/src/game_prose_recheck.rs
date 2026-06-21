@@ -77,7 +77,7 @@ fn build_recheck_prompt(
 ) -> Vec<serde_json::Value> {
     let mut user = format!(
         "Scenario parameters:\n{}\n\nScene beats:\n{scene_beats}\n\nRoll outcomes:\n{checks_text}\n\nCurrent turn prose:\n{prose}",
-        scenario_context_block(game, false)
+        scenario_context_block(game)
     );
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the player:\n");

@@ -73,13 +73,13 @@ Rules:
 - Output only the summary text"#;
 
 /// Shared scenario parameters included in every GM phase prompt.
-pub(crate) fn scenario_context_block(game: &Game, include_opening: bool) -> String {
+pub(crate) fn scenario_context_block(game: &Game) -> String {
     let mut sections = vec![
         format!("Premise / scenario:\n{}", game.premise.trim()),
         format!("Setting / tone:\n{}", game.setting.trim()),
         format!("GM style:\n{}", game.gm_style.trim()),
     ];
-    if include_opening && !game.opening_message.trim().is_empty() {
+    if !game.opening_message.trim().is_empty() {
         sections.push(format!(
             "Opening scene (already shown to the player):\n{}",
             game.opening_message.trim()
@@ -88,10 +88,10 @@ pub(crate) fn scenario_context_block(game: &Game, include_opening: bool) -> Stri
     sections.join("\n\n")
 }
 
-fn user_message_with_scenario(game: &Game, include_opening: bool, body: &str) -> String {
+fn user_message_with_scenario(game: &Game, body: &str) -> String {
     format!(
         "Scenario parameters:\n{}\n\n{}",
-        scenario_context_block(game, include_opening),
+        scenario_context_block(game),
         body
     )
 }
@@ -129,7 +129,7 @@ pub fn build_declare_checks_messages(
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
-    let user = user_message_with_scenario(game, true, &body);
+    let user = user_message_with_scenario(game, &body);
     vec![
         json!({ "role": "system", "content": DECLARE_CHECKS_SYSTEM }),
         json!({ "role": "user", "content": user }),
@@ -184,7 +184,7 @@ pub fn build_resolve_messages(
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
-    let user = user_message_with_scenario(game, false, &body);
+    let user = user_message_with_scenario(game, &body);
     vec![
         json!({
             "role": "system",
@@ -221,7 +221,7 @@ pub fn build_prose_messages(
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
-    let user = user_message_with_scenario(game, false, &body);
+    let user = user_message_with_scenario(game, &body);
     vec![
         json!({ "role": "system", "content": PROSE_SYSTEM }),
         json!({ "role": "user", "content": user }),
@@ -229,18 +229,19 @@ pub fn build_prose_messages(
 }
 
 pub fn build_scene_summarize_messages(detail: &GameDetail) -> Vec<serde_json::Value> {
-    let transcript: String = detail
-        .turns
-        .iter()
-        .filter(|t| !t.prose.trim().is_empty())
-        .map(|t| format!("Action: {}\n{}", t.player_action, t.prose.trim()))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let user = user_message_with_scenario(
-        &detail.game,
-        false,
-        &format!("Turn transcript:\n{transcript}"),
+    let mut transcript_parts = Vec::new();
+    if !detail.game.opening_message.trim().is_empty() {
+        transcript_parts.push(format!("Opening:\n{}", detail.game.opening_message.trim()));
+    }
+    transcript_parts.extend(
+        detail
+            .turns
+            .iter()
+            .filter(|t| !t.prose.trim().is_empty())
+            .map(|t| format!("Action: {}\n{}", t.player_action, t.prose.trim())),
     );
+    let transcript = transcript_parts.join("\n\n");
+    let user = user_message_with_scenario(&detail.game, &format!("Turn transcript:\n{transcript}"));
     vec![
         json!({ "role": "system", "content": SCENE_SUMMARIZE_SYSTEM }),
         json!({ "role": "user", "content": user }),
@@ -548,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_and_prose_include_scenario_parameters() {
+    fn resolve_and_prose_include_scenario_parameters_and_opening() {
         let game = sample_game();
         let detail = sample_detail(game.clone());
         let turn = sample_turn();
@@ -559,7 +560,8 @@ mod tests {
             let user = messages[1]["content"].as_str().unwrap();
             assert!(user.contains("Scenario parameters:"));
             assert!(user.contains("Gentle pacing"));
-            assert!(!user.contains("Opening scene"));
+            assert!(user.contains("Opening scene"));
+            assert!(user.contains("Steam curls"));
         }
     }
 

@@ -27,6 +27,7 @@ pub fn scenario_create_from_character(payload: CharacterCreate) -> ScenarioCreat
         ]),
         gm_style: join_nonempty_sections(&[
             ("GM instructions", payload.system_prompt.trim()),
+            ("Card description", payload.description.trim()),
             ("Example dialogue", payload.example_dialogue.trim()),
         ]),
         opening_message: payload.first_message.trim().to_string(),
@@ -66,6 +67,7 @@ pub fn game_create_from_character(
     ]);
     let gm_style = join_nonempty_sections(&[
         ("GM instructions", payload.system_prompt.trim()),
+        ("Card description", payload.description.trim()),
         ("Example dialogue", payload.example_dialogue.trim()),
     ]);
     let opening_message = payload.first_message.trim().to_string();
@@ -121,6 +123,7 @@ mod tests {
             "The alley reeks of ozone and fried wiring."
         );
         assert!(scenario.setting.contains("cyberpunk"));
+        assert!(scenario.gm_style.contains("cyberpunk"));
         assert!(scenario.gm_style.contains("tension high"));
     }
 
