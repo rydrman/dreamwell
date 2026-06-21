@@ -1,5 +1,7 @@
 use dreamwell_state::STATE_CHANGE_PROMPT;
-use dreamwell_types::{substitute_macros, Game, GameDetail, GameScene, GameTurn, GameTurnCheck, MacroContext, Settings};
+use dreamwell_types::{
+    substitute_macros, Game, GameDetail, GameScene, GameTurn, GameTurnCheck, MacroContext, Settings,
+};
 use serde_json::json;
 
 use crate::game_state::build_state_block;
@@ -255,7 +257,11 @@ pub fn build_scene_summarize_messages(
         .map(|turn| format_prior_prose_chunk(turn, &ctx))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let user = user_message_with_scenario(&detail.game, &format!("Turn transcript:\n{transcript}"), &ctx);
+    let user = user_message_with_scenario(
+        &detail.game,
+        &format!("Turn transcript:\n{transcript}"),
+        &ctx,
+    );
     vec![
         json!({ "role": "system", "content": SCENE_SUMMARIZE_SYSTEM }),
         json!({ "role": "user", "content": user }),
@@ -846,8 +852,7 @@ mod tests {
             ..sample_opening_turn()
         }];
         let settings = test_settings();
-        let messages =
-            build_declare_checks_messages(&game, &detail, &sample_turn(), "", &settings);
+        let messages = build_declare_checks_messages(&game, &detail, &sample_turn(), "", &settings);
         let user = messages[1]["content"].as_str().unwrap();
         assert!(user.contains("Welcome Alex to the shop."));
         assert!(user.contains("Opening:"));
