@@ -412,6 +412,24 @@ pub async fn delete_character(id: i64) -> Result<(), String> {
     send_empty(api_request("DELETE", &format!("/api/characters/{id}"))).await
 }
 
+pub async fn get_chat_detail(chat_id: i64) -> Result<ChatDetail, String> {
+    json(api_request("GET", &format!("/api/chats/{chat_id}"))).await
+}
+
+#[allow(dead_code)]
+pub async fn patch_chat_state_entry(
+    chat_id: i64,
+    entry_id: i64,
+    payload: &ChatStateEntryUpdate,
+) -> Result<ChatDetail, String> {
+    json_body(
+        "PATCH",
+        &format!("/api/chats/{chat_id}/state/{entry_id}"),
+        payload,
+    )
+    .await
+}
+
 pub async fn get_variables(chat_id: i64) -> Result<Vec<ChatVariable>, String> {
     json(api_request(
         "GET",

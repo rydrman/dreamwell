@@ -2,7 +2,7 @@
 set -euo pipefail
 
 API="${DREAMWELL_API:-http://localhost:8080/api}"
-COMPOSE=(docker compose -f docker-compose.dev.yml)
+COMPOSE=(docker compose -f docker-compose.yml)
 
 echo "Seeding variable demo data via ${API} ..."
 

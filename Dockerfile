@@ -14,7 +14,8 @@ RUN rustup target add wasm32-unknown-unknown \
 FROM rust-base AS dev-base
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install cargo-watch --locked
+    cargo install cargo-watch --locked \
+    && git config --global --add safe.directory /app
 WORKDIR /app
 
 FROM rust-base AS builder

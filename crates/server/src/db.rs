@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
-    Character, CharacterCreate, CharacterUpdate, Chat, ChatUpdate, ChatVariable,
-    ChatVariableUpdate, Job, JobStatus, JobType, Message, MessageRole, Settings, SettingsUpdate,
+    AppliedStateChange, Character, CharacterCreate, CharacterUpdate, Chat, ChatActor, ChatDetail,
+    ChatStateEntry, ChatStateEntryUpdate, ChatUpdate, ChatVariable, ChatVariableUpdate, Job,
+    JobStatus, JobType, Message, MessageRole, Settings, SettingsUpdate, StateKind,
     CHAT_ARCHIVE_RETENTION_DAYS, DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
 };
 use std::time::Duration;
@@ -11,7 +12,8 @@ mod game_db;
 #[path = "stories_db.rs"]
 mod stories_db;
 pub use game_db::*;
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{ConnectOptions, Connection, SqlitePool};
 pub use stories_db::*;
 
 use crate::config::MAX_CONCURRENT_JOBS;
@@ -24,32 +26,71 @@ pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(10));
-    let pool = SqlitePool::connect_with(options).await?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
-    ensure_settings(&pool).await?;
-    prepare_on_startup(&pool).await?;
+        .busy_timeout(Duration::from_secs(30));
+
+    // Run migrations and WAL maintenance on a single connection before opening the pool.
+    // TRUNCATE checkpoint needs exclusive access; doing it on a live pool invalidates other
+    // connection snapshots and surfaces as SQLITE_BUSY_SNAPSHOT (517) under concurrent load.
+    let mut setup = options.connect().await?;
+    sqlx::migrate!("./migrations").run(&mut setup).await?;
+    ensure_settings_conn(&mut setup).await?;
+    prepare_on_startup_conn(&mut setup).await?;
+    setup.close().await?;
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(30))
+        .connect_with(options)
+        .await?;
     Ok(pool)
 }
 
 /// Release stale WAL locks and normalize journal state after an unclean shutdown.
-pub async fn prepare_on_startup(pool: &SqlitePool) -> AppResult<()> {
-    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-        .execute(pool)
+async fn prepare_on_startup_conn(setup: &mut sqlx::sqlite::SqliteConnection) -> AppResult<()> {
+    sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+        .execute(&mut *setup)
         .await?;
-    purge_expired_archived_chats(pool).await?;
+    purge_expired_archived_chats_conn(setup).await?;
     Ok(())
 }
 
-async fn ensure_settings(pool: &SqlitePool) -> AppResult<()> {
+fn is_sqlite_locked(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(e) => {
+            e.code().is_some_and(|c| c == "5" || c == "517" || c == "261")
+                || e.message().contains("database is locked")
+        }
+        _ => false,
+    }
+}
+
+async fn ensure_settings_conn(setup: &mut sqlx::sqlite::SqliteConnection) -> AppResult<()> {
     sqlx::query(
         "INSERT OR IGNORE INTO app_settings (id, system_prompt_prefix, user_name) VALUES (1, ?1, ?2)",
     )
     .bind(DEFAULT_SYSTEM_PROMPT_PREFIX)
     .bind(DEFAULT_USER_NAME)
-    .execute(pool)
+    .execute(&mut *setup)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+pub async fn ensure_settings(pool: &SqlitePool) -> AppResult<()> {
+    let mut conn = pool.acquire().await?;
+    ensure_settings_conn(&mut conn).await
+}
+
+async fn purge_expired_archived_chats_conn(
+    conn: &mut sqlx::sqlite::SqliteConnection,
+) -> AppResult<u64> {
+    let cutoff = (Utc::now() - chrono::Duration::days(CHAT_ARCHIVE_RETENTION_DAYS)).to_rfc3339();
+    let result =
+        sqlx::query("DELETE FROM chats WHERE archived_at IS NOT NULL AND archived_at < ?1")
+            .bind(&cutoff)
+            .execute(&mut *conn)
+            .await?;
+    Ok(result.rows_affected())
 }
 
 fn parse_role(s: &str) -> MessageRole {
@@ -351,7 +392,146 @@ pub async fn create_chat(pool: &SqlitePool, title: String, character_id: i64) ->
     .await?;
 
     seed_character_greeting(pool, id, &character).await?;
+    seed_chat_pc_actor(pool, id).await?;
     get_chat(pool, id).await
+}
+
+pub async fn seed_chat_pc_actor(pool: &SqlitePool, chat_id: i64) -> AppResult<()> {
+    let settings = get_settings(pool).await?;
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO chat_actors (chat_id, role, name, description, skills, created_at, updated_at) VALUES (?1,'pc',?2,?3,'{}',?4,?4)",
+    )
+    .bind(chat_id)
+    .bind(if settings.user_name.trim().is_empty() {
+        DEFAULT_USER_NAME
+    } else {
+        settings.user_name.trim()
+    })
+    .bind(settings.persona_description.trim())
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_chat_detail(pool: &SqlitePool, chat_id: i64) -> AppResult<ChatDetail> {
+    let chat = get_chat(pool, chat_id).await?;
+    let actors = list_chat_actors(pool, chat_id).await?;
+    let state = list_chat_state_entries(pool, chat_id).await?;
+    Ok(ChatDetail {
+        chat,
+        actors,
+        state,
+    })
+}
+
+pub async fn list_chat_actors(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<ChatActor>> {
+    let rows = sqlx::query_as::<_, ChatActorRow>(
+        "SELECT id, chat_id, role, name, description, skills, sort_order, created_at, updated_at FROM chat_actors WHERE chat_id = ?1 ORDER BY sort_order ASC, id ASC",
+    )
+    .bind(chat_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(chat_actor_from_row).collect()
+}
+
+pub async fn list_chat_state_entries(
+    pool: &SqlitePool,
+    chat_id: i64,
+) -> AppResult<Vec<ChatStateEntry>> {
+    let rows = sqlx::query_as::<_, ChatStateRow>(
+        "SELECT id, chat_id, actor_id, kind, key, value, num_value, max_value, source_message_id, updated_at FROM chat_state_entries WHERE chat_id = ?1 ORDER BY kind ASC, key ASC",
+    )
+    .bind(chat_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(chat_state_from_row).collect()
+}
+
+pub async fn update_chat_state_entry(
+    pool: &SqlitePool,
+    chat_id: i64,
+    entry_id: i64,
+    payload: ChatStateEntryUpdate,
+) -> AppResult<ChatStateEntry> {
+    let row = sqlx::query_as::<_, ChatStateRow>(
+        "SELECT id, chat_id, actor_id, kind, key, value, num_value, max_value, source_message_id, updated_at FROM chat_state_entries WHERE id = ?1 AND chat_id = ?2",
+    )
+    .bind(entry_id)
+    .bind(chat_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("State entry not found"))?;
+    let mut entry = chat_state_from_row(row)?;
+    if let Some(value) = payload.value {
+        entry.value = value;
+    }
+    if let Some(num) = payload.num_value {
+        entry.num_value = Some(num);
+    }
+    if let Some(max) = payload.max_value {
+        entry.max_value = Some(max);
+    }
+    entry.updated_at = Utc::now();
+    sqlx::query(
+        "UPDATE chat_state_entries SET value=?1, num_value=?2, max_value=?3, source_message_id=-1, updated_at=?4 WHERE id=?5",
+    )
+    .bind(&entry.value)
+    .bind(entry.num_value)
+    .bind(entry.max_value)
+    .bind(entry.updated_at.to_rfc3339())
+    .bind(entry_id)
+    .execute(pool)
+    .await?;
+    Ok(entry)
+}
+
+fn parse_state_kind(s: &str) -> StateKind {
+    match s {
+        "resource" => StateKind::Resource,
+        "condition" => StateKind::Condition,
+        "fact" => StateKind::Fact,
+        "clock" => StateKind::Clock,
+        _ => StateKind::Fact,
+    }
+}
+
+fn chat_actor_from_row(row: ChatActorRow) -> AppResult<ChatActor> {
+    Ok(ChatActor {
+        id: row.id,
+        chat_id: row.chat_id,
+        role: row.role,
+        name: row.name,
+        description: row.description,
+        skills: serde_json::from_str(&row.skills).unwrap_or_default(),
+        sort_order: row.sort_order,
+        created_at: parse_dt(&row.created_at)?,
+        updated_at: parse_dt(&row.updated_at)?,
+    })
+}
+
+fn chat_state_from_row(row: ChatStateRow) -> AppResult<ChatStateEntry> {
+    Ok(ChatStateEntry {
+        id: row.id,
+        chat_id: row.chat_id,
+        actor_id: row.actor_id,
+        kind: parse_state_kind(&row.kind),
+        key: row.key,
+        value: row.value,
+        num_value: row.num_value,
+        max_value: row.max_value,
+        source_message_id: row.source_message_id,
+        updated_at: parse_dt(&row.updated_at)?,
+    })
+}
+
+fn parse_applied_state_changes(raw: &str) -> Vec<AppliedStateChange> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn parse_string_array(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
 }
 
 async fn seed_character_greeting(
@@ -473,7 +653,7 @@ pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppRe
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.is_summary, m.in_summary, m.created_at, j.status as job_status, (SELECT gj.error FROM generation_jobs gj WHERE gj.message_id = m.id AND gj.status = 'failed' ORDER BY gj.completed_at DESC LIMIT 1) as generation_error FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.reply_beats, m.state_changes, m.generation_phase, m.is_summary, m.in_summary, m.created_at, j.status as job_status, (SELECT gj.error FROM generation_jobs gj WHERE gj.message_id = m.id AND gj.status = 'failed' ORDER BY gj.completed_at DESC LIMIT 1) as generation_error FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -550,6 +730,9 @@ pub async fn insert_message(
         thought_duration_ms: None,
         thought_in_progress: false,
         variable_updates: Vec::new(),
+        reply_beats: Vec::new(),
+        state_changes: Vec::new(),
+        generation_phase: String::new(),
         is_summary,
         in_summary: false,
         created_at: parse_dt(&now)?,
@@ -740,33 +923,6 @@ pub async fn clear_message_variable_updates(pool: &SqlitePool, message_id: i64) 
     Ok(())
 }
 
-pub async fn append_message_variable_recheck(
-    pool: &SqlitePool,
-    message_id: i64,
-    content: &str,
-    additional_updates: &[dreamwell_types::MessageVariableUpdate],
-) -> AppResult<()> {
-    let row = sqlx::query_as::<_, (String, String)>(
-        "SELECT variable_updates, content FROM messages WHERE id = ?1",
-    )
-    .bind(message_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Message not found"))?;
-    let mut existing: Vec<dreamwell_types::MessageVariableUpdate> =
-        serde_json::from_str(&row.0).unwrap_or_default();
-    existing.extend_from_slice(additional_updates);
-    let variable_updates_json = serde_json::to_string(&existing)
-        .map_err(|e| AppError::internal(format!("serialize variable updates: {e}")))?;
-    sqlx::query("UPDATE messages SET content = ?1, variable_updates = ?2 WHERE id = ?3")
-        .bind(content)
-        .bind(variable_updates_json)
-        .bind(message_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub async fn set_thought_in_progress(
     pool: &SqlitePool,
     message_id: i64,
@@ -825,13 +981,19 @@ pub async fn touch_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<()> {
 }
 
 pub async fn list_variables(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<ChatVariable>> {
-    let rows = sqlx::query_as::<_, VariableRow>(
-        "SELECT id, chat_id, key, value, source_message_id, updated_at FROM chat_variables WHERE chat_id = ?1 ORDER BY source_message_id ASC, key ASC",
-    )
-    .bind(chat_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(Into::into).collect())
+    let entries = list_chat_state_entries(pool, chat_id).await?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.kind == StateKind::Fact && e.actor_id.is_none())
+        .map(|e| ChatVariable {
+            id: e.id,
+            chat_id: e.chat_id,
+            key: e.key,
+            value: e.value,
+            source_message_id: e.source_message_id,
+            updated_at: e.updated_at,
+        })
+        .collect())
 }
 
 pub async fn upsert_variable(
@@ -843,7 +1005,7 @@ pub async fn upsert_variable(
 ) -> AppResult<ChatVariable> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO chat_variables (chat_id, key, value, source_message_id, updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(chat_id, key, source_message_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        "INSERT INTO chat_state_entries (chat_id, actor_id, kind, key, value, source_message_id, updated_at) VALUES (?1,NULL,'fact',?2,?3,?4,?5) ON CONFLICT(chat_id, actor_id, kind, key) DO UPDATE SET value=excluded.value, source_message_id=excluded.source_message_id, updated_at=excluded.updated_at",
     )
     .bind(chat_id)
     .bind(&key)
@@ -852,15 +1014,19 @@ pub async fn upsert_variable(
     .bind(&now)
     .execute(pool)
     .await?;
-    let row = sqlx::query_as::<_, VariableRow>(
-        "SELECT id, chat_id, key, value, source_message_id, updated_at FROM chat_variables WHERE chat_id = ?1 AND key = ?2 AND source_message_id = ?3",
-    )
-    .bind(chat_id)
-    .bind(&key)
-    .bind(source_message_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(row.into())
+    let entries = list_chat_state_entries(pool, chat_id).await?;
+    entries
+        .into_iter()
+        .find(|e| e.key == key && e.kind == StateKind::Fact && e.actor_id.is_none())
+        .map(|e| ChatVariable {
+            id: e.id,
+            chat_id: e.chat_id,
+            key: e.key,
+            value: e.value,
+            source_message_id: e.source_message_id,
+            updated_at: e.updated_at,
+        })
+        .ok_or_else(|| AppError::internal("variable upsert failed"))
 }
 
 pub async fn upsert_variable_manual(
@@ -875,11 +1041,13 @@ pub async fn upsert_variable_manual(
 }
 
 pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, variable_id: i64) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM chat_variables WHERE chat_id = ?1 AND id = ?2")
-        .bind(chat_id)
-        .bind(variable_id)
-        .execute(pool)
-        .await?;
+    let result = sqlx::query(
+        "DELETE FROM chat_state_entries WHERE chat_id = ?1 AND id = ?2 AND kind = 'fact'",
+    )
+    .bind(chat_id)
+    .bind(variable_id)
+    .execute(pool)
+    .await?;
     if result.rows_affected() == 0 {
         return Err(AppError::not_found("Variable not found"));
     }
@@ -891,15 +1059,19 @@ pub async fn get_chat_variable(
     chat_id: i64,
     variable_id: i64,
 ) -> AppResult<ChatVariable> {
-    let row = sqlx::query_as::<_, VariableRow>(
-        "SELECT id, chat_id, key, value, source_message_id, updated_at FROM chat_variables WHERE chat_id = ?1 AND id = ?2",
-    )
-    .bind(chat_id)
-    .bind(variable_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Variable not found"))?;
-    Ok(row.into())
+    let entries = list_chat_state_entries(pool, chat_id).await?;
+    entries
+        .into_iter()
+        .find(|e| e.id == variable_id)
+        .map(|e| ChatVariable {
+            id: e.id,
+            chat_id: e.chat_id,
+            key: e.key,
+            value: e.value,
+            source_message_id: e.source_message_id,
+            updated_at: e.updated_at,
+        })
+        .ok_or_else(|| AppError::not_found("Variable not found"))
 }
 
 pub async fn delete_variable_scoped(
@@ -909,11 +1081,94 @@ pub async fn delete_variable_scoped(
     source_message_id: i64,
 ) -> AppResult<()> {
     let _ = sqlx::query(
-        "DELETE FROM chat_variables WHERE chat_id = ?1 AND key = ?2 AND source_message_id = ?3",
+        "DELETE FROM chat_state_entries WHERE chat_id = ?1 AND key = ?2 AND source_message_id = ?3 AND kind = 'fact' AND actor_id IS NULL",
     )
     .bind(chat_id)
     .bind(key)
     .bind(source_message_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn clear_message_typed_state(pool: &SqlitePool, message_id: i64) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE messages SET reply_beats='[]', state_changes='[]', generation_phase='' WHERE id = ?1",
+    )
+    .bind(message_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn update_message_generation_phase(
+    pool: &SqlitePool,
+    message_id: i64,
+    phase: &str,
+) -> AppResult<()> {
+    sqlx::query("UPDATE messages SET generation_phase = ?1 WHERE id = ?2")
+        .bind(phase)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn save_message_plan(
+    pool: &SqlitePool,
+    message_id: i64,
+    reply_beats: &[String],
+    state_changes: &[AppliedStateChange],
+) -> AppResult<()> {
+    let beats_json = serde_json::to_string(reply_beats)
+        .map_err(|e| AppError::internal(format!("serialize reply_beats: {e}")))?;
+    let changes_json = serde_json::to_string(state_changes)
+        .map_err(|e| AppError::internal(format!("serialize state_changes: {e}")))?;
+    sqlx::query(
+        "UPDATE messages SET reply_beats=?1, state_changes=?2, generation_phase='prose' WHERE id=?3",
+    )
+    .bind(beats_json)
+    .bind(changes_json)
+    .bind(message_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn finalize_message_typed_generation(
+    pool: &SqlitePool,
+    message_id: i64,
+    content: &str,
+    thought_content: &str,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: bool,
+    reply_beats: &[String],
+    state_changes: &[AppliedStateChange],
+) -> AppResult<()> {
+    let current = get_message_generation_snapshot(pool, message_id).await?;
+    let (content, thought_content, thought_duration_ms, thought_in_progress) =
+        merge_generation_fields(
+            &current,
+            content,
+            thought_content,
+            thought_duration_ms,
+            thought_in_progress,
+        );
+    let beats_json = serde_json::to_string(reply_beats)
+        .map_err(|e| AppError::internal(format!("serialize reply_beats: {e}")))?;
+    let changes_json = serde_json::to_string(state_changes)
+        .map_err(|e| AppError::internal(format!("serialize state_changes: {e}")))?;
+    sqlx::query(
+        "UPDATE messages SET content = ?1, thought_content = ?2, thought_duration_ms = ?3, thought_in_progress = ?4, reply_beats = ?5, state_changes = ?6, generation_phase = 'complete', variable_updates = '[]' WHERE id = ?7",
+    )
+    .bind(&content)
+    .bind(&thought_content)
+    .bind(thought_duration_ms)
+    .bind(thought_in_progress as i64)
+    .bind(beats_json)
+    .bind(changes_json)
+    .bind(message_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -1157,15 +1412,42 @@ pub async fn list_queue(pool: &SqlitePool) -> AppResult<(Vec<Job>, Vec<Job>)> {
 }
 
 pub async fn claim_jobs(pool: &SqlitePool, limit: i64) -> AppResult<Vec<i64>> {
-    let mut tx = pool.begin().await?;
+    const MAX_ATTEMPTS: u32 = 12;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match claim_jobs_once(pool, limit).await {
+            Ok(ids) => return Ok(ids),
+            Err(err) if is_sqlite_locked(&err) && attempt < MAX_ATTEMPTS => {
+                tokio::time::sleep(Duration::from_millis(25 * u64::from(attempt))).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Err(AppError::internal("claim_jobs timed out waiting for database lock"))
+}
+
+async fn claim_jobs_once(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let result = claim_jobs_in_tx(&mut *conn, limit).await;
+    if result.is_ok() {
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
+    } else {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+    }
+    result
+}
+
+async fn claim_jobs_in_tx(
+    conn: &mut sqlx::sqlite::SqliteConnection,
+    limit: i64,
+) -> Result<Vec<i64>, sqlx::Error> {
     let running: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM generation_jobs WHERE status = 'running'")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await?;
     let max = MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst);
     let slots = (max - running).max(0).min(limit);
     if slots == 0 {
-        tx.commit().await?;
         return Ok(vec![]);
     }
     let ids = sqlx::query_scalar::<_, i64>(
@@ -1184,17 +1466,16 @@ pub async fn claim_jobs(pool: &SqlitePool, limit: i64) -> AppResult<Vec<i64>> {
          ORDER BY j.created_at ASC LIMIT ?1",
     )
     .bind(slots)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *conn)
     .await?;
     let now = Utc::now().to_rfc3339();
     for id in &ids {
         sqlx::query("UPDATE generation_jobs SET status='running', started_at=?1 WHERE id=?2")
             .bind(&now)
             .bind(id)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
     }
-    tx.commit().await?;
     Ok(ids)
 }
 
@@ -1309,6 +1590,9 @@ fn message_from_row(row: MessageRow) -> Message {
         thought_duration_ms: row.thought_duration_ms,
         thought_in_progress: row.thought_in_progress != 0,
         variable_updates,
+        reply_beats: parse_string_array(&row.reply_beats),
+        state_changes: parse_applied_state_changes(&row.state_changes),
+        generation_phase: row.generation_phase,
         is_summary: row.is_summary != 0,
         in_summary: row.in_summary != 0,
         created_at: DateTime::parse_from_rfc3339(&row.created_at)
@@ -1378,11 +1662,41 @@ struct MessageRow {
     thought_duration_ms: Option<i64>,
     thought_in_progress: i64,
     variable_updates: String,
+    reply_beats: String,
+    state_changes: String,
+    generation_phase: String,
     is_summary: i64,
     in_summary: i64,
     created_at: String,
     job_status: Option<String>,
     generation_error: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ChatActorRow {
+    id: i64,
+    chat_id: i64,
+    role: String,
+    name: String,
+    description: String,
+    skills: String,
+    sort_order: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ChatStateRow {
+    id: i64,
+    chat_id: i64,
+    actor_id: Option<i64>,
+    kind: String,
+    key: String,
+    value: String,
+    num_value: Option<i64>,
+    max_value: Option<i64>,
+    source_message_id: i64,
+    updated_at: String,
 }
 
 #[derive(sqlx::FromRow)]

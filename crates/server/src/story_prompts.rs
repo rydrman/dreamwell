@@ -1,5 +1,33 @@
-use dreamwell_types::{Story, StoryBeat, StoryChapter};
-use serde_json::Value;
+use dreamwell_state::{plan_schema, PLAN_BEAT_RULES, STATE_CHANGE_RULES};
+use dreamwell_types::{Story, StoryActor, StoryBeat, StoryChapter};
+use serde_json::{json, Value};
+
+const STORY_PROSE_SYSTEM: &str = r#"You write story beat prose as natural narrative.
+
+Rules:
+- Cover every plan beat in order — each beat should be clearly reflected in the prose
+- Beats are mandatory staging notes for THIS beat; do not substitute generic filler
+- Match the story tone, genre, and POV from the story context
+- Use the named characters consistently; do not contradict established typed state or prior canon
+- No JSON, no XML tags, no meta commentary — prose only"#;
+
+fn format_story_actors(actors: &[StoryActor]) -> String {
+    actors
+        .iter()
+        .filter_map(|actor| {
+            let name = actor.name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let mut part = format!("{name} ({})", actor.role.trim());
+            if !actor.description.trim().is_empty() {
+                part.push_str(&format!("\n{}", actor.description.trim()));
+            }
+            Some(part)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
 
 pub fn story_basics(story: &Story) -> String {
     let preset = story.length_preset;
@@ -430,6 +458,82 @@ pub fn build_beat_prose_continue_messages(
     ]
 }
 
+pub fn build_beat_prose_continue_typed_messages(
+    story: &Story,
+    chapters: &[StoryChapter],
+    chapter: &StoryChapter,
+    beat: &StoryBeat,
+    guidance: &str,
+    state_block: &str,
+) -> Vec<Value> {
+    let prior_chapters = prior_chapter_context(chapters, chapter.sort_order);
+    let prior_beats = prior_beat_synopses(&chapter.beats, beat.sort_order);
+    let prior_prose = prior_beat_prose(&chapter.beats, beat.sort_order);
+    let mut user = format!(
+        "Continue the prose for beat {} from where it left off.\n\n\
+         Beat title: {}\n\
+         Mechanical beat plan:\n{}\n\n\
+         Scope: Continue covering what the mechanical plan lists, in order. \
+         Pick up after the existing prose below — do not repeat or rewrite text already written. \
+         Stop when this beat ends — do not advance into later beats or resolve plot points reserved for them. \
+         The beat synopsis and chapter synopsis below are background context for tone and direction only — not a checklist.\n\n\
+         Beat synopsis (background): {}\n\
+         Chapter synopsis (background — may describe later beats): {}",
+        beat.sort_order + 1,
+        beat.title,
+        beat.mechanical.trim(),
+        beat.synopsis,
+        chapter.synopsis
+    );
+    if !prior_prose.is_empty() {
+        user.push_str(
+            "\n\nPrior beats in this chapter (written prose — canonical; match names, facts, and events):\n",
+        );
+        user.push_str(&prior_prose);
+    }
+    if !prior_chapters.is_empty() {
+        user.push_str("\n\nPrior chapters (compressed summaries when available):\n");
+        user.push_str(&prior_chapters);
+    }
+    if !prior_beats.is_empty() {
+        user.push_str(
+            "\n\nPrior beats in this chapter (synopses — written prose above takes precedence):\n",
+        );
+        user.push_str(&prior_beats);
+    }
+    user.push_str("\n\nExisting prose for this beat (continue directly from the end):\n");
+    user.push_str(beat.content.trim());
+    if !guidance.trim().is_empty() {
+        user.push_str("\n\nGuidance from the author:\n");
+        user.push_str(guidance.trim());
+    }
+    user.push_str(
+        "\n\nWrite only the new narrative prose to append. No headings, labels, meta commentary, or repetition of existing text.",
+    );
+    if !state_block.is_empty() {
+        user.push_str(&format!("\n\nCurrent typed state:\n{state_block}"));
+    }
+
+    let mut system = format!(
+        "You are a fiction writer. Match the story tone and POV. \
+         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
+        story_basics(story)
+    );
+    let tracked_text = crate::story_variables::format_tracked_details(&story.tracked_details);
+    if !tracked_text.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&tracked_text);
+    }
+
+    vec![
+        serde_json::json!({
+            "role": "system",
+            "content": system,
+        }),
+        serde_json::json!({ "role": "user", "content": user }),
+    ]
+}
+
 fn chapter_snapshot(chapter: &StoryChapter, index: usize) -> String {
     let beat_count = chapter.beats.len();
     let prose_beats = chapter
@@ -630,6 +734,115 @@ pub fn parse_outline_json(text: &str) -> Option<(String, String)> {
     Some((title, synopsis))
 }
 
+const STORY_PLAN_SYSTEM: &str = r#"You plan story beat prose before it is written.
+
+Given the beat synopsis and story context, output JSON with:
+- plan_beats: short, specific bullet points this beat's prose must cover (in order)
+- state_changes: typed durable state updates that should persist after this beat
+
+Plan ONLY this beat — concrete staging from the synopsis and prior prose, not generic story beats.
+
+Do not write final prose in this step — beats and state only."#;
+
+pub fn story_plan_schema() -> serde_json::Value {
+    plan_schema("plan_beats")
+}
+
+pub fn build_story_plan_messages(
+    story: &Story,
+    _chapters: &[StoryChapter],
+    chapter: &StoryChapter,
+    beat: &StoryBeat,
+    state_block: &str,
+    guidance: &str,
+) -> Vec<serde_json::Value> {
+    let mut user = format!(
+        "{}\n\nChapter {} — {}:\n{}\n\nBeat {} — {}:\n{}\n\nBeat synopsis:\n{}",
+        story_basics(story),
+        chapter.sort_order + 1,
+        chapter.title,
+        chapter.synopsis,
+        beat.sort_order + 1,
+        beat.title,
+        beat.synopsis,
+        beat.synopsis
+    );
+    if !state_block.is_empty() {
+        user.push_str(&format!("\n\nCurrent typed state:\n{state_block}"));
+    }
+    if !guidance.trim().is_empty() {
+        user.push_str(&format!("\n\nAuthor guidance:\n{}", guidance.trim()));
+    }
+    if !beat.mechanical.trim().is_empty() {
+        user.push_str("\n\nMechanical beat plan (use as staging — plan_beats should be specific clauses drawn from this):\n");
+        user.push_str(beat.mechanical.trim());
+    }
+    user.push_str(
+        "\n\nOutput plan_beats as concrete staging for THIS beat only — avoid generic beats that could fit any story moment.",
+    );
+    vec![
+        json!({
+            "role": "system",
+            "content": format!("{STORY_PLAN_SYSTEM}\n\n{PLAN_BEAT_RULES}\n\n{STATE_CHANGE_RULES}"),
+        }),
+        json!({
+            "role": "user",
+            "content": user,
+        }),
+    ]
+}
+
+pub fn build_story_prose_from_plan_messages(
+    story: &Story,
+    chapter: &StoryChapter,
+    beat: &StoryBeat,
+    plan_beats: &[String],
+    state_block: &str,
+    guidance: &str,
+    actors: &[StoryActor],
+) -> Vec<serde_json::Value> {
+    let beats_text = plan_beats
+        .iter()
+        .map(|b| format!("- {b}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut user = format!("Plan beats to cover:\n{beats_text}");
+    if !state_block.is_empty() {
+        user.push_str(&format!("\n\nCurrent typed state:\n{state_block}"));
+    }
+    user.push_str(&format!("\n\n{}", story_basics(story)));
+    let actors_text = format_story_actors(actors);
+    if !actors_text.is_empty() {
+        user.push_str(&format!("\n\nCharacters:\n{actors_text}"));
+    }
+    let tracked_text = crate::story_variables::format_tracked_details(&story.tracked_details);
+    if !tracked_text.is_empty() {
+        user.push_str(&format!("\n\n{tracked_text}"));
+    }
+    user.push_str(&format!(
+        "\n\nChapter {} — {}: {}\nBeat {} — {}: {}",
+        chapter.sort_order + 1,
+        chapter.title,
+        chapter.synopsis,
+        beat.sort_order + 1,
+        beat.title,
+        beat.synopsis,
+    ));
+    if !guidance.trim().is_empty() {
+        user.push_str(&format!("\n\nAuthor guidance:\n{}", guidance.trim()));
+    }
+    vec![
+        json!({
+            "role": "system",
+            "content": STORY_PROSE_SYSTEM,
+        }),
+        json!({
+            "role": "user",
+            "content": user,
+        }),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +876,8 @@ mod tests {
             mechanical: String::new(),
             content: content.to_string(),
             variable_updates: Vec::new(),
+            plan_beats: Vec::new(),
+            state_changes: Vec::new(),
             sort_order: order,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -852,5 +1067,47 @@ mod tests {
         assert!(user.contains("She walked into the market."));
         assert!(user.contains("do not repeat or rewrite text already written"));
         assert!(user.contains("Write only the new narrative prose to append"));
+    }
+
+    #[test]
+    fn story_prose_from_plan_includes_premise_and_characters() {
+        use dreamwell_types::StoryActor;
+
+        let chapter = sample_chapter(0, vec![sample_beat(0, "Arrival", "Mira reaches the inn.", "")]);
+        let beat = chapter.beats[0].clone();
+        let story = sample_story();
+        let actors = vec![StoryActor {
+            id: 1,
+            story_id: 1,
+            role: "pc".to_string(),
+            name: "Mira".to_string(),
+            description: "A cautious mapmaker.".to_string(),
+            skills: Default::default(),
+            sort_order: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+        let messages = build_story_prose_from_plan_messages(
+            &story,
+            &chapter,
+            &beat,
+            &["Mira asks the innkeeper about the cellar.".to_string()],
+            "stress (resource): 1/5",
+            "Keep it tense.",
+            &actors,
+        );
+        let user = messages[1]["content"].as_str().unwrap();
+        let system = messages[0]["content"].as_str().unwrap();
+
+        assert!(user.contains("Plan beats to cover:"));
+        assert!(user.contains("Mira asks the innkeeper about the cellar."));
+        assert!(user.contains("Premise: A hero finds a map."));
+        assert!(user.contains("POV: Third person"));
+        assert!(user.contains("Characters:"));
+        assert!(user.contains("Mira (pc)"));
+        assert!(user.contains("A cautious mapmaker."));
+        assert!(user.contains("Current typed state:"));
+        assert!(user.contains("Author guidance:"));
+        assert!(system.contains("Cover every plan beat in order"));
     }
 }

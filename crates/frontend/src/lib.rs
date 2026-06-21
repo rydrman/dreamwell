@@ -19,6 +19,7 @@ mod router;
 mod scenario_ui;
 mod sidebar;
 mod sse_client;
+mod state_ui;
 mod stories_ui;
 mod story_save;
 mod story_sync;
@@ -52,6 +53,7 @@ use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use scenario_ui::{default_game_title, game_create_from_scenario, ScenariosPage};
 use sidebar::AppSidebar;
+use state_ui::{PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow};
 use stories_ui::StoriesShell;
 use story_save::{AutoSaveField, AutoSavePhase};
 use story_sync::{FetchGeneration, AUTOSAVE_DEBOUNCE_MS};
@@ -61,8 +63,8 @@ use summary_ui::{
 };
 use title_editor::TitleEditor;
 use variables_ui::{
-    chat_scope_label, chat_scope_options, chat_variable_row, make_chat_variable_handlers,
-    InlineChatVariables, VariableList, VariableRowModel, MANUAL_MESSAGE_SOURCE,
+    chat_scope_options, chat_variable_row, make_chat_variable_handlers, VariableList,
+    VariableRowModel, MANUAL_MESSAGE_SOURCE,
 };
 use web_sys::{HtmlElement, HtmlInputElement};
 use yew::prelude::*;
@@ -2436,9 +2438,7 @@ enum MessageBubbleMode {
 #[derive(Properties, PartialEq)]
 struct MessageBubbleProps {
     message: Message,
-    messages: Vec<Message>,
     chat_id: i64,
-    variable_scope_label: String,
     is_last: bool,
     after_count: usize,
     display_content: String,
@@ -2473,8 +2473,6 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         && props.message.role == MessageRole::Assistant
         && (!props.message.thought_content.is_empty()
             || (props.message.thought_in_progress && active));
-    let show_variable_section =
-        props.show_variables && props.message.role == MessageRole::Assistant;
     let align_menu_end = props.message.role == MessageRole::User;
 
     let start_edit = {
@@ -2670,6 +2668,19 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     thought_in_progress={props.message.thought_in_progress}
                 />
             }
+            if props.message.role == MessageRole::Assistant && !props.message.state_changes.is_empty() {
+                <PhaseSection label={"State changes".to_string()} default_expanded={false}>
+                    <StateChangesList changes={props.message.state_changes.clone()} />
+                </PhaseSection>
+            }
+            if props.message.role == MessageRole::Assistant && !props.message.reply_beats.is_empty() {
+                <PhaseSection
+                    label={"Plan".to_string()}
+                    default_expanded={active || !show_body}
+                >
+                    <PlanBeatsList beats={props.message.reply_beats.clone()} inline={true} />
+                </PhaseSection>
+            }
             if *mode == MessageBubbleMode::Edit {
                 <textarea
                     class="message-edit-input"
@@ -2724,16 +2735,6 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                         <span>{ error }</span>
                     </div>
                 }
-            }
-            if show_variable_section {
-                <InlineChatVariables
-                    chat_id={props.chat_id}
-                    message_id={props.message.id}
-                    messages={props.messages.clone()}
-                    scope_label={props.variable_scope_label.clone()}
-                    variable_updates={props.message.variable_updates.clone()}
-                    on_changed={props.on_changed.clone()}
-                />
             }
         </div>
     }
@@ -3044,9 +3045,7 @@ fn message_list(props: &MessageListProps) -> Html {
                             <MessageBubble
                                 key={m.id}
                                 message={m.clone()}
-                                messages={props.messages.clone()}
                                 chat_id={chat_id}
-                                variable_scope_label={chat_scope_label(m.id, &props.messages)}
                                 is_last={is_last}
                                 after_count={after_count}
                                 display_content={display_content}
@@ -3536,6 +3535,8 @@ struct VariablesPanelProps {
 fn variables_panel(props: &VariablesPanelProps) -> Html {
     let variables = use_state(Vec::<ChatVariable>::new);
 
+    let chat_state = use_state(Vec::<ChatStateEntry>::new);
+
     let refresh_signal = VariableRefreshSignal {
         chat_id: props.chat_id,
         message_signals: props
@@ -3547,16 +3548,22 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
 
     {
         let variables = variables.clone();
+        let chat_state = chat_state.clone();
         use_effect_with(refresh_signal, move |signal| {
             if let Some(chat_id) = signal.chat_id {
                 let variables = variables.clone();
+                let chat_state = chat_state.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(list) = api::get_variables(chat_id).await {
                         variables.set(list);
                     }
+                    if let Ok(detail) = api::get_chat_detail(chat_id).await {
+                        chat_state.set(detail.state);
+                    }
                 });
             } else {
                 variables.set(vec![]);
+                chat_state.set(vec![]);
             }
             || ()
         });
@@ -3580,7 +3587,9 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
     );
 
     html! {
-        <VariableList
+        <>
+            <StateEntriesPanel entries={chat_state.iter().map(StateEntryRow::from).collect::<Vec<_>>()} />
+            <VariableList
             rows={rows}
             scope_options={scope_options}
             new_scope_value={MANUAL_MESSAGE_SOURCE.to_string()}
@@ -3588,6 +3597,7 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
             on_save={on_save}
             on_delete={on_delete}
         />
+        </>
     }
 }
 

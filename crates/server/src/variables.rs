@@ -11,27 +11,6 @@ use crate::error::AppResult;
 const TAG: &str = r"(?:var|fact|variable)";
 const IDENT: &str = r#"(?:key|name)\s*=\s*["']?([^"'>\s]+)["']?"#;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VariableUpdate {
-    Set { key: String, value: String },
-    Delete { key: String },
-}
-
-/// Parses variable updates from model output without mutating the stored text.
-pub fn parse_variable_updates(text: &str) -> Vec<VariableUpdate> {
-    let mut updates = Vec::new();
-    let mut working = text.to_string();
-    working = extract_delete_tags(&working, &mut updates);
-    working = extract_set_value_tags(&working, &mut updates);
-    extract_set_tags(&working, &mut updates);
-    updates
-}
-
-/// Visible reply text after variable tags are removed. Used only for validation.
-pub(crate) fn visible_text_without_variables(text: &str) -> String {
-    strip_variable_markup(text, false)
-}
-
 /// Strips variable tags for display or storage (e.g. story beat prose).
 pub fn strip_variables_for_display(text: &str, hold_incomplete: bool) -> String {
     strip_variable_markup(text, hold_incomplete)
@@ -83,41 +62,6 @@ fn set_pattern() -> &'static Regex {
     })
 }
 
-fn extract_delete_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
-    let mut working = text.to_string();
-    for re in delete_patterns() {
-        working = re
-            .replace_all(&working, |caps: &regex::Captures| {
-                push_delete_update(updates, caps.get(1).map(|m| m.as_str()).unwrap_or_default());
-                ""
-            })
-            .into_owned();
-    }
-    working
-}
-
-fn extract_set_value_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
-    set_value_pattern()
-        .replace_all(text, |caps: &regex::Captures| {
-            let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
-            let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
-            push_set_update(updates, key, value);
-            ""
-        })
-        .into_owned()
-}
-
-fn extract_set_tags(text: &str, updates: &mut Vec<VariableUpdate>) -> String {
-    set_pattern()
-        .replace_all(text, |caps: &regex::Captures| {
-            let key = caps.get(1).map(|m| m.as_str().trim()).unwrap_or_default();
-            let value = caps.get(2).map(|m| m.as_str().trim()).unwrap_or_default();
-            push_set_update(updates, key, value);
-            ""
-        })
-        .into_owned()
-}
-
 fn strip_delete_tags(text: &str) -> String {
     let mut working = text.to_string();
     for re in delete_patterns() {
@@ -132,25 +76,6 @@ fn strip_set_value_tags(text: &str) -> String {
 
 fn strip_set_tags(text: &str) -> String {
     set_pattern().replace_all(text, "").into_owned()
-}
-
-fn push_delete_update(updates: &mut Vec<VariableUpdate>, key: &str) {
-    let key = key.trim();
-    if !key.is_empty() {
-        updates.push(VariableUpdate::Delete {
-            key: key.to_string(),
-        });
-    }
-}
-
-fn push_set_update(updates: &mut Vec<VariableUpdate>, key: &str, value: &str) {
-    let key = key.trim();
-    if !key.is_empty() {
-        updates.push(VariableUpdate::Set {
-            key: key.to_string(),
-            value: value.to_string(),
-        });
-    }
 }
 
 fn strip_orphan_closing_tags(text: &str) -> String {
@@ -232,57 +157,6 @@ fn collapse_spaces(text: &str) -> String {
     spaces.replace_all(text, " ").to_string()
 }
 
-pub async fn apply_variable_updates(
-    pool: &SqlitePool,
-    chat_id: i64,
-    message_id: i64,
-    updates: &[VariableUpdate],
-) -> AppResult<()> {
-    for update in updates {
-        match update {
-            VariableUpdate::Set { key, value } if value.is_empty() => {
-                let _ = db::delete_variable_scoped(pool, chat_id, key, message_id).await;
-            }
-            VariableUpdate::Set { key, value } => {
-                db::upsert_variable(pool, chat_id, key.clone(), value.clone(), message_id).await?;
-            }
-            VariableUpdate::Delete { key } => {
-                let _ = db::delete_variable_scoped(pool, chat_id, key, message_id).await;
-            }
-        }
-    }
-    Ok(())
-}
-
-pub async fn build_message_variable_updates(
-    pool: &SqlitePool,
-    chat_id: i64,
-    message_id: i64,
-    updates: &[VariableUpdate],
-) -> AppResult<Vec<MessageVariableUpdate>> {
-    let messages = db::list_messages(pool, chat_id).await?;
-    let panel = db::list_variables(pool, chat_id).await?;
-    let state = crate::variable_state::chat_state_at(&messages, &panel, message_id);
-    let mut result = Vec::with_capacity(updates.len());
-    for update in updates {
-        let previous_value = state
-            .get(match update {
-                VariableUpdate::Set { key, .. } | VariableUpdate::Delete { key } => key,
-            })
-            .cloned();
-        let (key, value) = match update {
-            VariableUpdate::Set { key, value } => (key.clone(), value.clone()),
-            VariableUpdate::Delete { key } => (key.clone(), String::new()),
-        };
-        result.push(MessageVariableUpdate {
-            key,
-            value,
-            previous_value,
-        });
-    }
-    Ok(result)
-}
-
 pub async fn revert_message_variable_updates(
     pool: &SqlitePool,
     chat_id: i64,
@@ -308,19 +182,6 @@ pub async fn revert_message_variable_updates(
     Ok(())
 }
 
-/// Serializes variable updates as `<var>` tags for embedding in message content.
-pub fn format_variable_tags(updates: &[VariableUpdate]) -> String {
-    updates
-        .iter()
-        .map(|update| match update {
-            VariableUpdate::Set { key, value } => format!(r#"<var key="{key}">{value}</var>"#),
-            VariableUpdate::Delete { key } => format!(r#"<var key="{key}" delete/>"#),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Removes variable tags whose keys appear in `keys`.
 pub fn remove_variable_tags_for_keys(text: &str, keys: &HashSet<&str>) -> String {
     if keys.is_empty() {
         return text.to_string();
@@ -365,28 +226,6 @@ pub fn remove_variable_tags_for_keys(text: &str, keys: &HashSet<&str>) -> String
         })
         .into_owned();
     collapse_spaces(working.trim()).to_string()
-}
-
-/// Replaces or appends variable tags in message content so future prompts see corrected state.
-pub fn merge_variable_tags_into_message(content: &str, updates: &[VariableUpdate]) -> String {
-    if updates.is_empty() {
-        return content.to_string();
-    }
-    let keys: HashSet<&str> = updates
-        .iter()
-        .map(|update| match update {
-            VariableUpdate::Set { key, .. } | VariableUpdate::Delete { key } => key.as_str(),
-        })
-        .collect();
-    let stripped = remove_variable_tags_for_keys(content, &keys);
-    let tags = format_variable_tags(updates);
-    if tags.is_empty() {
-        stripped
-    } else if stripped.trim().is_empty() {
-        tags
-    } else {
-        format!("{stripped}\n{tags}")
-    }
 }
 
 /// Keeps only updates that would change current chat variable state.
@@ -471,187 +310,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_name_attribute_tags() {
-        let updates = parse_variable_updates(r#"<var name="location">tavern</var>"#);
+    fn strip_variables_for_display_removes_tags() {
         assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "location".to_string(),
-                value: "tavern".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_variable_element_name() {
-        let updates = parse_variable_updates(r#"<variable name="location">tavern</variable>"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "location".to_string(),
-                value: "tavern".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_name_attribute_after_other_attributes() {
-        let updates = parse_variable_updates(r#"<var id="1" name="location">tavern</var>"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "location".to_string(),
-                value: "tavern".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_var_tags() {
-        let updates = parse_variable_updates(r#"Hello <var key="location">tavern</var> world"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "location".to_string(),
-                value: "tavern".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_legacy_fact_tags() {
-        let updates = parse_variable_updates(r#"<fact key="gold">12</fact>"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "gold".to_string(),
-                value: "12".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_delete_var_tags() {
-        let updates = parse_variable_updates(r#"Done <var key="quest_stage" delete/> here"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Delete {
-                key: "quest_stage".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_delete_var_tags_with_value() {
-        let updates = parse_variable_updates(
-            r#"Reset <var key="temp_buff" delete="true"/> and <var key="hp">50</var>"#,
-        );
-        assert_eq!(
-            updates,
-            vec![
-                VariableUpdate::Delete {
-                    key: "temp_buff".to_string(),
-                },
-                VariableUpdate::Set {
-                    key: "hp".to_string(),
-                    value: "50".to_string(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parses_self_closing_value_tags() {
-        let updates = parse_variable_updates(r#"Hi <var key="hp" value="50"/> there"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "hp".to_string(),
-                value: "50".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn parses_delete_empty_element_tags() {
-        let updates = parse_variable_updates(r#"Done <var key="quest" delete></var> now"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Delete {
-                key: "quest".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn ignores_incomplete_tags() {
-        let updates = parse_variable_updates(r#"Visible only <var key="hp">50</var"#);
-        assert!(updates.is_empty());
-    }
-
-    #[test]
-    fn is_case_insensitive_for_tags() {
-        let updates = parse_variable_updates(r#"<VAR key="x">y</VAR>"#);
-        assert_eq!(
-            updates,
-            vec![VariableUpdate::Set {
-                key: "x".to_string(),
-                value: "y".to_string(),
-            }]
-        );
-    }
-
-    #[test]
-    fn merge_replaces_existing_key_and_appends_new() {
-        let content = r#"Hello <var key="location">forest</var> world"#;
-        let updates = vec![
-            VariableUpdate::Set {
-                key: "location".into(),
-                value: "tavern".into(),
-            },
-            VariableUpdate::Set {
-                key: "gold".into(),
-                value: "12".into(),
-            },
-        ];
-        let merged = merge_variable_tags_into_message(content, &updates);
-        assert!(!merged.contains("forest"));
-        assert!(merged.contains(r#"<var key="location">tavern</var>"#));
-        assert!(merged.contains(r#"<var key="gold">12</var>"#));
-    }
-
-    #[test]
-    fn filter_meaningful_updates_skips_unchanged_values() {
-        let current = vec![("hp".to_string(), "80".to_string())];
-        let updates = vec![
-            VariableUpdate::Set {
-                key: "hp".into(),
-                value: "80".into(),
-            },
-            VariableUpdate::Set {
-                key: "gold".into(),
-                value: "5".into(),
-            },
-        ];
-        let filtered = crate::story_variables::filter_meaningful_story_updates(&updates, &current);
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(
-            filtered[0],
-            VariableUpdate::Set {
-                key: "gold".into(),
-                value: "5".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn visible_text_strips_tags_for_validation() {
-        assert_eq!(
-            visible_text_without_variables(
-                r#"*narrates* <var key="hp">80</var>
-</var>"#
-            ),
-            "*narrates*"
+            strip_variables_for_display(r#"Hello <var key="location">tavern</var> world"#, false),
+            "Hello world"
         );
     }
 
@@ -717,22 +379,16 @@ mod tests {
                 previous_value: None,
             },
         ];
-        apply_variable_updates(
+        db::upsert_variable(
             &pool,
             chat.id,
+            "location".into(),
+            "tavern".into(),
             message.id,
-            &[
-                VariableUpdate::Set {
-                    key: "location".into(),
-                    value: "tavern".into(),
-                },
-                VariableUpdate::Delete {
-                    key: "quest".into(),
-                },
-            ],
         )
         .await
-        .expect("apply");
+        .expect("apply location");
+        let _ = db::delete_variable_scoped(&pool, chat.id, "quest", message.id).await;
 
         revert_message_variable_updates(&pool, chat.id, message.id, &updates)
             .await
@@ -863,28 +519,12 @@ mod tests {
         )
         .await
         .expect("finalize second");
-        apply_variable_updates(
-            &pool,
-            chat.id,
-            first.id,
-            &[VariableUpdate::Set {
-                key: "hp".into(),
-                value: "80".into(),
-            }],
-        )
-        .await
-        .expect("apply first");
-        apply_variable_updates(
-            &pool,
-            chat.id,
-            second.id,
-            &[VariableUpdate::Set {
-                key: "hp".into(),
-                value: "50".into(),
-            }],
-        )
-        .await
-        .expect("apply second");
+        db::upsert_variable(&pool, chat.id, "hp".into(), "80".into(), first.id)
+            .await
+            .expect("apply first");
+        db::upsert_variable(&pool, chat.id, "hp".into(), "50".into(), second.id)
+            .await
+            .expect("apply second");
 
         let messages = vec![
             db::get_message(&pool, chat.id, first.id)

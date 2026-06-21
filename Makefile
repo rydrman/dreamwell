@@ -17,7 +17,7 @@ GIT_SHA := $(shell git rev-parse HEAD)
 GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
 GIT_TAG := $(shell git describe --exact-match --tags HEAD 2>/dev/null)
 
-COMPOSE_DEV ?= docker compose -f docker-compose.dev.yml
+COMPOSE_DEV ?= docker compose -f docker-compose.yml
 
 .PHONY: fmt fmt-check clippy test e2e validate install-hooks install-trunk build build-front build-server run run-local run-docker clean docker deploy
 

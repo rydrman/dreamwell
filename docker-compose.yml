@@ -28,7 +28,7 @@ services:
         - action: rebuild
           path: Dockerfile
         - action: rebuild
-          path: docker-compose.dev.yml
+          path: docker-compose.yml
         - action: restart
           path: ./scripts/dev-run.sh
 

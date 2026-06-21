@@ -1,5 +1,7 @@
 mod build_info;
 mod character_import;
+mod chat_prompts;
+mod chat_state;
 mod config;
 mod db;
 mod error;
@@ -17,9 +19,11 @@ mod queue;
 mod routes;
 mod scenario_db;
 mod scenario_import;
+mod state_recheck;
 mod story_beat_mechanical;
 mod story_beat_prose_recheck;
 mod story_prompts;
+mod story_state;
 mod story_summarize;
 mod story_variable_recheck;
 mod story_variables;
@@ -71,6 +75,7 @@ async fn main() {
         queue.wake();
     }
 
+    let shutdown_pool = pool.clone();
     let state = AppState {
         pool,
         queue,
@@ -115,5 +120,38 @@ async fn main() {
         .expect("valid listen address");
     tracing::info!("listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+
+    let shutdown = async {
+        let ctrl_c = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install Ctrl+C handler");
+        };
+
+        #[cfg(unix)]
+        let terminate = async {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut stream) => stream.recv().await,
+                Err(err) => {
+                    tracing::warn!(%err, "failed to install SIGTERM handler");
+                    std::future::pending::<Option<()>>().await
+                }
+            }
+        };
+
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<Option<()>>();
+
+        tokio::select! {
+            () = ctrl_c => {},
+            _ = terminate => {},
+        }
+        tracing::info!("shutdown signal received");
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+        .unwrap();
+    shutdown_pool.close().await;
 }
