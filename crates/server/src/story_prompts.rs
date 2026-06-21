@@ -1073,7 +1073,10 @@ mod tests {
     fn story_prose_from_plan_includes_premise_and_characters() {
         use dreamwell_types::StoryActor;
 
-        let chapter = sample_chapter(0, vec![sample_beat(0, "Arrival", "Mira reaches the inn.", "")]);
+        let chapter = sample_chapter(
+            0,
+            vec![sample_beat(0, "Arrival", "Mira reaches the inn.", "")],
+        );
         let beat = chapter.beats[0].clone();
         let story = sample_story();
         let actors = vec![StoryActor {

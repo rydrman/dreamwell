@@ -597,7 +597,7 @@ async fn fail_job(
         | JobType::StoryBeatMechanical
         | JobType::StoryBeatVariableRecheck
         | JobType::StoryBeatProseRecheck
-        |         JobType::GameTurnCheck
+        | JobType::GameTurnCheck
         | JobType::GameTurnResolve
         | JobType::GameTurnScenePlan
         | JobType::GameTurnProse => {
@@ -605,9 +605,7 @@ async fn fail_job(
                 let _ = db::update_turn_phase(pool, turn_id, "failed").await;
             }
         }
-        JobType::GameSceneSummarize
-        | JobType::GameProseRecheck
-        | JobType::GameStateRecheck => {}
+        JobType::GameSceneSummarize | JobType::GameProseRecheck | JobType::GameStateRecheck => {}
     }
     Ok(())
 }
@@ -938,8 +936,11 @@ async fn run_chat_legacy_generation_attempt(
                 if db_throttle.ready() {
                     if settings.thought_blocks_enabled {
                         let parsed = parse_thought_blocks(&accumulated);
-                        let (duration_ms, in_progress) =
-                            thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
+                        let (duration_ms, in_progress) = thought_timing(
+                            &parsed,
+                            &mut thought_started_at,
+                            &mut thought_duration_ms,
+                        );
                         db::update_message_generation(
                             pool,
                             message_id,
