@@ -1430,10 +1430,11 @@ async fn sync_active_connection_url(pool: &SqlitePool) -> AppResult<()> {
 
 pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppResult<Settings> {
     let mut current = get_settings(pool).await?;
+    let inference_url_updated = payload.inference_url.is_some();
     if let Some(v) = payload.inference_url {
         current.inference_url = v.clone();
         if let Some(active_id) = current.active_connection_id {
-            update_inference_connection(
+            let updated = update_inference_connection(
                 pool,
                 active_id,
                 InferenceConnectionUpdate {
@@ -1442,13 +1443,20 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
                 },
             )
             .await?;
+            if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                *conn = updated;
+            }
         }
     }
     if let Some(v) = payload.active_connection_id {
         set_active_inference_connection(pool, v).await?;
         current.active_connection_id = Some(v);
-        if let Some(active) = current.connections.iter().find(|c| c.id == v) {
-            current.inference_url = active.inference_url.clone();
+        // When inference_url was also patched, keep the new URL instead of a stale
+        // connection snapshot from the start of this request.
+        if !inference_url_updated {
+            if let Some(active) = current.connections.iter().find(|c| c.id == v) {
+                current.inference_url = active.inference_url.clone();
+            }
         }
     }
     if let Some(v) = payload.model {
@@ -2254,6 +2262,78 @@ mod generation_failure_tests {
             .await
             .expect("message");
         assert_eq!(message.content, "[Generation failed: timeout]");
+    }
+}
+
+#[cfg(test)]
+mod settings_update_tests {
+    use super::*;
+    use dreamwell_types::{InferenceConnectionCreate, SettingsUpdate};
+    use sqlx::SqlitePool;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        ensure_settings(&pool).await.expect("settings");
+        pool
+    }
+
+    async fn test_pool_with_connection() -> (SqlitePool, i64) {
+        let pool = test_pool().await;
+        let conn = create_inference_connection(
+            &pool,
+            InferenceConnectionCreate {
+                name: "Default".into(),
+                inference_url: "http://localhost:11434/v1".into(),
+                api_key: None,
+            },
+        )
+        .await
+        .expect("connection");
+        update_settings(
+            &pool,
+            SettingsUpdate {
+                active_connection_id: Some(conn.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("activate");
+        (pool, conn.id)
+    }
+
+    #[tokio::test]
+    async fn update_settings_preserves_inference_url_with_active_connection() {
+        let (pool, active_id) = test_pool_with_connection().await;
+        let custom_url = "http://custom.example/v1";
+
+        let updated = update_settings(
+            &pool,
+            SettingsUpdate {
+                inference_url: Some(custom_url.into()),
+                active_connection_id: Some(active_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("update");
+
+        assert_eq!(updated.inference_url, custom_url);
+
+        let fallback: String =
+            sqlx::query_scalar("SELECT inference_url FROM app_settings WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("fallback url");
+        assert_eq!(fallback, custom_url);
+
+        let conn = get_inference_connection(&pool, active_id)
+            .await
+            .expect("connection");
+        assert_eq!(conn.inference_url, custom_url);
     }
 }
 

@@ -80,6 +80,7 @@ fn sorted_skills(skills: &std::collections::HashMap<String, i64>) -> Vec<(String
 pub fn game_shell(props: &GameShellProps) -> Html {
     let game_id = game_id_from_route(&props.route);
     let detail = use_state(|| None::<GameDetail>);
+    let detail_loading = use_state(|| false);
     let action_input = use_state(String::new);
     let guidance_input = use_state(String::new);
     let submitting = use_state(|| false);
@@ -88,20 +89,27 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 
     {
         let detail = detail.clone();
+        let detail_loading = detail_loading.clone();
         use_effect_with(game_id, move |id| {
             let mut stream = None;
             if let Some(game_id) = *id {
+                detail.set(None);
+                detail_loading.set(true);
                 let detail_fetch = detail.clone();
+                let detail_loading_fetch = detail_loading.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(d) = api::get_game(game_id).await {
                         detail_fetch.set(Some(d));
                     }
+                    detail_loading_fetch.set(false);
                 });
                 stream = Some(api::GameStream::new(game_id, {
                     let detail = detail.clone();
+                    let detail_loading = detail_loading.clone();
                     let had_active_job = Rc::new(RefCell::new(false));
                     let had_active_job = had_active_job.clone();
                     move |payload| {
+                        detail_loading.set(false);
                         let was_active = *had_active_job.borrow();
                         let now_active = payload.active_job.is_some();
                         if now_active {
@@ -128,6 +136,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 }));
             } else {
                 detail.set(None);
+                detail_loading.set(false);
             }
             move || {
                 drop(stream);
@@ -135,31 +144,23 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         });
     }
 
-    let scroll_key = (*detail).as_ref().map(|game_detail| {
-        let last = game_detail.turns.last();
-        (
-            game_detail.turns.len(),
-            last.map(|turn| (turn.id, turn.phase.clone(), turn.prose.len())),
-        )
-    });
     {
         let turn_feed_ref = turn_feed_ref.clone();
-        use_effect_with((game_id, scroll_key), move |(game_id, scroll_key)| {
-            if game_id.is_some() && scroll_key.is_some() {
-                let turn_feed_ref = turn_feed_ref.clone();
-                Timeout::new(0, move || {
-                    if let Some(window) = web_sys::window() {
-                        if let Ok(event) = web_sys::Event::new("resize") {
-                            let _ = window.dispatch_event(&event);
-                        }
-                    }
-                    let el = turn_feed_ref.cast::<HtmlElement>();
-                    scroll_content_view_to_bottom(el.as_ref());
-                })
-                .forget();
-            }
-            || ()
-        });
+        let detail_loaded = (*detail).is_some();
+        use_effect_with(
+            (game_id, *detail_loading, detail_loaded),
+            move |(game_id, detail_loading, detail_loaded)| {
+                if game_id.is_some() && !*detail_loading && *detail_loaded {
+                    let turn_feed_ref = turn_feed_ref.clone();
+                    Timeout::new(0, move || {
+                        let el = turn_feed_ref.cast::<HtmlElement>();
+                        scroll_content_view_to_bottom(el.as_ref());
+                    })
+                    .forget();
+                }
+                || ()
+            },
+        );
     }
 
     let on_submit = {
