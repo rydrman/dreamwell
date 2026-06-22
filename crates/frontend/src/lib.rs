@@ -2165,15 +2165,16 @@ fn settings_page(props: &SettingsPageProps) -> Html {
         let save_ctx = save_ctx.clone();
         let parent_settings = props.settings.clone();
         use_effect_with((), move |_| {
-            let save_ctx = save_ctx.clone();
+            let load_ctx = save_ctx.clone();
+            let flush_ctx = save_ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(settings) = api::get_settings().await {
                     parent_settings.set(Some(settings.clone()));
-                    save_ctx.load_from(settings);
+                    load_ctx.load_from(settings);
                 }
             });
             move || {
-                save_ctx.flush_pending();
+                flush_ctx.flush_pending();
             }
         });
     }
