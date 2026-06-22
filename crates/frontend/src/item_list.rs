@@ -61,3 +61,32 @@ pub fn story_list(props: &StoryListProps) -> Html {
         </div>
     }
 }
+
+#[derive(Properties, PartialEq)]
+pub struct GameListProps {
+    pub games: Vec<Game>,
+    pub on_select: Callback<i64>,
+}
+
+#[function_component(GameList)]
+pub fn game_list(props: &GameListProps) -> Html {
+    html! {
+        <div class="main-list">
+            { for props.games.iter().map(|game| {
+                let id = game.id;
+                let status = game
+                    .active_job
+                    .as_ref()
+                    .and_then(|job| job_status_badge(job, game.queued_jobs));
+                html! {
+                    <div key={id} class="chat-item" onclick={props.on_select.reform(move |_| id)}>
+                        <div class="chat-item-title">{ &game.title }</div>
+                        if let Some(status) = status {
+                            <span class={classes!("badge", status.variant_class())}>{ status.label }</span>
+                        }
+                    </div>
+                }
+            }) }
+        </div>
+    }
+}
