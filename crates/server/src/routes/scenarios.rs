@@ -4,7 +4,8 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    ImportScenarioResponse, OkResponse, Scenario, ScenarioCreate, ScenarioUpdate,
+    scenario_create_from_iw_json, ImportScenarioResponse, OkResponse, Scenario, ScenarioCreate,
+    ScenarioUpdate,
 };
 
 use crate::character_import::parse_character_import;
@@ -17,6 +18,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_scenarios).post(create_scenario))
         .route("/import", post(import_scenario))
+        .route("/import-iw", post(import_iw_scenario))
         .route(
             "/:id",
             get(get_scenario)
@@ -96,5 +98,37 @@ async fn import_scenario(
     Ok(Json(ImportScenarioResponse {
         scenario,
         source: source.to_string(),
+    }))
+}
+
+async fn import_iw_scenario(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> AppResult<Json<ImportScenarioResponse>> {
+    let mut content = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad_request(e.to_string()))?
+    {
+        if field.name() == Some("file") {
+            content = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::bad_request(e.to_string()))?
+                .to_vec();
+        }
+    }
+    if content.is_empty() {
+        return Err(AppError::bad_request("No file uploaded"));
+    }
+    let json = std::str::from_utf8(&content)
+        .map_err(|e| AppError::bad_request(format!("Invalid UTF-8 in upload: {e}")))?;
+    let payload = scenario_create_from_iw_json(json)
+        .map_err(|e| AppError::bad_request(format!("Invalid IW export JSON: {e}")))?;
+    let scenario = scenario_db::create_scenario(&state.pool, payload).await?;
+    Ok(Json(ImportScenarioResponse {
+        scenario,
+        source: "iw".to_string(),
     }))
 }

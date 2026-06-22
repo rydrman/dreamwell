@@ -99,6 +99,7 @@ impl GameCreateDraft {
             pc_name: self.pc_name.clone(),
             pc_description: self.pc_description.clone(),
             pc_traits: default_game_traits(),
+            ..Default::default()
         }
     }
 }

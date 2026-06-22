@@ -25,8 +25,15 @@ pub fn resolve_actor_id(target: &str, actors: &[SessionActor]) -> Option<i64> {
     }
 }
 
-pub fn validate_skill(skill: &str, _actor: &SessionActor) -> String {
-    skill.to_string()
+pub fn validate_skill(skill: &str, _actor: &SessionActor, allowed_traits: &[String]) -> String {
+    if allowed_traits.is_empty() {
+        return skill.to_string();
+    }
+    allowed_traits
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(skill))
+        .cloned()
+        .unwrap_or_else(|| skill.to_string())
 }
 
 pub fn skill_modifier(skill: &str, actor: &SessionActor) -> i64 {

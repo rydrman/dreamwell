@@ -545,6 +545,21 @@ pub async fn import_scenario(file: &web_sys::File) -> Result<Scenario, String> {
     Ok(result.scenario)
 }
 
+pub async fn import_iw_scenario(file: &web_sys::File) -> Result<Scenario, String> {
+    let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
+    form.append_with_blob("file", file)
+        .map_err(|_| "append failed".to_string())?;
+    let response = gloo_net::http::Request::post("/api/scenarios/import-iw")
+        .body(form)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let response = ensure_ok_response(response).await?;
+    let result: ImportScenarioResponse = response.json().await.map_err(|e| e.to_string())?;
+    Ok(result.scenario)
+}
+
 #[derive(Clone)]
 pub struct StreamNudge {
     inner: Rc<ReconnectingEventSource>,

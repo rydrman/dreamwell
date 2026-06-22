@@ -8,6 +8,7 @@ use web_sys::{HtmlElement, HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::api;
+use crate::dice_ui::DiceRollDisplay;
 use crate::game_presets_ui::GmTonePresetPicker;
 use crate::game_sync::{detail_stale_vs_sse, should_replace_detail_from_sse};
 use crate::generation_ui::{game_notice, GenerationErrorAlert, GenerationStatusBar};
@@ -36,24 +37,6 @@ fn game_id_from_route(route: &AppRoute) -> Option<i64> {
     match route {
         AppRoute::Games { game_id, .. } => *game_id,
         _ => None,
-    }
-}
-
-fn tier_class(tier: Option<CheckTier>) -> &'static str {
-    match tier {
-        Some(CheckTier::Fail) => "tier-fail",
-        Some(CheckTier::Mixed) => "tier-mixed",
-        Some(CheckTier::Strong) => "tier-strong",
-        None => "",
-    }
-}
-
-fn tier_label(tier: Option<CheckTier>) -> &'static str {
-    match tier {
-        Some(CheckTier::Fail) => "Fail",
-        Some(CheckTier::Mixed) => "Mixed",
-        Some(CheckTier::Strong) => "Strong",
-        None => "—",
     }
 }
 
@@ -499,6 +482,37 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                     </div>
                                                 }
                                             }
+                                            if turn.plan.as_ref().map(|p| !p.summary_beats.is_empty()).unwrap_or(false) {
+                                                <PhaseSection
+                                                    label={"Plan".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "plan".to_string())) || is_active)}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "plan".to_string())))}
+                                                >
+                                                    <PlanBeatsList
+                                                        beats={turn.plan.as_ref().map(|p| p.summary_beats.clone()).unwrap_or_default()}
+                                                        label={"Plan".to_string()}
+                                                        inline={true}
+                                                    />
+                                                </PhaseSection>
+                                            }
+
+                                            if !turn.system_rolls.is_empty() {
+                                                <PhaseSection
+                                                    label={"System rolls".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "system".to_string())) || is_active)}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "system".to_string())))}
+                                                >
+                                                    { for turn.system_rolls.iter().map(|r| html! {
+                                                        <DiceRollDisplay
+                                                            rolls={r.rolls.clone()}
+                                                            dice_expr={Some(r.dice_expr.clone())}
+                                                            label={Some(r.label.clone())}
+                                                            class="roll-result system-roll-result"
+                                                        />
+                                                    }) }
+                                                </PhaseSection>
+                                            }
+
                                             if !turn.checks.is_empty() {
                                                 <PhaseSection
                                                     label={"Checks".to_string()}
@@ -508,7 +522,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                     { for turn.checks.iter().map(|c| html! {
                                                         <div class="check-item">
                                                             <div class="check-label">{ &c.label }</div>
-                                                            <div class="muted">{ format!("{} +{}", c.skill, c.modifier) }</div>
+                                                            <div class="muted">{ format!("{} {}", c.skill, crate::dice_ui::format_modifier(c.modifier)) }</div>
                                                             <div class="muted">{ &c.stakes }</div>
                                                             <div class="muted small">{ &c.justification }</div>
                                                         </div>
@@ -522,12 +536,15 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                     expanded={Some(expanded_phases.contains(&(turn_id, "roll".to_string())) || is_active)}
                                                     on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "roll".to_string())))}
                                                 >
-                                                    { for turn.checks.iter().map(|c| html! {
-                                                        <div class={classes!("roll-result", tier_class(c.tier))}>
-                                                            <span>{ format!("{:?}", c.rolls) }</span>
-                                                            <span>{ format!(" = {} ", c.total) }</span>
-                                                            <span class="tier-badge">{ tier_label(c.tier) }</span>
-                                                        </div>
+                                                    { for turn.checks.iter().filter(|c| !c.rolls.is_empty()).map(|c| html! {
+                                                        <DiceRollDisplay
+                                                            rolls={c.rolls.clone()}
+                                                            dice_expr={Some(c.dice_expr.clone())}
+                                                            modifier={Some(c.modifier)}
+                                                            total={Some(c.total)}
+                                                            tier={c.tier}
+                                                            class="roll-result"
+                                                        />
                                                     }) }
                                                 </PhaseSection>
                                             }
@@ -825,6 +842,21 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                         </div>
                     </div>
                 }) }
+                if !game_detail.game.state_schema.is_empty() {
+                    <details class="state-schema-ref">
+                        <summary class="muted">{ "Tracked variables" }</summary>
+                        <ul class="state-schema-list">
+                            { for game_detail.game.state_schema.iter().map(|def| html! {
+                                <li key={def.key.clone()}>
+                                    <strong>{ &def.key }</strong>
+                                    if !def.description.is_empty() {
+                                        { ": " }{ &def.description }
+                                    }
+                                </li>
+                            }) }
+                        </ul>
+                    </details>
+                }
                 <StateEntriesPanel entries={state_rows} />
                 <label class="step-mode-toggle">
                     <input

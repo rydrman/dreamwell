@@ -217,6 +217,7 @@ mod tests {
             personality: "Stoic and kind.",
             scenario: "A rainy tavern.",
             first_message: "Hello {{user}}.",
+            setup_vars: dreamwell_types::empty_setup_vars(),
         }
     }
 

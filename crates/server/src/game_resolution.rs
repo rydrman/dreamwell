@@ -84,9 +84,35 @@ pub fn parse_tier(s: &str) -> Option<CheckTier> {
     }
 }
 
+/// System/scenario dice — faces and sum only, no PbtA tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemRollResult {
+    pub rolls: Vec<i64>,
+    pub total: i64,
+}
+
+pub fn roll_system_dice(expr: &str) -> Option<SystemRollResult> {
+    let (count, sides) = parse_dice_expr(expr)?;
+    let mut rng = rand::rng();
+    let mut rolls = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        rolls.push(rng.random_range(1..=sides as i64));
+    }
+    let total: i64 = rolls.iter().sum();
+    Some(SystemRollResult { rolls, total })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_roll_has_no_tier() {
+        let roll = roll_system_dice("1d6").expect("roll");
+        assert_eq!(roll.rolls.len(), 1);
+        assert!((1..=6).contains(&roll.rolls[0]));
+        assert_eq!(roll.total, roll.rolls[0]);
+    }
 
     #[test]
     fn tier_boundaries() {

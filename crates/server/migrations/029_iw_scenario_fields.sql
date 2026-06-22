@@ -1,0 +1,11 @@
+ALTER TABLE scenarios ADD COLUMN rules_blocks TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE scenarios ADD COLUMN objective TEXT NOT NULL DEFAULT '';
+ALTER TABLE scenarios ADD COLUMN setup_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE scenarios ADD COLUMN trait_defs TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE scenarios ADD COLUMN cast_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE scenarios ADD COLUMN pc_options_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE scenarios ADD COLUMN state_schema_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE scenarios ADD COLUMN win_condition_json TEXT;
+ALTER TABLE scenarios ADD COLUMN content_flags_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE scenarios ADD COLUMN source_meta_json TEXT;
+ALTER TABLE scenarios ADD COLUMN scenario_triggers_json TEXT NOT NULL DEFAULT '[]';

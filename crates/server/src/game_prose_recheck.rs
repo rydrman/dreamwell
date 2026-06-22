@@ -239,6 +239,7 @@ mod tests {
 
     #[test]
     fn recheck_prompt_includes_beats_tiers_prose_and_scenario() {
+        use dreamwell_types::empty_setup_vars;
         let game = dreamwell_types::Game {
             id: 1,
             title: "Tea Shop".into(),
@@ -256,6 +257,11 @@ mod tests {
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),
+            rules_blocks: vec![],
+            state_schema: vec![],
+            win_condition: None,
+            scenario_triggers: vec![],
+            trait_defs: vec![],
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             active_job: None,
@@ -269,6 +275,7 @@ mod tests {
             personality: "",
             scenario: "",
             first_message: "",
+            setup_vars: empty_setup_vars(),
         };
         let prompt = build_recheck_prompt(
             &game,

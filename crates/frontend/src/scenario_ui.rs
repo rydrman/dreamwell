@@ -53,6 +53,7 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
     let draft = use_state(ScenarioDraft::default);
     let editing_id = use_state(|| None::<i64>);
     let file_input = use_node_ref();
+    let iw_file_input = use_node_ref();
 
     {
         let scenarios = scenarios.clone();
@@ -101,6 +102,39 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                         }
                     })
                 }}>{"Import JSON/PNG"}</button>
+                <button class="btn secondary" onclick={{
+                    let iw_file_input = iw_file_input.clone();
+                    Callback::from(move |_| {
+                        if let Some(input) = iw_file_input.cast::<HtmlInputElement>() {
+                            input.click();
+                        }
+                    })
+                }}>{"Import IW JSON"}</button>
+                <input type="file" accept=".json" ref={iw_file_input} style="display:none;" onchange={{
+                    let scenarios = scenarios.clone();
+                    let draft = draft.clone();
+                    let editing_id = editing_id.clone();
+                    let on_scenarios_changed = props.on_scenarios_changed.clone();
+                    Callback::from(move |e: Event| {
+                        let input: HtmlInputElement = e.target_unchecked_into();
+                        if let Some(file) = input.files().and_then(|f| f.get(0)) {
+                            let scenarios = scenarios.clone();
+                            let draft = draft.clone();
+                            let editing_id = editing_id.clone();
+                            let on_scenarios_changed = on_scenarios_changed.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(scenario) = api::import_iw_scenario(&file).await {
+                                    if let Ok(list) = api::list_scenarios().await {
+                                        scenarios.set(list);
+                                    }
+                                    on_scenarios_changed.emit(());
+                                    editing_id.set(Some(scenario.id));
+                                    draft.set(ScenarioDraft::from(&scenario));
+                                }
+                            });
+                        }
+                    })
+                }} />
                 <input type="file" accept=".json,.png" ref={file_input} style="display:none;" onchange={{
                     let scenarios = scenarios.clone();
                     let draft = draft.clone();
@@ -143,7 +177,12 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                                     draft.set(ScenarioDraft::from(&scenario));
                                 })
                             }}>
-                            <span class="list-row-name">{ &scenario.title }</span>
+                            <span class="list-row-name">
+                                { &scenario.title }
+                                if  scenario.content_flags.mature {
+                                    <span class="content-warning-badge" title="Mature content">{" ⚠"}</span>
+                                }
+                            </span>
                             <button class="btn secondary btn-compact" onclick={{
                                 let on_start_game = props.on_start_game.clone();
                                 let play_scenario = play_scenario.clone();
@@ -194,6 +233,7 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                 }) }
             </div>
             { scenario_fields(&draft) }
+            { scenario_iw_sections(&draft) }
             { scenario_traits_editor(&draft) }
             <button class="btn" style="margin-top:0.5rem;" onclick={{
                 let draft = draft.clone();
@@ -250,6 +290,17 @@ struct ScenarioDraft {
     pc_name: String,
     pc_description: String,
     trait_rows: Vec<(String, i64)>,
+    objective: String,
+    setup_text: String,
+    rules_blocks: Vec<RulesBlock>,
+    cast: Vec<ScenarioNpc>,
+    trait_defs: Vec<TraitDef>,
+    pc_options: Vec<PcOption>,
+    state_schema: Vec<TrackedVarDef>,
+    content_flags: ContentFlags,
+    win_condition: Option<WinCondition>,
+    scenario_triggers: Vec<ScenarioTrigger>,
+    source_meta: Option<SourceMeta>,
 }
 
 impl Default for ScenarioDraft {
@@ -263,12 +314,37 @@ impl Default for ScenarioDraft {
             pc_name: String::new(),
             pc_description: String::new(),
             trait_rows: sorted_trait_rows(&default_game_traits()),
+            objective: String::new(),
+            setup_text: String::new(),
+            rules_blocks: Vec::new(),
+            cast: Vec::new(),
+            trait_defs: Vec::new(),
+            pc_options: Vec::new(),
+            state_schema: Vec::new(),
+            content_flags: ContentFlags::default(),
+            win_condition: None,
+            scenario_triggers: Vec::new(),
+            source_meta: None,
         }
     }
 }
 
 impl ScenarioDraft {
     fn from(scenario: &Scenario) -> Self {
+        let trait_rows = if scenario.trait_defs.is_empty() {
+            sorted_trait_rows(&scenario.traits)
+        } else {
+            scenario
+                .trait_defs
+                .iter()
+                .map(|t| {
+                    (
+                        t.name.clone(),
+                        scenario.traits.get(&t.name).copied().unwrap_or(0),
+                    )
+                })
+                .collect()
+        };
         Self {
             title: scenario.title.clone(),
             premise: scenario.premise.clone(),
@@ -277,7 +353,18 @@ impl ScenarioDraft {
             opening_message: scenario.opening_message.clone(),
             pc_name: scenario.pc_name.clone(),
             pc_description: scenario.pc_description.clone(),
-            trait_rows: sorted_trait_rows(&scenario.traits),
+            trait_rows,
+            objective: scenario.objective.clone(),
+            setup_text: scenario.setup_text.clone(),
+            rules_blocks: scenario.rules_blocks.clone(),
+            cast: scenario.cast.clone(),
+            trait_defs: scenario.trait_defs.clone(),
+            pc_options: scenario.pc_options.clone(),
+            state_schema: scenario.state_schema.clone(),
+            content_flags: scenario.content_flags.clone(),
+            win_condition: scenario.win_condition.clone(),
+            scenario_triggers: scenario.scenario_triggers.clone(),
+            source_meta: scenario.source_meta.clone(),
         }
     }
 
@@ -304,6 +391,17 @@ impl ScenarioDraft {
             pc_description: self.pc_description.clone(),
             traits: self.traits_map(),
             character_id: None,
+            objective: self.objective.clone(),
+            setup_text: self.setup_text.clone(),
+            rules_blocks: self.rules_blocks.clone(),
+            cast: self.cast.clone(),
+            trait_defs: self.trait_defs.clone(),
+            pc_options: self.pc_options.clone(),
+            state_schema: self.state_schema.clone(),
+            win_condition: self.win_condition.clone(),
+            content_flags: self.content_flags.clone(),
+            source_meta: self.source_meta.clone(),
+            scenario_triggers: self.scenario_triggers.clone(),
         }
     }
 
@@ -318,14 +416,58 @@ impl ScenarioDraft {
             pc_description: Some(self.pc_description.clone()),
             traits: Some(self.traits_map()),
             character_id: None,
+            objective: Some(self.objective.clone()),
+            setup_text: Some(self.setup_text.clone()),
+            rules_blocks: Some(self.rules_blocks.clone()),
+            cast: Some(self.cast.clone()),
+            trait_defs: Some(self.trait_defs.clone()),
+            pc_options: Some(self.pc_options.clone()),
+            state_schema: Some(self.state_schema.clone()),
+            win_condition: Some(self.win_condition.clone()),
+            content_flags: Some(self.content_flags.clone()),
+            source_meta: Some(self.source_meta.clone()),
+            scenario_triggers: Some(self.scenario_triggers.clone()),
         }
     }
 }
 
-fn sorted_trait_rows(traits: &HashMap<String, i64>) -> Vec<(String, i64)> {
-    let mut rows: Vec<_> = traits.iter().map(|(k, v)| (k.clone(), *v)).collect();
-    rows.sort_by(|left, right| left.0.cmp(&right.0));
-    rows
+fn scenario_iw_sections(draft: &UseStateHandle<ScenarioDraft>) -> Html {
+    if draft.rules_blocks.is_empty() && draft.cast.is_empty() && draft.trait_defs.is_empty() {
+        return html! {};
+    }
+    html! {
+        <div class="scenario-iw-sections">
+            if !draft.trait_defs.is_empty() {
+                <details class="scenario-iw-panel" open=true>
+                    <summary>{"Scenario traits"}</summary>
+                    <ul>
+                        { for draft.trait_defs.iter().map(|t| html! { <li>{ &t.name }</li> }) }
+                    </ul>
+                </details>
+            }
+            if !draft.cast.is_empty() {
+                <details class="scenario-iw-panel">
+                    <summary>{ format!("Cast ({})", draft.cast.len()) }</summary>
+                    <ul>
+                        { for draft.cast.iter().map(|npc| html! {
+                            <li><strong>{ &npc.name }</strong>{ ": " }{ &npc.content }</li>
+                        }) }
+                    </ul>
+                </details>
+            }
+            if !draft.rules_blocks.is_empty() {
+                <details class="scenario-iw-panel">
+                    <summary>{ format!("Rules blocks ({})", draft.rules_blocks.len()) }</summary>
+                    { for draft.rules_blocks.iter().map(|block| html! {
+                        <details class="rules-block-item" key={block.name.clone()}>
+                            <summary>{ &block.name }</summary>
+                            <pre class="rules-block-content">{ &block.content }</pre>
+                        </details>
+                    }) }
+                </details>
+            }
+        </div>
+    }
 }
 
 fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
@@ -523,7 +665,34 @@ pub fn default_game_title(scenario_title: &str, scenario_id: i64, games: &[Game]
     }
 }
 
+pub fn scenario_is_infinite_worlds(scenario: &Scenario) -> bool {
+    scenario
+        .source_meta
+        .as_ref()
+        .is_some_and(|meta| meta.platform == "infinite_worlds")
+}
+
+pub fn sorted_trait_rows(traits: &HashMap<String, i64>) -> Vec<(String, i64)> {
+    let mut rows: Vec<_> = traits.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    rows
+}
+
+pub fn traits_from_rows(rows: &[(String, i64)]) -> HashMap<String, i64> {
+    let mut traits = HashMap::new();
+    for (name, value) in rows {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        traits.insert(name.to_string(), *value);
+    }
+    traits
+}
+
 pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCreate {
+    let opening_as_player_action =
+        scenario_is_infinite_worlds(scenario) && !scenario.opening_message.trim().is_empty();
     GameCreate {
         title,
         premise: scenario.premise.clone(),
@@ -535,5 +704,12 @@ pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCrea
         pc_name: scenario.pc_name.clone(),
         pc_description: scenario.pc_description.clone(),
         pc_traits: scenario.traits.clone(),
+        rules_blocks: scenario.rules_blocks.clone(),
+        state_schema: scenario.state_schema.clone(),
+        win_condition: scenario.win_condition.clone(),
+        scenario_triggers: scenario.scenario_triggers.clone(),
+        trait_defs: scenario.trait_defs.clone(),
+        opening_as_player_action,
+        ..Default::default()
     }
 }

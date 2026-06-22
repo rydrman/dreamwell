@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 
 mod game_import;
 mod game_presets;
+mod iw_import;
+mod iw_types;
 mod macros;
+mod scenario_iw;
 mod serde_helpers;
 
 pub use game_import::{
@@ -11,7 +14,13 @@ pub use game_import::{
     scenario_create_from_character_record, GameCharacterImportMode,
 };
 pub use game_presets::{game_tone_preset_by_id, GameTonePreset, GAME_TONE_PRESETS};
-pub use macros::{substitute_macros, MacroContext};
+pub use iw_import::{iw_world_to_scenario, scenario_create_from_iw_json};
+pub use macros::{empty_setup_vars, substitute_macros, MacroContext};
+pub use scenario_iw::{
+    ContentFlags, GameTurnSystemRoll, PcOption, RulesBlock, ScenarioNpc, ScenarioTrigger,
+    SetupVarChoice, SourceMeta, SystemRollRequest, TrackedVarDef, TraitDef, TriggerCondition,
+    TriggerEffect, TurnPlan, WinCondition,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -802,6 +811,28 @@ pub struct Scenario {
     pub traits: std::collections::HashMap<String, i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character_id: Option<i64>,
+    #[serde(default)]
+    pub rules_blocks: Vec<RulesBlock>,
+    #[serde(default)]
+    pub objective: String,
+    #[serde(default)]
+    pub setup_text: String,
+    #[serde(default)]
+    pub trait_defs: Vec<TraitDef>,
+    #[serde(default)]
+    pub cast: Vec<ScenarioNpc>,
+    #[serde(default)]
+    pub pc_options: Vec<PcOption>,
+    #[serde(default)]
+    pub state_schema: Vec<TrackedVarDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub win_condition: Option<WinCondition>,
+    #[serde(default)]
+    pub content_flags: ContentFlags,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_meta: Option<SourceMeta>,
+    #[serde(default)]
+    pub scenario_triggers: Vec<ScenarioTrigger>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -826,6 +857,28 @@ pub struct ScenarioCreate {
     pub traits: std::collections::HashMap<String, i64>,
     #[serde(default)]
     pub character_id: Option<i64>,
+    #[serde(default)]
+    pub rules_blocks: Vec<RulesBlock>,
+    #[serde(default)]
+    pub objective: String,
+    #[serde(default)]
+    pub setup_text: String,
+    #[serde(default)]
+    pub trait_defs: Vec<TraitDef>,
+    #[serde(default)]
+    pub cast: Vec<ScenarioNpc>,
+    #[serde(default)]
+    pub pc_options: Vec<PcOption>,
+    #[serde(default)]
+    pub state_schema: Vec<TrackedVarDef>,
+    #[serde(default)]
+    pub win_condition: Option<WinCondition>,
+    #[serde(default)]
+    pub content_flags: ContentFlags,
+    #[serde(default)]
+    pub source_meta: Option<SourceMeta>,
+    #[serde(default)]
+    pub scenario_triggers: Vec<ScenarioTrigger>,
 }
 
 fn default_scenario_title() -> String {
@@ -866,6 +919,17 @@ pub struct ScenarioUpdate {
     pub pc_description: Option<String>,
     pub traits: Option<std::collections::HashMap<String, i64>>,
     pub character_id: Option<Option<i64>>,
+    pub rules_blocks: Option<Vec<RulesBlock>>,
+    pub objective: Option<String>,
+    pub setup_text: Option<String>,
+    pub trait_defs: Option<Vec<TraitDef>>,
+    pub cast: Option<Vec<ScenarioNpc>>,
+    pub pc_options: Option<Vec<PcOption>>,
+    pub state_schema: Option<Vec<TrackedVarDef>>,
+    pub win_condition: Option<Option<WinCondition>>,
+    pub content_flags: Option<ContentFlags>,
+    pub source_meta: Option<Option<SourceMeta>>,
+    pub scenario_triggers: Option<Vec<ScenarioTrigger>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -904,6 +968,16 @@ pub struct Game {
     pub model_resolve: String,
     #[serde(default)]
     pub model_prose: String,
+    #[serde(default)]
+    pub rules_blocks: Vec<RulesBlock>,
+    #[serde(default)]
+    pub state_schema: Vec<TrackedVarDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub win_condition: Option<WinCondition>,
+    #[serde(default)]
+    pub scenario_triggers: Vec<ScenarioTrigger>,
+    #[serde(default)]
+    pub trait_defs: Vec<TraitDef>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub active_job: Option<Job>,
@@ -990,6 +1064,10 @@ pub struct GameTurn {
     pub state_changes: Vec<AppliedStateChange>,
     pub checks: Vec<GameTurnCheck>,
     #[serde(default)]
+    pub system_rolls: Vec<GameTurnSystemRoll>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<TurnPlan>,
+    #[serde(default)]
     pub is_opening: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_error: Option<String>,
@@ -1043,6 +1121,26 @@ pub struct GameCreate {
     pub pc_description: String,
     #[serde(default)]
     pub pc_traits: std::collections::HashMap<String, i64>,
+    #[serde(default)]
+    pub rules_blocks: Vec<RulesBlock>,
+    #[serde(default)]
+    pub state_schema: Vec<TrackedVarDef>,
+    #[serde(default)]
+    pub win_condition: Option<WinCondition>,
+    #[serde(default)]
+    pub scenario_triggers: Vec<ScenarioTrigger>,
+    #[serde(default)]
+    pub trait_defs: Vec<TraitDef>,
+    #[serde(default)]
+    pub cast_selections: Vec<String>,
+    #[serde(default)]
+    pub invited_cast: Vec<ScenarioNpc>,
+    #[serde(default)]
+    pub setup_var_values: std::collections::HashMap<String, String>,
+    /// When true, `opening_message` is submitted as the first player turn instead of
+    /// seeding a static narrator opening bubble (Infinite Worlds `firstInput`).
+    #[serde(default)]
+    pub opening_as_player_action: bool,
 }
 
 fn default_game_title() -> String {
