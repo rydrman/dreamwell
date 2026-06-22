@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
+use crate::game_prompts::build_characters_block;
 use crate::game_state::{apply_state_changes, build_state_block};
 use crate::inference::chat_completion_json;
 
@@ -30,8 +31,16 @@ fn max_retries() -> u32 {
         .max(1)
 }
 
-fn build_recheck_prompt(prose: &str, state_block: &str, guidance: &str) -> Vec<serde_json::Value> {
+fn build_recheck_prompt(
+    prose: &str,
+    state_block: &str,
+    characters_block: &str,
+    guidance: &str,
+) -> Vec<serde_json::Value> {
     let mut user = format!("Current typed state:\n{state_block}\n\nTurn prose to review:\n{prose}");
+    if !characters_block.is_empty() {
+        user.push_str(&format!("\n\n{characters_block}"));
+    }
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the player:\n");
         user.push_str(guidance.trim());
@@ -100,7 +109,8 @@ pub async fn run_turn_state_recheck_job(
 
     let detail = db::get_game_detail(pool, game_id).await?;
     let state_block = build_state_block(&detail.state, &detail.actors);
-    let prompt = build_recheck_prompt(&turn.prose, &state_block, guidance);
+    let characters_block = build_characters_block(&detail.actors);
+    let prompt = build_recheck_prompt(&turn.prose, &state_block, &characters_block, guidance);
     let model = crate::game_turn::model_for_phase(
         &game,
         settings,
@@ -159,6 +169,7 @@ mod tests {
         let prompt = build_recheck_prompt(
             "Stress rises as the alarm sounds.",
             "## Alex (pc)\n- stress (resource): 2/5",
+            "Characters:\n## Alex (PC)\nA thief",
             "Track alarm clock.",
         );
         let user = prompt[1]["content"].as_str().unwrap();
@@ -166,6 +177,8 @@ mod tests {
         assert!(user.contains("stress (resource)"));
         assert!(user.contains("Stress rises"));
         assert!(user.contains("Track alarm clock."));
+        assert!(user.contains("Characters:"));
+        assert!(user.contains("Alex (PC)"));
     }
 
     #[test]
