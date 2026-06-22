@@ -1,4 +1,6 @@
 use dreamwell_types::*;
+use wasm_bindgen::JsCast;
+use web_sys::{HtmlDocument, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::summary_ui::{chat_summarize_in_progress, SummaryKind};
@@ -369,6 +371,66 @@ pub fn generation_status_bar(props: &GenerationStatusBarProps) -> Html {
     }
 }
 
+pub fn generation_error_summary(error: &str) -> &str {
+    error.lines().next().unwrap_or(error)
+}
+
+pub fn copy_text_to_clipboard(text: &str) {
+    if let Some(window) = web_sys::window() {
+        if let Some(document) = window.document() {
+            if let Ok(textarea) = document.create_element("textarea") {
+                textarea.set_text_content(Some(text));
+                if let Some(body) = document.body() {
+                    let _ = body.append_child(&textarea);
+                    let input: HtmlTextAreaElement = textarea.unchecked_into();
+                    input.select();
+                    if let Ok(html_document) = document.dyn_into::<HtmlDocument>() {
+                        let _ = html_document.exec_command("copy");
+                    }
+                    let _ = body.remove_child(&input);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct GenerationErrorAlertProps {
+    pub error: String,
+    #[prop_or_default]
+    pub on_retry: Option<Callback<MouseEvent>>,
+}
+
+#[function_component(GenerationErrorAlert)]
+pub fn generation_error_alert(props: &GenerationErrorAlertProps) -> Html {
+    let error = props.error.clone();
+    let summary = generation_error_summary(&error).to_string();
+    let has_details = error.lines().count() > 1 || error.len() > summary.len();
+    let on_copy = {
+        let error = error.clone();
+        Callback::from(move |_| copy_text_to_clipboard(&error))
+    };
+    html! {
+        <div class="message-error" role="alert">
+            <strong>{"Generation failed"}</strong>
+            <span>{ summary }</span>
+            if has_details {
+                <pre class="generation-error-details">{ &error }</pre>
+            }
+            <div class="generation-error-actions">
+                <button type="button" class="btn secondary btn-compact" onclick={on_copy}>
+                    {"Copy details"}
+                </button>
+                if let Some(on_retry) = props.on_retry.clone() {
+                    <button type="button" class="btn secondary btn-compact" onclick={on_retry}>
+                        {"Retry"}
+                    </button>
+                }
+            </div>
+        </div>
+    }
+}
+
 fn generation_down_arrow() -> Html {
     html! {
         <svg
@@ -576,6 +638,15 @@ mod tests {
             Some("timeout".to_string())
         );
         assert_eq!(generation_error_from_content("normal prose"), None);
+    }
+
+    #[test]
+    fn generation_error_summary_uses_first_line() {
+        let error = "JSON parse failed after 3 attempt(s)\n\n---\nRaw model response:\n{}";
+        assert_eq!(
+            generation_error_summary(error),
+            "JSON parse failed after 3 attempt(s)"
+        );
     }
 
     #[test]

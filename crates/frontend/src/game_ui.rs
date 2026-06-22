@@ -9,7 +9,7 @@ use yew::prelude::*;
 use crate::api;
 use crate::game_presets_ui::GmTonePresetPicker;
 use crate::game_sync::{detail_stale_vs_sse, should_replace_detail_from_sse};
-use crate::generation_ui::{game_notice, GenerationStatusBar};
+use crate::generation_ui::{game_notice, GenerationErrorAlert, GenerationStatusBar};
 use crate::markdown::render_message_content;
 use crate::message_menu::MessageOptionsMenu;
 use crate::router::{AppRoute, Overlay};
@@ -443,31 +443,24 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </div>
                                             }
                                             if turn.phase == "failed" {
-                                                if let Some(error) = turn.generation_error.as_deref() {
-                                                    <div class="message-error" role="alert">
-                                                        <strong>{"Generation failed"}</strong>
-                                                        <span>{ error }</span>
-                                                        <button
-                                                            type="button"
-                                                            class="btn secondary btn-compact"
-                                                            style="margin-top:0.5rem;"
-                                                            onclick={on_regenerate.reform(move |_| turn_id)}
-                                                        >
-                                                            {"Retry"}
-                                                        </button>
-                                                    </div>
+                                                if let Some(error) = turn.generation_error.clone() {
+                                                    <GenerationErrorAlert
+                                                        error={error}
+                                                        on_retry={Some(on_regenerate.reform(move |_| turn_id))}
+                                                    />
                                                 } else {
                                                     <div class="message-error" role="alert">
                                                         <strong>{"Generation failed"}</strong>
                                                         <span>{"The turn did not complete. Use Retry to try again."}</span>
-                                                        <button
-                                                            type="button"
-                                                            class="btn secondary btn-compact"
-                                                            style="margin-top:0.5rem;"
-                                                            onclick={on_regenerate.reform(move |_| turn_id)}
-                                                        >
-                                                            {"Retry"}
-                                                        </button>
+                                                        <div class="generation-error-actions">
+                                                            <button
+                                                                type="button"
+                                                                class="btn secondary btn-compact"
+                                                                onclick={on_regenerate.reform(move |_| turn_id)}
+                                                            >
+                                                                {"Retry"}
+                                                            </button>
+                                                        </div>
                                                     </div>
                                                 }
                                             }
