@@ -2163,29 +2163,18 @@ fn settings_page(props: &SettingsPageProps) -> Html {
 
     {
         let save_ctx = save_ctx.clone();
-        use_effect_with((*props.settings).clone(), move |loaded| {
-            if let Some(settings) = loaded.clone() {
-                if (*save_ctx.draft).is_none() {
+        let parent_settings = props.settings.clone();
+        use_effect_with((), move |_| {
+            let save_ctx = save_ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(settings) = api::get_settings().await {
+                    parent_settings.set(Some(settings.clone()));
                     save_ctx.load_from(settings);
                 }
+            });
+            move || {
+                save_ctx.flush_pending();
             }
-            || ()
-        });
-    }
-
-    {
-        let save_ctx = save_ctx.clone();
-        use_effect_with((), move |_| {
-            save_ctx.ensure_loaded();
-            if (*save_ctx.draft).is_none() {
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(settings) = api::get_settings().await {
-                        save_ctx.parent_settings.set(Some(settings.clone()));
-                        save_ctx.load_from(settings);
-                    }
-                });
-            }
-            || ()
         });
     }
 
@@ -2947,10 +2936,11 @@ struct MessageListProps {
 fn message_list(props: &MessageListProps) -> Html {
     let messages_ref = use_node_ref();
 
-    use_effect_with((props.chat_id, props.loading, props.messages.len()), {
+    use_effect_with((props.chat_id, props.loading), {
         let messages_ref = messages_ref.clone();
-        move |(chat_id, loading, len)| {
-            if chat_id.is_some() && !*loading && *len > 0 {
+        let len = props.messages.len();
+        move |(chat_id, loading)| {
+            if chat_id.is_some() && !*loading && len > 0 {
                 let messages_ref = messages_ref.clone();
                 Timeout::new(0, move || {
                     let el = messages_ref.cast::<HtmlElement>();
@@ -3626,14 +3616,6 @@ impl SettingsSaveContext {
         self.draft.set(Some(settings.clone()));
         self.last_saved.set(Some(settings));
         self.phase.set(SettingsSavePhase::Synced);
-    }
-
-    fn ensure_loaded(&self) {
-        if (*self.draft).is_none() {
-            if let Some(settings) = (*self.parent_settings).clone() {
-                self.load_from(settings);
-            }
-        }
     }
 
     fn is_dirty(&self) -> bool {
