@@ -52,6 +52,13 @@ Rules:
 - Keep string fields concise so the JSON response stays complete
 - Output ONLY valid JSON matching the schema"#;
 
+const GAME_SCENE_BEAT_RULES: &str = r#"Scene beat rules:
+- Each beat is one concrete event, action, or line of dialogue — terse staging notes for prose, not literary narration
+- Use plain clauses with specific nouns and verbs; avoid mood adjectives, figurative language, and atmospheric filler
+- Ground every beat in the player action and roll outcomes
+- Typically 3–8 beats per turn; fewer for simple actions
+- Do not write prose, dialogue quotes, or sensory description in beats"#;
+
 const RESOLVE_SYSTEM: &str = r#"You are a tabletop RPG GM assistant for one specific scenario. Given resolved dice results, produce scene beats and typed state changes that honor the defined premise, setting/tone, and GM style.
 
 Rules:
@@ -63,6 +70,10 @@ Rules:
 const PROSE_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose rendering the scene beats.
 
 Rules:
+- Cover every scene beat in order — each beat should be clearly reflected, usually in one short paragraph or a few sentences
+- Prefer plain action and dialogue over lyrical description, mood padding, and stacked metaphors
+- Do not expand beats with extra atmosphere, internal monologue, or sensory detail unless GM style explicitly calls for it
+- Avoid clichéd emotional flourishes (glinting eyes, charged tension, electric shivers, breathy whispers) unless a beat requires them
 - Voice, pacing, mood, intimacy, and tension come from GM style and setting/tone — not from generic adventure defaults
 - Do not inject peril, cliffhangers, or unexplained threats unless the scenario defines that genre or the beats require it
 - Honor resolved roll tiers — a fail must not read as unqualified success
@@ -265,7 +276,7 @@ pub fn build_resolve_messages(
     vec![
         json!({
             "role": "system",
-            "content": format!("{RESOLVE_SYSTEM}\n\n{STATE_CHANGE_PROMPT}"),
+            "content": format!("{RESOLVE_SYSTEM}\n\n{GAME_SCENE_BEAT_RULES}\n\n{STATE_CHANGE_PROMPT}"),
         }),
         json!({ "role": "user", "content": user }),
     ]
@@ -307,6 +318,9 @@ pub fn build_prose_messages(
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
+    body.push_str(
+        "\n\nWrite concise prose covering each scene beat in order. Do not pad with atmosphere or emotional flourish beyond what the beats and GM style require.",
+    );
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": PROSE_SYSTEM }),
@@ -1006,6 +1020,13 @@ mod tests {
         assert!(DECLARE_CHECKS_SYSTEM.contains("Do not invent danger"));
         assert!(RESOLVE_SYSTEM.contains("do not default to peril"));
         assert!(PROSE_SYSTEM.contains("not from generic adventure defaults"));
+    }
+
+    #[test]
+    fn prose_and_scene_beat_prompts_discourage_flourish() {
+        assert!(GAME_SCENE_BEAT_RULES.contains("terse staging notes"));
+        assert!(PROSE_SYSTEM.contains("Avoid clichéd emotional flourishes"));
+        assert!(PROSE_SYSTEM.contains("Do not expand beats"));
     }
 
     #[test]
