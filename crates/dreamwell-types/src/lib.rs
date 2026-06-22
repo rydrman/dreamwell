@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 mod game_import;
 mod game_presets;
 mod macros;
+mod serde_helpers;
 
 pub use game_import::{
     game_create_from_character, scenario_create_from_character,
@@ -1139,7 +1140,11 @@ pub struct StateChangeRequest {
     pub kind: StateKind,
     pub key: String,
     pub op: StateOp,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_optional_literal_string",
+        serialize_with = "serde_helpers::serialize_optional_literal_string"
+    )]
     pub value: Option<String>,
     #[serde(default)]
     pub delta: Option<i64>,

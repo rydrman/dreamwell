@@ -381,4 +381,27 @@ mod tests {
         assert_eq!(plan.vivify.len(), 1);
         assert_eq!(plan.vivify[0].name, "Alice");
     }
+
+    #[test]
+    fn fact_set_applies_literal_number_value() {
+        let change: StateChangeRequest = serde_json::from_value(serde_json::json!({
+            "target": "world",
+            "kind": "fact",
+            "key": "door_count",
+            "op": "set",
+            "value": 3
+        }))
+        .unwrap();
+        assert_eq!(change.value.as_deref(), Some("3"));
+
+        let plan = plan_state_changes(&[change], &[], &[]);
+        assert_eq!(plan.mutations.len(), 1);
+        assert!(matches!(
+            plan.mutations[0],
+            EntryMutation::Insert {
+                value: ref v,
+                ..
+            } if v == "3"
+        ));
+    }
 }
