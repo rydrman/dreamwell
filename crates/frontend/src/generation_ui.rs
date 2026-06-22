@@ -31,6 +31,7 @@ pub enum GenerationPhase {
     Writing,
     Summarizing(SummaryKind),
     ProposingOutline,
+    Game(JobType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,15 +52,20 @@ impl GenerationNotice {
                 "Summarizing chapter prose…"
             }
             Self::Running(GenerationPhase::ProposingOutline) => "Proposing outline…",
+            Self::Running(GenerationPhase::Game(job_type)) => job_running_label(job_type),
         }
     }
 
     pub fn status_class(self) -> &'static str {
         match self {
             Self::Queued => "composer-status--queued",
-            Self::Running(GenerationPhase::Summarizing(_)) => "composer-status--summarize",
+            Self::Running(GenerationPhase::Summarizing(_))
+            | Self::Running(GenerationPhase::Game(JobType::GameSceneSummarize)) => {
+                "composer-status--summarize"
+            }
             Self::Running(GenerationPhase::Writing)
-            | Self::Running(GenerationPhase::ProposingOutline) => "composer-status--writing",
+            | Self::Running(GenerationPhase::ProposingOutline)
+            | Self::Running(GenerationPhase::Game(_)) => "composer-status--writing",
         }
     }
 
@@ -74,6 +80,7 @@ impl GenerationNotice {
                 "Chapter summarization in progress…"
             }
             Self::Running(GenerationPhase::ProposingOutline) => "Outline proposal in progress…",
+            Self::Running(GenerationPhase::Game(job_type)) => job_running_label(job_type),
         }
     }
 }
@@ -234,13 +241,9 @@ pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
 pub fn game_notice(detail: &GameDetail) -> Option<GenerationNotice> {
     let job = detail.game.active_job.as_ref()?;
     match job.status {
-        JobStatus::Running => {
-            let phase = match job.job_type {
-                JobType::GameTurnProse => GenerationPhase::Writing,
-                _ => GenerationPhase::ProposingOutline,
-            };
-            Some(GenerationNotice::Running(phase))
-        }
+        JobStatus::Running => Some(GenerationNotice::Running(GenerationPhase::Game(
+            job.job_type,
+        ))),
         JobStatus::Queued => Some(GenerationNotice::Queued),
         _ => None,
     }
