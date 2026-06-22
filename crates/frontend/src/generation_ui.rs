@@ -1,4 +1,5 @@
 use dreamwell_types::*;
+use wasm_bindgen::JsCast;
 use web_sys::{HtmlDocument, HtmlTextAreaElement};
 use yew::prelude::*;
 

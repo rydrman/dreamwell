@@ -424,7 +424,7 @@ where
             Ok(parsed) => return Ok(parsed),
             Err(err) => {
                 last_error = err.to_string();
-                last_raw = raw;
+                last_raw = raw.clone();
                 if attempt < attempts {
                     attempt_messages.push(serde_json::json!({
                         "role": "assistant",
