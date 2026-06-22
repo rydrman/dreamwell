@@ -53,11 +53,12 @@ Rules:
 - Output ONLY valid JSON matching the schema"#;
 
 const GAME_SCENE_BEAT_RULES: &str = r#"Scene beat rules:
-- Each beat is one concrete event, action, or line of dialogue — terse staging notes for prose, not literary narration
-- Use plain clauses with specific nouns and verbs; avoid mood adjectives, figurative language, and atmospheric filler
+- Each beat is one concrete event, action, or line of dialogue
+- Plain, terse clauses with specific nouns and verbs
+- NEVER full narration or literary flourishes
 - Ground every beat in the player action and roll outcomes
 - Typically 3–8 beats per turn; fewer for simple actions
-- Do not write prose, dialogue quotes, or sensory description in beats"#;
+- NEVER write prose, dialogue quotes, or sensory description in beats"#;
 
 const RESOLVE_SYSTEM: &str = r#"You are a tabletop RPG GM assistant for one specific scenario. Given resolved dice results, produce scene beats and typed state changes that honor the defined premise, setting/tone, and GM style.
 
@@ -1024,7 +1025,7 @@ mod tests {
 
     #[test]
     fn prose_and_scene_beat_prompts_discourage_flourish() {
-        assert!(GAME_SCENE_BEAT_RULES.contains("terse staging notes"));
+        assert!(GAME_SCENE_BEAT_RULES.contains("NEVER full narration"));
         assert!(PROSE_SYSTEM.contains("Avoid clichéd emotional flourishes"));
         assert!(PROSE_SYSTEM.contains("Do not expand beats"));
     }
