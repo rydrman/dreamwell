@@ -624,7 +624,7 @@ fn app() -> Html {
             move |(chat_id, chats, message_list)| {
                 if let Some(chat_id) = *chat_id {
                     if let Some(chat) = chats.iter().find(|chat| chat.id == chat_id) {
-                        if messages_stale_vs_chat(&message_list, chat) {
+                        if messages_stale_vs_chat(message_list, chat) {
                             spawn_gated_messages_fetch(
                                 chat_id,
                                 &messages,

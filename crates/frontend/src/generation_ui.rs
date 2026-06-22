@@ -189,12 +189,10 @@ pub fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<GenerationNo
 }
 
 pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
-    let beats_show_active = detail.chapters.iter().any(|chapter| {
-        chapter
-            .beats
-            .iter()
-            .any(|beat| beat_has_generation_job(beat))
-    });
+    let beats_show_active = detail
+        .chapters
+        .iter()
+        .any(|chapter| chapter.beats.iter().any(beat_has_generation_job));
     if beats_show_active && detail.story.active_job.is_none() {
         return None;
     }
