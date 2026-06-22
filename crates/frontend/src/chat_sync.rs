@@ -2,12 +2,23 @@ use dreamwell_types::{Chat, JobStatus, Message};
 
 /// Whether any message still shows a queued or running generation job.
 pub fn messages_show_active_job(messages: &[Message]) -> bool {
-    messages.iter().any(|message| {
-        matches!(
-            message.job_status,
-            Some(JobStatus::Queued) | Some(JobStatus::Running)
-        )
-    })
+    messages.iter().any(message_has_active_job)
+}
+
+/// Whether a single message should be treated as queued or streaming.
+pub fn message_has_active_job(message: &Message) -> bool {
+    matches!(
+        message.job_status,
+        Some(JobStatus::Queued) | Some(JobStatus::Running)
+    )
+}
+
+/// Whether message-level job status should drive UI (composer, bubbles).
+///
+/// When the sidebar chat row has cleared its active job but open messages still
+/// show `queued`/`running`, the message list is stale and must not block input.
+pub fn message_generation_live(chat: &Chat, messages: &[Message]) -> bool {
+    !messages_stale_vs_chat(messages, chat)
 }
 
 /// Open-chat messages still show generation, but the sidebar row no longer has an active job.
@@ -142,5 +153,37 @@ mod tests {
         let messages = vec![assistant_message(Some(JobStatus::Running))];
         let chat = sample_chat(None);
         assert!(!should_apply_messages_from_sse(&messages, &chat));
+    }
+
+    #[test]
+    fn message_generation_live_false_when_messages_stale() {
+        let messages = vec![assistant_message(Some(JobStatus::Running))];
+        let chat = sample_chat(None);
+        assert!(!message_generation_live(&chat, &messages));
+    }
+
+    #[test]
+    fn message_generation_live_true_when_chat_has_active_job() {
+        let job = Job {
+            id: 1,
+            job_type: JobType::ChatMessage,
+            status: JobStatus::Running,
+            chat_id: Some(1),
+            message_id: Some(1),
+            story_id: None,
+            chapter_id: None,
+            beat_id: None,
+            game_id: None,
+            turn_id: None,
+            guidance_notes: String::new(),
+            error: None,
+            position: 0,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+        };
+        let messages = vec![assistant_message(Some(JobStatus::Running))];
+        let chat = sample_chat(Some(job));
+        assert!(message_generation_live(&chat, &messages));
     }
 }

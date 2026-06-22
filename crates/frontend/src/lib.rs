@@ -39,7 +39,7 @@ thread_local! {
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
-use chat_sync::{messages_stale_vs_chat, should_apply_messages_from_sse};
+use chat_sync::{message_generation_live, messages_stale_vs_chat, should_apply_messages_from_sse};
 use dreamwell_types::*;
 use game_create_ui::GameCreateModal;
 use game_ui::GameShell;
@@ -583,6 +583,10 @@ fn app() -> Html {
                         let job_just_finished = was_active && !now_active;
                         update_chat_in_list(&chats, payload.chat.clone());
                         if job_just_finished {
+                            if should_apply_messages_from_sse(&payload.messages, &payload.chat) {
+                                messages.set(payload.messages.clone());
+                                messages_loading.set(false);
+                            }
                             spawn_gated_messages_fetch(
                                 chat_id,
                                 &messages,
@@ -606,6 +610,32 @@ fn app() -> Html {
                     *chat_stream_nudge.borrow_mut() = None;
                     drop(stream_holder);
                 }
+            },
+        );
+    }
+
+    {
+        let messages = messages.clone();
+        let messages_loading = messages_loading.clone();
+        let messages_fetch_gen = messages_fetch_gen.clone();
+        let chats = chats.clone();
+        use_effect_with(
+            (selected_chat_id, (*chats).clone(), (*messages).clone()),
+            move |(chat_id, chats, message_list)| {
+                if let Some(chat_id) = *chat_id {
+                    if let Some(chat) = chats.iter().find(|chat| chat.id == chat_id) {
+                        if messages_stale_vs_chat(&message_list, chat) {
+                            spawn_gated_messages_fetch(
+                                chat_id,
+                                &messages,
+                                &messages_loading,
+                                &messages_fetch_gen,
+                                false,
+                            );
+                        }
+                    }
+                }
+                || ()
             },
         );
     }
@@ -1889,6 +1919,9 @@ fn app() -> Html {
                         summarize_busy={selected.as_ref().is_some_and(|chat| {
                             summarize_in_progress(chat, &messages)
                         })}
+                        generation_live={selected.as_ref().is_none_or(|chat| {
+                            message_generation_live(chat, &messages)
+                        })}
                         messages={(*messages).clone()}
                         loading={*messages_loading}
                         settings={(*settings).clone()}
@@ -2420,6 +2453,8 @@ struct MessageBubbleProps {
     rendered_content: Html,
     show_thoughts: bool,
     show_variables: bool,
+    #[prop_or(true)]
+    generation_live: bool,
     on_changed: Callback<()>,
 }
 
@@ -2434,8 +2469,10 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         MessageRole::Assistant => "assistant",
         MessageRole::System => "system",
     };
-    let queued = matches!(props.message.job_status, Some(JobStatus::Queued));
-    let streaming = matches!(props.message.job_status, Some(JobStatus::Running));
+    let queued =
+        props.generation_live && matches!(props.message.job_status, Some(JobStatus::Queued));
+    let streaming =
+        props.generation_live && matches!(props.message.job_status, Some(JobStatus::Running));
     let active = queued || streaming;
     let can_menu =
         !props.message.is_summary && props.message.role != MessageRole::System && !active;
@@ -2930,6 +2967,8 @@ struct MessageListProps {
     settings: Option<Settings>,
     character: Option<Character>,
     char_name: Option<String>,
+    #[prop_or(true)]
+    generation_live: bool,
     on_messages_change: Callback<()>,
 }
 
@@ -2992,7 +3031,8 @@ fn message_list(props: &MessageListProps) -> Html {
                 { for props.messages.iter().enumerate().map(|(idx, m)| {
                     let after_count = props.messages.len().saturating_sub(idx + 1);
                     let is_last = last_id == Some(m.id);
-                    let streaming = matches!(m.job_status, Some(JobStatus::Running));
+                    let streaming = props.generation_live
+                        && matches!(m.job_status, Some(JobStatus::Running));
                     let display_content = if m.role == MessageRole::Assistant {
                         variables::strip_variables_for_display(&m.content, streaming)
                     } else {
@@ -3028,6 +3068,7 @@ fn message_list(props: &MessageListProps) -> Html {
                                 rendered_content={rendered_content}
                                 show_thoughts={show_thoughts}
                                 show_variables={show_variables}
+                                generation_live={props.generation_live}
                                 on_changed={props.on_messages_change.clone()}
                             />
                         }
