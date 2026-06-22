@@ -398,10 +398,12 @@ where
     });
     let format_ref = format.as_ref();
 
+    let attempts = max_attempts.max(1);
     let mut last_error = "JSON parse failed".to_string();
+    let mut last_raw = String::new();
     let mut attempt_messages = messages.to_vec();
 
-    for attempt in 1..=max_attempts.max(1) {
+    for attempt in 1..=attempts {
         if token.is_cancelled() {
             return Err(AppError::internal("cancelled"));
         }
@@ -422,7 +424,8 @@ where
             Ok(parsed) => return Ok(parsed),
             Err(err) => {
                 last_error = err.to_string();
-                if attempt < max_attempts {
+                last_raw = raw;
+                if attempt < attempts {
                     attempt_messages.push(serde_json::json!({
                         "role": "assistant",
                         "content": raw
@@ -437,7 +440,35 @@ where
             }
         }
     }
-    Err(AppError::inference(last_error))
+    Err(AppError::inference(format_json_parse_failure(
+        &last_error,
+        &last_raw,
+        attempts,
+        max_tokens,
+    )))
+}
+
+fn format_json_parse_failure(
+    parse_error: &str,
+    raw: &str,
+    attempts: u32,
+    max_tokens: i64,
+) -> String {
+    const RAW_LIMIT: usize = 4_000;
+    let raw_excerpt = if raw.len() > RAW_LIMIT {
+        format!(
+            "{}…\n[truncated for display, {} bytes total]",
+            &raw[..RAW_LIMIT],
+            raw.len()
+        )
+    } else if raw.is_empty() {
+        "(empty response)".to_string()
+    } else {
+        raw.to_string()
+    };
+    format!(
+        "JSON parse failed after {attempts} attempt(s) (max_tokens={max_tokens}): {parse_error}\n\n---\nRaw model response:\n{raw_excerpt}"
+    )
 }
 
 fn strip_json_fence(text: &str) -> &str {
@@ -495,5 +526,23 @@ mod tests {
             "default_generation_settings": { "n_ctx": 65536 }
         });
         assert_eq!(context_from_llama_props(&data), Some(65536));
+    }
+
+    #[test]
+    fn format_json_parse_failure_includes_error_and_raw_excerpt() {
+        let raw = r#"{"checks":[{"label":"test","stakes":"long"#;
+        let msg = format_json_parse_failure("EOF while parsing a string", raw, 3, 512);
+        assert!(msg.contains("JSON parse failed after 3 attempt(s)"));
+        assert!(msg.contains("max_tokens=512"));
+        assert!(msg.contains("EOF while parsing a string"));
+        assert!(msg.contains("Raw model response:"));
+        assert!(msg.contains(raw));
+    }
+
+    #[test]
+    fn format_json_parse_failure_truncates_long_raw() {
+        let raw = "x".repeat(5_000);
+        let msg = format_json_parse_failure("invalid", &raw, 1, 768);
+        assert!(msg.contains("[truncated for display, 5000 bytes total]"));
     }
 }

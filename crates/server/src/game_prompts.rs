@@ -40,13 +40,16 @@ const DECLARE_CHECKS_SYSTEM: &str = r#"You are a tabletop RPG rules assistant fo
 
 Rules:
 - Ground every decision in the defined scenario — genre, stakes, and tone come from premise, setting/tone, and GM style
-- Prefer no check for low-stakes, conversational, exploratory, or slice-of-life actions that fit the scenario
+- Checks add gameplay even in cozy, intimate, or slice-of-life scenarios — use them when the outcome is uncertain or when success/failure would change the scene
+- In gentle or low-peril scenarios, stakes can be social, emotional, craft, memory, composure, or subtle consequence — not combat, injury, or alarm
+- Skip a check only when the action is purely observational or already guaranteed with no meaningful uncertainty
 - Do not invent danger, opposition, clocks, or escalation unless the scenario or player action calls for it
 - When checks are needed: use 2d6 + modifier PbtA-style resolution
 - Propose skill, modifier, stakes, and justification for each check; stakes must fit the scenario tone, not default adventure peril
 - Modifier is situational only (trait base is on the character sheet); keep modifiers modest
 - Only propose checks using trait names listed for the PC in the Characters block
-- Return empty checks array with no_check_reason when the action resolves narratively without a roll
+- Return empty checks array with no_check_reason only when a roll would add no tension or uncertainty
+- Keep string fields concise so the JSON response stays complete
 - Output ONLY valid JSON matching the schema"#;
 
 const RESOLVE_SYSTEM: &str = r#"You are a tabletop RPG GM assistant for one specific scenario. Given resolved dice results, produce scene beats and typed state changes that honor the defined premise, setting/tone, and GM style.
@@ -1003,5 +1006,12 @@ mod tests {
         assert!(DECLARE_CHECKS_SYSTEM.contains("Do not invent danger"));
         assert!(RESOLVE_SYSTEM.contains("do not default to peril"));
         assert!(PROSE_SYSTEM.contains("not from generic adventure defaults"));
+    }
+
+    #[test]
+    fn declare_checks_encourages_cozy_gameplay() {
+        assert!(DECLARE_CHECKS_SYSTEM.contains("cozy, intimate"));
+        assert!(DECLARE_CHECKS_SYSTEM.contains("social, emotional"));
+        assert!(!DECLARE_CHECKS_SYSTEM.contains("Prefer no check for low-stakes"));
     }
 }

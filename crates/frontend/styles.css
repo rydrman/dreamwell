@@ -1421,6 +1421,28 @@ input.header-title {
   margin-top: 0.75rem;
 }
 
+.generation-error-details {
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.625rem;
+  max-height: 12rem;
+  overflow: auto;
+  border-radius: 0.25rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.generation-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 .message-streaming-note {
   margin-top: 0.5rem;
   font-size: 0.8125rem;

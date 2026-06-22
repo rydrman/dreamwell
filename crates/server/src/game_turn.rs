@@ -62,9 +62,9 @@ fn max_retries() -> u32 {
 
 fn structured_output_tokens(settings: &Settings) -> i64 {
     if settings.context_tokens > 0 {
-        (settings.context_tokens / 8).clamp(256, 768)
+        (settings.context_tokens / 6).clamp(512, 1024)
     } else {
-        512
+        768
     }
 }
 
