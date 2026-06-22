@@ -3785,6 +3785,32 @@ fn apply_detected_context(save_ctx: &SettingsSaveContext, caps: &ModelCapabiliti
     });
 }
 
+fn probe_model_capabilities_for_settings(
+    save_ctx: &SettingsSaveContext,
+    detected_caps: &UseStateHandle<Option<ModelCapabilities>>,
+    caps_busy: &UseStateHandle<bool>,
+    model: String,
+) {
+    if model.is_empty() {
+        detected_caps.set(None);
+        return;
+    }
+    let save_ctx = save_ctx.clone();
+    let detected_caps = detected_caps.clone();
+    let caps_busy = caps_busy.clone();
+    caps_busy.set(true);
+    wasm_bindgen_futures::spawn_local(async move {
+        match api::get_model_capabilities(&model).await {
+            Ok(caps) => {
+                apply_detected_context(&save_ctx, &caps);
+                detected_caps.set(Some(caps));
+            }
+            Err(_) => detected_caps.set(None),
+        }
+        caps_busy.set(false);
+    });
+}
+
 fn settings_autosave_field_props(phase: &SettingsSavePhase) -> (AutoSavePhase, Option<String>) {
     match phase {
         SettingsSavePhase::Synced => (AutoSavePhase::Synced, None),
@@ -4002,47 +4028,45 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             <div class="settings-model-row">
                 <label class="field">
                     <span class="muted">{"Model"}</span>
-                    <select title={s.model.clone()} onchange={{
-                        let save_ctx = save_ctx.clone();
-                        let detected_caps = detected_caps.clone();
-                        let caps_busy = caps_busy.clone();
-                        Callback::from(move |e: Event| {
-                            let input: HtmlInputElement = e.target_unchecked_into();
-                            let model = input.value();
-                            save_ctx.update_field(|current| current.model = model.clone());
-                            if model.is_empty() {
-                                detected_caps.set(None);
-                                return;
-                            }
-                            let save_ctx = save_ctx.clone();
-                            let detected_caps = detected_caps.clone();
-                            let caps_busy = caps_busy.clone();
-                            caps_busy.set(true);
-                            wasm_bindgen_futures::spawn_local(async move {
-                                match api::get_model_capabilities(&model).await {
-                                    Ok(caps) => {
-                                        apply_detected_context(&save_ctx, &caps);
-                                        detected_caps.set(Some(caps));
-                                    }
-                                    Err(_) => detected_caps.set(None),
-                                }
-                                caps_busy.set(false);
-                            });
-                        })
-                    }}>
-                        <option value="">{"Select a model"}</option>
-                        { for models.iter().map(|m| html! { <option value={m.id.clone()} selected={m.id == s.model}>{ m.name.clone().unwrap_or(m.id.clone()) }</option> }) }
-                    </select>
-                    if !s.model.is_empty() {
-                        <p class="settings-model-name muted">{
-                            models.iter()
-                                .find(|m| m.id == s.model)
-                                .map(|m| m.name.clone().unwrap_or(m.id.clone()))
-                                .unwrap_or_else(|| s.model.clone())
-                        }</p>
-                    }
+                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                        <input
+                            type="text"
+                            list="dreamwell-model-list"
+                            value={s.model.clone()}
+                            placeholder="Type model id (e.g. from your provider)"
+                            oninput={{
+                                let save_ctx = save_ctx.clone();
+                                Callback::from(move |e: InputEvent| {
+                                    let input: HtmlInputElement = e.target_unchecked_into();
+                                    save_ctx.update_field(|current| current.model = input.value());
+                                })
+                            }}
+                            onchange={{
+                                let save_ctx = save_ctx.clone();
+                                let detected_caps = detected_caps.clone();
+                                let caps_busy = caps_busy.clone();
+                                Callback::from(move |e: Event| {
+                                    let input: HtmlInputElement = e.target_unchecked_into();
+                                    probe_model_capabilities_for_settings(
+                                        &save_ctx,
+                                        &detected_caps,
+                                        &caps_busy,
+                                        input.value(),
+                                    );
+                                })
+                            }}
+                        />
+                        <datalist id="dreamwell-model-list">
+                            { for models.iter().map(|m| html! {
+                                <option value={m.id.clone()} label={m.name.clone().unwrap_or(m.id.clone())} />
+                            }) }
+                        </datalist>
+                    </AutoSaveField>
+                    <p class="muted" style="margin:0.35rem 0 0;">
+                        {"Refresh loads models from the backend when supported; otherwise type the model id manually."}
+                    </p>
                 </label>
-                <button class="btn secondary" onclick={{
+                <button class="btn secondary" type="button" onclick={{
                     let models = models.clone();
                     let model_error = model_error.clone();
                     Callback::from(move |_| {
