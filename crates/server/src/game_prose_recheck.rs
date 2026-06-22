@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::game_prompts::scenario_context_block;
+use crate::game_prompts::{build_characters_block, scenario_context_block};
 use crate::game_resolution::tier_str;
 use crate::inference::chat_completion;
 
@@ -70,6 +70,7 @@ fn format_scene_beats(beats: &[String]) -> String {
 
 fn build_recheck_prompt(
     game: &dreamwell_types::Game,
+    actors: &[dreamwell_types::GameActor],
     scene_beats: &str,
     checks_text: &str,
     prose: &str,
@@ -80,6 +81,10 @@ fn build_recheck_prompt(
         "Scenario parameters:\n{}\n\nScene beats:\n{scene_beats}\n\nRoll outcomes:\n{checks_text}\n\nCurrent turn prose:\n{prose}",
         scenario_context_block(game, ctx)
     );
+    let characters = build_characters_block(actors);
+    if !characters.is_empty() {
+        user.push_str(&format!("\n\n{characters}"));
+    }
     if !guidance.trim().is_empty() {
         user.push_str("\n\nGuidance from the player:\n");
         user.push_str(guidance.trim());
@@ -161,6 +166,7 @@ pub async fn run_turn_prose_recheck_job(
         crate::game_turn::model_for_phase(&game, settings, crate::game_turn::GameModelPhase::Prose);
     let prompt = build_recheck_prompt(
         &game,
+        &detail.actors,
         &format_scene_beats(&turn.scene_beats),
         &format_checks_for_recheck(&turn.checks),
         &substitute_macros(turn.prose.trim(), &ctx),
@@ -264,6 +270,17 @@ mod tests {
         };
         let prompt = build_recheck_prompt(
             &game,
+            &[dreamwell_types::GameActor {
+                id: 1,
+                game_id: 1,
+                role: "pc".into(),
+                name: "Mira".into(),
+                description: "Shopkeeper".into(),
+                skills: Default::default(),
+                sort_order: 0,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
             "- The lock clicks.\n",
             "- Pick lock: mixed",
             "You hear the lock turn.",
@@ -277,5 +294,7 @@ mod tests {
         assert!(user.contains("Roll outcomes:"));
         assert!(user.contains("You hear the lock turn."));
         assert!(user.contains("Stay cozy."));
+        assert!(user.contains("Characters:"));
+        assert!(user.contains("Mira (PC)"));
     }
 }

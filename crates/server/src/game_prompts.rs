@@ -1,6 +1,7 @@
 use dreamwell_state::STATE_CHANGE_PROMPT;
 use dreamwell_types::{
-    substitute_macros, Game, GameDetail, GameScene, GameTurn, GameTurnCheck, MacroContext, Settings,
+    substitute_macros, Game, GameActor, GameDetail, GameScene, GameTurn, GameTurnCheck,
+    MacroContext, Settings,
 };
 use serde_json::json;
 
@@ -44,7 +45,7 @@ Rules:
 - When checks are needed: use 2d6 + modifier PbtA-style resolution
 - Propose skill, modifier, stakes, and justification for each check; stakes must fit the scenario tone, not default adventure peril
 - Modifier is situational only (trait base is on the character sheet); keep modifiers modest
-- Only propose checks using trait names listed on the PC sheet
+- Only propose checks using trait names listed for the PC in the Characters block
 - Return empty checks array with no_check_reason when the action resolves narratively without a roll
 - Output ONLY valid JSON matching the schema"#;
 
@@ -101,6 +102,84 @@ fn user_message_with_scenario(game: &Game, body: &str, ctx: &MacroContext<'_>) -
     )
 }
 
+fn actor_role_rank(role: &str) -> i32 {
+    if role == "pc" {
+        0
+    } else {
+        1
+    }
+}
+
+fn actor_display_name(actor: &GameActor) -> String {
+    if !actor.name.trim().is_empty() {
+        return actor.name.trim().to_string();
+    }
+    if actor.role == "pc" {
+        "Player character".to_string()
+    } else {
+        "Unnamed NPC".to_string()
+    }
+}
+
+fn actor_role_label(role: &str) -> &'static str {
+    if role == "pc" {
+        "PC"
+    } else {
+        "NPC"
+    }
+}
+
+/// Canonical roster block for PC and NPC actors, included in every game prompt phase.
+pub(crate) fn build_characters_block(actors: &[GameActor]) -> String {
+    let mut ordered: Vec<&GameActor> = actors
+        .iter()
+        .filter(|actor| actor.role == "pc" || actor.role == "npc")
+        .collect();
+    ordered.sort_by(|a, b| {
+        actor_role_rank(&a.role)
+            .cmp(&actor_role_rank(&b.role))
+            .then(a.sort_order.cmp(&b.sort_order))
+            .then(a.id.cmp(&b.id))
+    });
+
+    let sections: Vec<String> = ordered
+        .into_iter()
+        .map(|actor| {
+            let mut lines = vec![format!(
+                "## {} ({})",
+                actor_display_name(actor),
+                actor_role_label(&actor.role)
+            )];
+            if !actor.description.trim().is_empty() {
+                lines.push(actor.description.trim().to_string());
+            }
+            if !actor.skills.is_empty() {
+                let mut traits: Vec<_> = actor
+                    .skills
+                    .iter()
+                    .map(|(name, value)| format!("{name} ({value:+})"))
+                    .collect();
+                traits.sort();
+                lines.push(format!("Traits: {}", traits.join(", ")));
+            }
+            lines.join("\n")
+        })
+        .collect();
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!("Characters:\n{}", sections.join("\n\n"))
+    }
+}
+
+fn append_characters_section(body: &mut String, actors: &[GameActor]) {
+    let block = build_characters_block(actors);
+    if !block.is_empty() {
+        body.push_str(&format!("\n\n{block}"));
+    }
+}
+
 pub fn build_declare_checks_messages(
     game: &Game,
     detail: &GameDetail,
@@ -108,7 +187,6 @@ pub fn build_declare_checks_messages(
     guidance: &str,
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
-    let pc = detail.actors.iter().find(|a| a.role == "pc");
     let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
     let state_block = build_state_block(&detail.state, &detail.actors);
     let context = build_turn_context_tiers(&detail.turns, &detail.scenes, turn.id, settings, &ctx);
@@ -117,21 +195,7 @@ pub fn build_declare_checks_messages(
         format_turn_context_sections(&context),
         turn.player_action
     );
-    if let Some(pc) = pc {
-        body.push_str(&format!("\n\nPC: {} — {}", pc.name, pc.description));
-        if !pc.skills.is_empty() {
-            let mut traits: Vec<_> = pc
-                .skills
-                .iter()
-                .map(|(name, value)| format!("{name} ({value:+})"))
-                .collect();
-            traits.sort();
-            body.push_str(&format!(
-                "\n\nAvailable traits for checks (use only these names): {}",
-                traits.join(", ")
-            ));
-        }
-    }
+    append_characters_section(&mut body, &detail.actors);
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
@@ -187,6 +251,7 @@ pub fn build_resolve_messages(
         "Player action: {}\n\nResolved checks:\n{checks_text}\n\nCurrent state:\n{state_block}",
         turn.player_action
     );
+    append_characters_section(&mut body, &detail.actors);
     if !context_block.is_empty() {
         body.push_str(&format!("\n\n{context_block}"));
     }
@@ -232,6 +297,7 @@ pub fn build_prose_messages(
         "Scene beats:\n- {beats}\n\nRoll outcomes: {tiers}\n\nCurrent state:\n{state_block}\n\nPlayer action: {}",
         turn.player_action
     );
+    append_characters_section(&mut body, &detail.actors);
     if !context_block.is_empty() {
         body.push_str(&format!("\n\n{context_block}"));
     }
@@ -257,11 +323,9 @@ pub fn build_scene_summarize_messages(
         .map(|turn| format_prior_prose_chunk(turn, &ctx))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let user = user_message_with_scenario(
-        &detail.game,
-        &format!("Turn transcript:\n{transcript}"),
-        &ctx,
-    );
+    let mut body = format!("Turn transcript:\n{transcript}");
+    append_characters_section(&mut body, &detail.actors);
+    let user = user_message_with_scenario(&detail.game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": SCENE_SUMMARIZE_SYSTEM }),
         json!({ "role": "user", "content": user }),
@@ -859,6 +923,77 @@ mod tests {
         assert!(user.contains("Hello Alex, says Mira."));
         assert!(!user.contains("{{User}}"));
         assert!(!user.contains("{{user}}"));
+    }
+
+    #[test]
+    fn characters_block_lists_pc_before_npcs_with_traits() {
+        let pc = GameActor {
+            id: 1,
+            game_id: 1,
+            role: "pc".into(),
+            name: "Mira".into(),
+            description: "Shopkeeper".into(),
+            skills: [("Flair".to_string(), 1)].into_iter().collect(),
+            sort_order: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let npc = GameActor {
+            id: 2,
+            game_id: 1,
+            role: "npc".into(),
+            name: "Brennan".into(),
+            description: "Night watchman".into(),
+            skills: Default::default(),
+            sort_order: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let block = build_characters_block(&[npc.clone(), pc.clone()]);
+        let pc_pos = block.find("Mira (PC)").unwrap();
+        let npc_pos = block.find("Brennan (NPC)").unwrap();
+        assert!(pc_pos < npc_pos);
+        assert!(block.contains("Traits: Flair (+1)"));
+        assert!(block.contains("Night watchman"));
+    }
+
+    #[test]
+    fn all_turn_prompts_include_characters_block() {
+        let game = sample_game();
+        let mut detail = sample_detail(game.clone());
+        detail.actors.push(GameActor {
+            id: 2,
+            game_id: 1,
+            role: "npc".into(),
+            name: "Regular".into(),
+            description: "A familiar face at the counter.".into(),
+            skills: Default::default(),
+            sort_order: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        });
+        let turn = sample_turn();
+        let settings = test_settings();
+        for messages in [
+            build_declare_checks_messages(&game, &detail, &turn, "", &settings),
+            build_resolve_messages(&game, &detail, &turn, &[], "", &settings),
+            build_prose_messages(&game, &detail, &turn, &[], "", &settings),
+        ] {
+            let user = messages[1]["content"].as_str().unwrap();
+            assert!(user.contains("Characters:"));
+            assert!(user.contains("Mira (PC)"));
+            assert!(user.contains("Regular (NPC)"));
+        }
+    }
+
+    #[test]
+    fn scene_summarize_includes_characters_block() {
+        let game = sample_game();
+        let detail = sample_detail(game);
+        let messages = build_scene_summarize_messages(&detail, &test_settings());
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("Characters:"));
+        assert!(user.contains("Mira (PC)"));
     }
 
     #[test]
