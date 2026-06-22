@@ -862,6 +862,7 @@ mod tests {
             tracked_details: String::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            archived_at: None,
             active_job: None,
             queued_jobs: 0,
         }

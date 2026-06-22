@@ -8,7 +8,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use dreamwell_types::{
@@ -26,8 +26,14 @@ use crate::scenario_import::{game_create_from_character, GameCharacterImportMode
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_games).post(create_game))
+        .route("/archived", get(list_archived_games))
         .route("/import", post(import_game_draft))
-        .route("/:id", get(get_game).patch(update_game).delete(delete_game))
+        .route(
+            "/:id",
+            get(get_game).patch(update_game).delete(archive_game),
+        )
+        .route("/:id/restore", post(restore_game))
+        .route("/:id/permanent", delete(permanently_delete_game))
         .route("/:id/stream", get(stream_game))
         .route("/:id/turns", post(submit_turn))
         .route("/:id/turns/:turn_id/continue", post(continue_turn))
@@ -49,6 +55,10 @@ pub fn router() -> Router<AppState> {
 
 async fn list_games(State(state): State<AppState>) -> AppResult<Json<Vec<Game>>> {
     Ok(Json(db::list_games(&state.pool).await?))
+}
+
+async fn list_archived_games(State(state): State<AppState>) -> AppResult<Json<Vec<Game>>> {
+    Ok(Json(db::list_archived_games(&state.pool).await?))
 }
 
 async fn create_game(
@@ -109,11 +119,27 @@ async fn update_game(
     Ok(Json(db::get_game_detail(&state.pool, id).await?))
 }
 
-async fn delete_game(
+async fn archive_game(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<OkResponse>> {
-    db::delete_game(&state.pool, id).await?;
+    let _ = db::get_game(&state.pool, id).await?;
+    for job in db::list_active_jobs_for_game(&state.pool, id).await? {
+        let _ = state.queue.cancel_job(&state.pool, job.id).await;
+    }
+    db::archive_game(&state.pool, id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn restore_game(State(state): State<AppState>, Path(id): Path<i64>) -> AppResult<Json<Game>> {
+    Ok(Json(db::restore_game(&state.pool, id).await?))
+}
+
+async fn permanently_delete_game(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<OkResponse>> {
+    db::permanently_delete_game(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 

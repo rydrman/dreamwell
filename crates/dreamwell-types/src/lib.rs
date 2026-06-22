@@ -380,6 +380,8 @@ pub struct Story {
     pub tracked_details: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     pub active_job: Option<Job>,
     pub queued_jobs: i64,
 }
@@ -980,6 +982,8 @@ pub struct Game {
     pub trait_defs: Vec<TraitDef>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
     pub active_job: Option<Job>,
     pub queued_jobs: i64,
 }

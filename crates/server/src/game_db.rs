@@ -11,14 +11,41 @@ use sqlx::SqlitePool;
 
 use crate::db::{get_job, job_type_str, parse_dt, JobRow};
 use crate::error::{AppError, AppResult};
+use dreamwell_types::CHAT_ARCHIVE_RETENTION_DAYS;
 
 const DEFAULT_SKILLS: &str = r#"{"Finesse":0,"Force":0,"Flair":0,"Focus":0,"Sway":0}"#;
 const OPENING_TURN_SORT_ORDER: i64 = -1;
+const GAME_COLUMNS: &str = "id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, created_at, updated_at, archived_at";
+
+pub async fn purge_expired_archived_games(pool: &SqlitePool) -> AppResult<u64> {
+    let cutoff = (Utc::now() - chrono::Duration::days(CHAT_ARCHIVE_RETENTION_DAYS)).to_rfc3339();
+    let result =
+        sqlx::query("DELETE FROM games WHERE archived_at IS NOT NULL AND archived_at < ?1")
+            .bind(&cutoff)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected())
+}
 
 pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
-    let rows = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, created_at, updated_at FROM games ORDER BY updated_at DESC",
-    )
+    purge_expired_archived_games(pool).await?;
+    let rows = sqlx::query_as::<_, GameRow>(&format!(
+        "SELECT {GAME_COLUMNS} FROM games WHERE archived_at IS NULL ORDER BY updated_at DESC"
+    ))
+    .fetch_all(pool)
+    .await?;
+    let mut games = Vec::with_capacity(rows.len());
+    for row in rows {
+        games.push(game_from_row(pool, row).await?);
+    }
+    Ok(games)
+}
+
+pub async fn list_archived_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
+    purge_expired_archived_games(pool).await?;
+    let rows = sqlx::query_as::<_, GameRow>(&format!(
+        "SELECT {GAME_COLUMNS} FROM games WHERE archived_at IS NOT NULL ORDER BY archived_at DESC, title ASC"
+    ))
     .fetch_all(pool)
     .await?;
     let mut games = Vec::with_capacity(rows.len());
@@ -29,14 +56,27 @@ pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
 }
 
 pub async fn get_game(pool: &SqlitePool, id: i64) -> AppResult<Game> {
-    let row = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, created_at, updated_at FROM games WHERE id = ?1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Game not found"))?;
+    let row = fetch_game_row(pool, id, false)
+        .await?
+        .ok_or_else(|| AppError::not_found("Game not found"))?;
     game_from_row(pool, row).await
+}
+
+async fn fetch_game_row(
+    pool: &SqlitePool,
+    id: i64,
+    include_archived: bool,
+) -> AppResult<Option<GameRow>> {
+    let sql = if include_archived {
+        format!("SELECT {GAME_COLUMNS} FROM games WHERE id = ?1")
+    } else {
+        format!("SELECT {GAME_COLUMNS} FROM games WHERE id = ?1 AND archived_at IS NULL")
+    };
+    sqlx::query_as::<_, GameRow>(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
 }
 
 pub async fn get_game_detail(pool: &SqlitePool, id: i64) -> AppResult<GameDetail> {
@@ -55,13 +95,21 @@ pub async fn get_game_detail(pool: &SqlitePool, id: i64) -> AppResult<GameDetail
 }
 
 async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
-    let active_job = get_active_game_job(pool, row.id).await?;
-    let queued_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM generation_jobs WHERE game_id = ?1 AND status = 'queued'",
-    )
-    .bind(row.id)
-    .fetch_one(pool)
-    .await?;
+    let active_job = if row.archived_at.is_none() {
+        get_active_game_job(pool, row.id).await?
+    } else {
+        None
+    };
+    let queued_jobs: i64 = if row.archived_at.is_none() {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM generation_jobs WHERE game_id = ?1 AND status = 'queued'",
+        )
+        .bind(row.id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        0
+    };
     Ok(Game {
         id: row.id,
         title: row.title,
@@ -89,6 +137,7 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
         trait_defs: parse_json_vec::<TraitDef>(&row.trait_defs_json),
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
+        archived_at: row.archived_at.as_deref().map(parse_dt).transpose()?,
         active_job,
         queued_jobs,
     })
@@ -387,15 +436,57 @@ pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> App
     get_game(pool, id).await
 }
 
-pub async fn delete_game(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM games WHERE id = ?1")
+pub async fn archive_game(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let exists = fetch_game_row(pool, id, false).await?;
+    if exists.is_none() {
+        return Err(AppError::not_found("Game not found"));
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE games SET archived_at = ?1 WHERE id = ?2 AND archived_at IS NULL")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn restore_game(pool: &SqlitePool, id: i64) -> AppResult<Game> {
+    let exists = fetch_game_row(pool, id, true).await?;
+    if exists
+        .as_ref()
+        .and_then(|row| row.archived_at.as_deref())
+        .is_none()
+    {
+        return Err(AppError::not_found("Archived game not found"));
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE games SET archived_at = NULL, updated_at = ?1 WHERE id = ?2")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    get_game(pool, id).await
+}
+
+pub async fn permanently_delete_game(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM games WHERE id = ?1 AND archived_at IS NOT NULL")
         .bind(id)
         .execute(pool)
         .await?;
     if result.rows_affected() == 0 {
-        return Err(AppError::not_found("Game not found"));
+        return Err(AppError::not_found("Archived game not found"));
     }
     Ok(())
+}
+
+pub async fn list_active_jobs_for_game(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<Job>> {
+    let rows = sqlx::query_as::<_, JobRow>(
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE game_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC",
+    )
+    .bind(game_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 pub async fn touch_game(pool: &SqlitePool, game_id: i64) -> AppResult<()> {
@@ -1155,6 +1246,7 @@ struct GameRow {
     trait_defs_json: String,
     created_at: String,
     updated_at: String,
+    archived_at: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
