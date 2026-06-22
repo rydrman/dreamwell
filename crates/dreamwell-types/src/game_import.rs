@@ -35,6 +35,7 @@ pub fn scenario_create_from_character(payload: CharacterCreate) -> ScenarioCreat
         pc_description: String::new(),
         traits: default_game_traits(),
         character_id: None,
+        ..Default::default()
     }
 }
 
@@ -92,6 +93,7 @@ pub fn game_create_from_character(
         pc_name,
         pc_description,
         pc_traits: default_game_traits(),
+        ..Default::default()
     }
 }
 

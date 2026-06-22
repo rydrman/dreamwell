@@ -1,5 +1,11 @@
 use crate::DEFAULT_USER_NAME;
 
+pub fn empty_setup_vars() -> &'static std::collections::HashMap<String, String> {
+    use std::sync::OnceLock;
+    static EMPTY: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
+    EMPTY.get_or_init(std::collections::HashMap::new)
+}
+
 /// Values available for SillyTavern-style `{{macro}}` substitution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MacroContext<'a> {
@@ -10,6 +16,7 @@ pub struct MacroContext<'a> {
     pub personality: &'a str,
     pub scenario: &'a str,
     pub first_message: &'a str,
+    pub setup_vars: &'a std::collections::HashMap<String, String>,
 }
 
 impl<'a> MacroContext<'a> {
@@ -47,6 +54,7 @@ impl<'a> MacroContext<'a> {
             personality: "",
             scenario: detail.game.premise.as_str(),
             first_message: detail.game.opening_message.as_str(),
+            setup_vars: empty_setup_vars(),
         }
     }
 
@@ -75,6 +83,7 @@ impl<'a> MacroContext<'a> {
                 personality: c.personality.as_str(),
                 scenario: c.scenario.as_str(),
                 first_message: c.first_message.as_str(),
+                setup_vars: empty_setup_vars(),
             },
             None => Self {
                 char_name: "Character",
@@ -84,6 +93,7 @@ impl<'a> MacroContext<'a> {
                 personality: "",
                 scenario: "",
                 first_message: "",
+                setup_vars: empty_setup_vars(),
             },
         }
     }
@@ -111,13 +121,21 @@ fn resolve_macro<'a>(key: &str, ctx: &'a MacroContext<'a>) -> Option<&'a str> {
     if key.eq_ignore_ascii_case("charfirstmessage") {
         return Some(ctx.first_message);
     }
+    if let Some(value) = ctx.setup_vars.get(key) {
+        return Some(value.as_str());
+    }
+    for (var_key, value) in ctx.setup_vars {
+        if var_key.eq_ignore_ascii_case(key) {
+            return Some(value.as_str());
+        }
+    }
     None
 }
 
 /// Replace SillyTavern-style `{{macro}}` placeholders (case-insensitive names).
 /// Unknown macros are left unchanged. Nested macros are resolved in multiple passes.
 pub fn substitute_macros(text: &str, ctx: &MacroContext<'_>) -> String {
-    let mut current = text.to_string();
+    let mut current = substitute_angle_macros(text, ctx);
     for _ in 0..8 {
         let next = substitute_macros_once(&current, ctx);
         if next == current {
@@ -126,6 +144,31 @@ pub fn substitute_macros(text: &str, ctx: &MacroContext<'_>) -> String {
         current = next;
     }
     current
+}
+
+fn substitute_angle_macros(text: &str, ctx: &MacroContext<'_>) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<<") {
+        result.push_str(&rest[..start]);
+        rest = &rest[start + 2..];
+        if let Some(end) = rest.find(">>") {
+            let key = rest[..end].trim();
+            if let Some(value) = resolve_macro(key, ctx) {
+                result.push_str(value);
+            } else {
+                result.push_str("<<");
+                result.push_str(key);
+                result.push_str(">>");
+            }
+            rest = &rest[end + 2..];
+        } else {
+            result.push_str("<<");
+            break;
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 fn substitute_macros_once(text: &str, ctx: &MacroContext<'_>) -> String {
@@ -166,6 +209,7 @@ mod tests {
             personality: "Kind and wise.",
             scenario: "An enchanted forest.",
             first_message: "Welcome, {{user}}.",
+            setup_vars: empty_setup_vars(),
         }
     }
 
@@ -223,6 +267,11 @@ mod tests {
                 model_checks: String::new(),
                 model_resolve: String::new(),
                 model_prose: String::new(),
+                rules_blocks: vec![],
+                state_schema: vec![],
+                win_condition: None,
+                scenario_triggers: vec![],
+                trait_defs: vec![],
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 active_job: None,

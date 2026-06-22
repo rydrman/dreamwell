@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use dreamwell_types::{
-    normalize_game_traits, AppliedStateChange, Game, GameActor, GameActorUpdate, GameCreate,
-    GameDetail, GameScene, GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck,
-    GameUpdate, Job, JobType, ResolutionSystem, StateKind, SubmitTurnRequest,
+    normalize_game_traits, substitute_macros, AppliedStateChange, Game, GameActor, GameActorUpdate,
+    GameCreate, GameDetail, GameScene, GameStateEntry, GameStateEntryUpdate, GameTurn,
+    GameTurnCheck, GameTurnSystemRoll, GameUpdate, Job, JobType, MacroContext, ResolutionSystem,
+    RulesBlock, ScenarioTrigger, StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnPlan,
 };
 use sqlx::SqlitePool;
 
@@ -14,14 +15,9 @@ use crate::error::{AppError, AppResult};
 const DEFAULT_SKILLS: &str = r#"{"Finesse":0,"Force":0,"Flair":0,"Focus":0,"Sway":0}"#;
 const OPENING_TURN_SORT_ORDER: i64 = -1;
 
-fn pc_traits_json(payload: &GameCreate) -> String {
-    let traits = normalize_game_traits(payload.pc_traits.clone());
-    serde_json::to_string(&traits).unwrap_or_else(|_| DEFAULT_SKILLS.to_string())
-}
-
 pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
     let rows = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, created_at, updated_at FROM games ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -34,7 +30,7 @@ pub async fn list_games(pool: &SqlitePool) -> AppResult<Vec<Game>> {
 
 pub async fn get_game(pool: &SqlitePool, id: i64) -> AppResult<Game> {
     let row = sqlx::query_as::<_, GameRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, created_at, updated_at FROM games WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, created_at, updated_at FROM games WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -83,6 +79,14 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
         model_checks: row.model_checks,
         model_resolve: row.model_resolve,
         model_prose: row.model_prose,
+        rules_blocks: parse_json_vec::<RulesBlock>(&row.rules_blocks_json),
+        state_schema: parse_json_vec::<TrackedVarDef>(&row.state_schema_json),
+        win_condition: row
+            .win_condition_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        scenario_triggers: parse_json_vec::<ScenarioTrigger>(&row.scenario_triggers_json),
+        trait_defs: parse_json_vec::<TraitDef>(&row.trait_defs_json),
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
         active_job,
@@ -105,8 +109,13 @@ fn resolution_system_str(system: ResolutionSystem) -> &'static str {
 
 pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<GameDetail> {
     let now = Utc::now().to_rfc3339();
+    let rules_blocks_json = json_string(&payload.rules_blocks);
+    let state_schema_json = json_string(&payload.state_schema);
+    let win_condition_json = optional_json_string(&payload.win_condition);
+    let scenario_triggers_json = json_string(&payload.scenario_triggers);
+    let trait_defs_json = json_string(&payload.trait_defs);
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO games (title, premise, setting, gm_style, opening_message, character_id, scenario_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8) RETURNING id",
+        "INSERT INTO games (title, premise, setting, gm_style, opening_message, character_id, scenario_id, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
@@ -115,9 +124,22 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
     .bind(&payload.opening_message)
     .bind(payload.character_id)
     .bind(payload.scenario_id)
+    .bind(&rules_blocks_json)
+    .bind(&state_schema_json)
+    .bind(&win_condition_json)
+    .bind(&scenario_triggers_json)
+    .bind(&trait_defs_json)
     .bind(&now)
     .fetch_one(pool)
     .await?;
+
+    let pc_traits = if payload.trait_defs.is_empty() {
+        normalize_game_traits(payload.pc_traits.clone())
+    } else {
+        payload.pc_traits.clone()
+    };
+    let pc_traits_json =
+        serde_json::to_string(&pc_traits).unwrap_or_else(|_| DEFAULT_SKILLS.to_string());
 
     let actor_now = now.clone();
     sqlx::query(
@@ -126,7 +148,7 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
     .bind(id)
     .bind(&payload.pc_name)
     .bind(&payload.pc_description)
-    .bind(pc_traits_json(&payload))
+    .bind(&pc_traits_json)
     .bind(&actor_now)
     .execute(pool)
     .await?;
@@ -136,6 +158,19 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
             .bind(id)
             .fetch_one(pool)
             .await?;
+
+    for (sort_order, npc) in payload.invited_cast.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO game_actors (game_id, role, name, description, skills, sort_order, created_at, updated_at) VALUES (?1,'npc',?2,?3,'{}',?4,?5,?5)",
+        )
+        .bind(id)
+        .bind(&npc.name)
+        .bind(&npc.content)
+        .bind((sort_order + 1) as i64)
+        .bind(&actor_now)
+        .execute(pool)
+        .await?;
+    }
 
     for (key, current, max) in [("health", 5, 5), ("stress", 0, 5)] {
         sqlx::query(
@@ -151,6 +186,8 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
         .await?;
     }
 
+    seed_scenario_state(pool, id, &payload, &now).await?;
+
     sqlx::query(
         "INSERT INTO game_scenes (game_id, title, start_turn, sort_order, created_at, updated_at) VALUES (?1,'Opening Scene',0,0,?2,?2)",
     )
@@ -159,9 +196,86 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
     .execute(pool)
     .await?;
 
-    seed_opening_turn(pool, id, &payload.opening_message, &now).await?;
+    let macro_ctx = MacroContext {
+        char_name: payload.pc_name.as_str(),
+        user_name: "User",
+        persona: "",
+        description: payload.pc_description.as_str(),
+        personality: "",
+        scenario: payload.premise.as_str(),
+        first_message: payload.opening_message.as_str(),
+        setup_vars: &payload.setup_var_values,
+    };
+    let opening = substitute_macros(payload.opening_message.trim(), &macro_ctx);
+    if payload.opening_as_player_action {
+        if !opening.is_empty() {
+            prepare_submit_turn(
+                pool,
+                id,
+                &SubmitTurnRequest {
+                    player_action: opening,
+                    guidance_notes: String::new(),
+                },
+            )
+            .await?;
+        }
+    } else {
+        seed_opening_turn(pool, id, &opening, &now).await?;
+    }
 
     get_game_detail(pool, id).await
+}
+
+async fn seed_scenario_state(
+    pool: &SqlitePool,
+    game_id: i64,
+    payload: &GameCreate,
+    now: &str,
+) -> AppResult<()> {
+    for def in &payload.state_schema {
+        let value = payload
+            .setup_var_values
+            .get(&def.key)
+            .cloned()
+            .unwrap_or_else(|| def.initial_value.clone());
+        let num_value = def.initial_num.or_else(|| value.parse::<i64>().ok());
+        let kind = state_kind_str(def.kind);
+        sqlx::query(
+            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, source_turn, updated_at) VALUES (?1,NULL,?2,?3,?4,?5,-1,?6)",
+        )
+        .bind(game_id)
+        .bind(kind)
+        .bind(&def.key)
+        .bind(&value)
+        .bind(num_value)
+        .bind(now)
+        .execute(pool)
+        .await?;
+    }
+    for (key, value) in &payload.setup_var_values {
+        if payload.state_schema.iter().any(|d| d.key == *key) {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, source_turn, updated_at) VALUES (?1,NULL,'fact',?2,?3,-1,?4)",
+        )
+        .bind(game_id)
+        .bind(key)
+        .bind(value)
+        .bind(now)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+fn state_kind_str(kind: StateKind) -> &'static str {
+    match kind {
+        StateKind::Resource => "resource",
+        StateKind::Condition => "condition",
+        StateKind::Fact => "fact",
+        StateKind::Clock => "clock",
+    }
 }
 
 async fn seed_opening_turn(
@@ -433,7 +547,7 @@ pub async fn update_state_entry(
 
 async fn list_turns(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<GameTurn>> {
     let rows = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, created_at, updated_at FROM game_turns WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
+        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, plan_json, created_at, updated_at FROM game_turns WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
     )
     .bind(game_id)
     .fetch_all(pool)
@@ -456,7 +570,12 @@ async fn turn_generation_error(pool: &SqlitePool, turn_id: i64) -> AppResult<Opt
 
 async fn turn_from_row(pool: &SqlitePool, row: TurnRow) -> AppResult<GameTurn> {
     let checks = list_checks_for_turn(pool, row.id).await?;
+    let system_rolls = list_system_rolls_for_turn(pool, row.id).await?;
     let generation_error = turn_generation_error(pool, row.id).await?;
+    let plan = row
+        .plan_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
     Ok(GameTurn {
         id: row.id,
         game_id: row.game_id,
@@ -467,6 +586,8 @@ async fn turn_from_row(pool: &SqlitePool, row: TurnRow) -> AppResult<GameTurn> {
         prose: row.prose,
         state_changes: parse_state_changes(&row.state_changes),
         checks,
+        system_rolls,
+        plan,
         is_opening: row.is_opening != 0,
         generation_error,
         created_at: parse_dt(&row.created_at)?,
@@ -594,7 +715,7 @@ pub async fn prepare_submit_turn(
     game_id: i64,
     payload: &SubmitTurnRequest,
 ) -> AppResult<(GameTurn, Job)> {
-    let _ = get_game(pool, game_id).await?;
+    let game = get_game(pool, game_id).await?;
     if let Some(active) = get_active_game_job(pool, game_id).await? {
         return Err(AppError::bad_request(format!(
             "Game already has an active job (id {})",
@@ -617,26 +738,15 @@ pub async fn prepare_submit_turn(
     .bind(&now)
     .fetch_one(pool)
     .await?;
-    let turn = turn_from_row(
-        pool,
-        TurnRow {
-            id: turn_id,
-            game_id,
-            sort_order,
-            player_action: payload.player_action.clone(),
-            phase: "pending".to_string(),
-            scene_beats: "[]".to_string(),
-            prose: String::new(),
-            state_changes: "[]".to_string(),
-            is_opening: 0,
-            created_at: now.clone(),
-            updated_at: now,
-        },
-    )
-    .await?;
+    let turn = get_turn(pool, game_id, turn_id).await?;
+    let job_type = if !game.rules_blocks.is_empty() {
+        JobType::GameTurnScenePlan
+    } else {
+        JobType::GameTurnCheck
+    };
     let job = enqueue_game_job(
         pool,
-        JobType::GameTurnCheck,
+        job_type,
         game_id,
         Some(turn_id),
         payload.guidance_notes.clone(),
@@ -652,13 +762,18 @@ pub async fn prepare_continue_turn(
     turn_id: i64,
 ) -> AppResult<Job> {
     let turn = get_turn(pool, game_id, turn_id).await?;
-    if !turn.phase.ends_with("_pause") && turn.phase != "rolled" && turn.phase != "checks" {
+    if !turn.phase.ends_with("_pause")
+        && turn.phase != "rolled"
+        && turn.phase != "checks"
+        && turn.phase != "plan"
+    {
         return Err(AppError::bad_request("Turn is not paused for step mode"));
     }
     if has_active_turn_job(pool, turn_id).await? {
         return Err(AppError::bad_request("Turn already has an active job"));
     }
     let job_type = match turn.phase.as_str() {
+        "plan_pause" | "plan" => JobType::GameTurnCheck,
         "checks_pause" | "checks" => JobType::GameTurnResolve,
         "rolled_pause" | "rolled" => JobType::GameTurnResolve,
         "resolved_pause" | "resolved" => JobType::GameTurnProse,
@@ -769,7 +884,7 @@ async fn prepare_retry_turn(
 
 pub async fn get_turn(pool: &SqlitePool, game_id: i64, turn_id: i64) -> AppResult<GameTurn> {
     let row = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, created_at, updated_at FROM game_turns WHERE id = ?1 AND game_id = ?2",
+        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, plan_json, created_at, updated_at FROM game_turns WHERE id = ?1 AND game_id = ?2",
     )
     .bind(turn_id)
     .bind(game_id)
@@ -833,6 +948,81 @@ pub async fn update_turn_state_changes(
     Ok(())
 }
 
+pub async fn update_turn_plan(pool: &SqlitePool, turn_id: i64, plan: &TurnPlan) -> AppResult<()> {
+    let json = serde_json::to_string(plan).unwrap_or_else(|_| "{}".to_string());
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE game_turns SET plan_json=?1, updated_at=?2 WHERE id=?3")
+        .bind(&json)
+        .bind(&now)
+        .bind(turn_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn insert_system_roll(
+    pool: &SqlitePool,
+    turn_id: i64,
+    roll: &GameTurnSystemRoll,
+) -> AppResult<i64> {
+    let rolls = serde_json::to_string(&roll.rolls).unwrap_or_else(|_| "[]".to_string());
+    let now = Utc::now().to_rfc3339();
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO game_turn_system_rolls (turn_id, label, dice_expr, rolls, outcome_key, outcome_summary, sort_order, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) RETURNING id",
+    )
+    .bind(turn_id)
+    .bind(&roll.label)
+    .bind(&roll.dice_expr)
+    .bind(&rolls)
+    .bind(&roll.outcome_key)
+    .bind(&roll.outcome_summary)
+    .bind(roll.sort_order)
+    .bind(&now)
+    .fetch_one(pool)
+    .await?;
+    Ok(id)
+}
+
+async fn list_system_rolls_for_turn(
+    pool: &SqlitePool,
+    turn_id: i64,
+) -> AppResult<Vec<GameTurnSystemRoll>> {
+    let rows = sqlx::query_as::<_, SystemRollRow>(
+        "SELECT id, turn_id, label, dice_expr, rolls, outcome_key, outcome_summary, sort_order, created_at FROM game_turn_system_rolls WHERE turn_id = ?1 ORDER BY sort_order ASC, id ASC",
+    )
+    .bind(turn_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(system_roll_from_row).collect()
+}
+
+fn system_roll_from_row(row: SystemRollRow) -> AppResult<GameTurnSystemRoll> {
+    let rolls: Vec<i64> = serde_json::from_str(&row.rolls).unwrap_or_default();
+    Ok(GameTurnSystemRoll {
+        id: row.id,
+        turn_id: row.turn_id,
+        label: row.label,
+        dice_expr: row.dice_expr,
+        rolls,
+        outcome_key: row.outcome_key,
+        outcome_summary: row.outcome_summary,
+        sort_order: row.sort_order,
+        created_at: parse_dt(&row.created_at)?,
+    })
+}
+
+fn json_string<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn optional_json_string<T: serde::Serialize>(value: &Option<T>) -> Option<String> {
+    value.as_ref().map(|v| json_string(v))
+}
+
+fn parse_json_vec<T: serde::de::DeserializeOwned>(json: &str) -> Vec<T> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
 pub async fn insert_turn_check(
     pool: &SqlitePool,
     turn_id: i64,
@@ -865,6 +1055,14 @@ pub async fn insert_turn_check(
     .fetch_one(pool)
     .await?;
     Ok(id)
+}
+
+pub async fn clear_system_rolls(pool: &SqlitePool, turn_id: i64) -> AppResult<()> {
+    sqlx::query("DELETE FROM game_turn_system_rolls WHERE turn_id = ?1")
+        .bind(turn_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn clear_turn_checks(pool: &SqlitePool, turn_id: i64) -> AppResult<()> {
@@ -950,6 +1148,11 @@ struct GameRow {
     model_checks: String,
     model_resolve: String,
     model_prose: String,
+    rules_blocks_json: String,
+    state_schema_json: String,
+    win_condition_json: Option<String>,
+    scenario_triggers_json: String,
+    trait_defs_json: String,
     created_at: String,
     updated_at: String,
 }
@@ -992,8 +1195,22 @@ struct TurnRow {
     prose: String,
     state_changes: String,
     is_opening: i64,
+    plan_json: Option<String>,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct SystemRollRow {
+    id: i64,
+    turn_id: i64,
+    label: String,
+    dice_expr: String,
+    rolls: String,
+    outcome_key: String,
+    outcome_summary: String,
+    sort_order: i64,
+    created_at: String,
 }
 
 #[derive(sqlx::FromRow)]

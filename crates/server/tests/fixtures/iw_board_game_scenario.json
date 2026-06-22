@@ -1,0 +1,337 @@
+{
+    "title": "Crystal Quest",
+    "description": "A cooperative board game scenario for testing Infinite Worlds import. Players explore a spiral board, draw event cards, and track game state until someone reaches the final space.",
+    "background": "You discovered an antique board game at a neighborhood market. The box is labeled Crystal Quest and promises a magical evening with friends.",
+    "instructions": "",
+    "authorStyle": "Clear, concise narration in first person with focus on game events and player choices.",
+    "firstInput": "The doorbell rings. My three invited friends <<character1>>, <<character2>> and <<character3>> arrive for game night.\n",
+    "objective": "Complete the board game by reaching space 80 while managing card effects and tracked game state.",
+    "charSelectText": "Choose which friends to invite and how they relate to you before the game begins.",
+    "descriptionRequest": "Describe the immediate result of each action briefly. Maintain causality and follow the game turn structure.",
+    "schemaVersion": 2.1,
+    "version": "4.2",
+    "mature": false,
+ 
+    "contentWarnings": [],
+    "skills": [
+        "Boldness",
+        "Curiosity",
+        "Persuasion",
+        "Experimentation",
+        "Adaptability"
+    ],
+    "possibleCharacters": [
+        {
+            "name": "Alex",
+            "description": "An adventurous explorer who enjoys strategy games.",
+            "portrait": "",
+            "skills": {
+                "Boldness": 3,
+                "Curiosity": 3,
+                "Persuasion": 3,
+                "Adaptability": 3,
+                "Experimentation": 3
+            },
+            "initialTrackedItemValues": [
+                {
+                    "id": "setup-char1",
+                    "visibility": "player_only",
+                    "name": "Character1",
+                    "initialPCValue": ["Morgan", "Jordan", "Riley", "Casey", "Quinn", "Avery", "Blake", "Drew"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-rel1",
+                    "visibility": "player_only",
+                    "name": "Relationship_Character1",
+                    "initialPCValue": ["is a good friend of mine", "is my sibling", "is a neighbor"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-char2",
+                    "visibility": "player_only",
+                    "name": "Character2",
+                    "initialPCValue": ["Jordan", "Riley", "Casey", "Quinn", "Avery", "Blake", "Drew", "Morgan"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-char3",
+                    "visibility": "player_only",
+                    "name": "Character3",
+                    "initialPCValue": ["Riley", "Casey", "Quinn", "Avery", "Blake", "Drew", "Morgan", "Jordan"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-rel23",
+                    "visibility": "player_only",
+                    "name": "Relationship_btwn_Character2_3",
+                    "initialPCValue": ["are good friends", "are siblings", "are coworkers"],
+                    "initialValueBasedOnPC": "character"
+                }
+            ]
+        },
+        {
+            "name": "Sam",
+            "description": "A thoughtful puzzle-solver who loves cooperative challenges.",
+            "portrait": "",
+            "skills": {
+                "Boldness": 3,
+                "Curiosity": 3,
+                "Persuasion": 3,
+                "Adaptability": 3,
+                "Experimentation": 3
+            },
+            "initialTrackedItemValues": [
+                {
+                    "id": "setup-char1",
+                    "visibility": "player_only",
+                    "name": "Character1",
+                    "initialPCValue": ["Casey", "Quinn", "Avery", "Blake", "Drew", "Morgan", "Jordan", "Riley"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-rel1",
+                    "visibility": "player_only",
+                    "name": "Relationship_Character1",
+                    "initialPCValue": ["is a good friend of mine", "is my sibling", "is a neighbor"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-char2",
+                    "visibility": "player_only",
+                    "name": "Character2",
+                    "initialPCValue": ["Quinn", "Avery", "Blake", "Drew", "Morgan", "Jordan", "Riley", "Casey"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-char3",
+                    "visibility": "player_only",
+                    "name": "Character3",
+                    "initialPCValue": ["Avery", "Blake", "Drew", "Morgan", "Jordan", "Riley", "Casey", "Quinn"],
+                    "initialValueBasedOnPC": "character"
+                },
+                {
+                    "id": "setup-rel23",
+                    "visibility": "player_only",
+                    "name": "Relationship_btwn_Character2_3",
+                    "initialPCValue": ["are good friends", "are siblings", "are coworkers"],
+                    "initialValueBasedOnPC": "character"
+                }
+            ]
+        }
+    ],
+    "loreBookEntries": [
+        {"name": "Morgan", "content": "Morgan: enthusiastic gamer, quick wit.", "keywords": ["Morgan"]},
+        {"name": "Jordan", "content": "Jordan: careful planner, loves riddles.", "keywords": ["Jordan"]},
+        {"name": "Riley", "content": "Riley: competitive but fair.", "keywords": ["Riley"]},
+        {"name": "Casey", "content": "Casey: storyteller, keeps the group laughing.", "keywords": ["Casey"]},
+        {"name": "Quinn", "content": "Quinn: observant, notices board details.", "keywords": ["Quinn"]},
+        {"name": "Avery", "content": "Avery: calm under pressure.", "keywords": ["Avery"]},
+        {"name": "Blake", "content": "Blake: creative problem solver.", "keywords": ["Blake"]},
+        {"name": "Drew", "content": "Drew: loyal friend, good sport.", "keywords": ["Drew"]}
+    ],
+    "trackedItems": [
+        {
+            "id": "deck-events",
+            "name": "Event_cards_drawn",
+            "dataType": "text",
+            "visibility": "everyone",
+            "description": "Next event cards in the deck.",
+            "updateInstructions": "Update when a card is played.",
+            "initialValue": "Card 1: Advance\nCard 2: Swap",
+            "initialValueBasedOnPC": "same"
+        },
+        {
+            "id": "deck-truth",
+            "name": "Truth_cards_drawn",
+            "dataType": "text",
+            "visibility": "everyone",
+            "description": "Next truth cards in the deck.",
+            "updateInstructions": "Update when a card is played.",
+            "initialValue": "Card 1: Reveal\nCard 2: Rule",
+            "initialValueBasedOnPC": "same"
+        },
+        {
+            "id": "leader-pos",
+            "name": "Game_Leader",
+            "dataType": "number",
+            "visibility": "ai_only_boring",
+            "description": "Leading game piece position.",
+            "updateInstructions": "Update after each move.",
+            "initialValue": "0",
+            "initialValueBasedOnPC": "same"
+        },
+        {
+            "id": "tension",
+            "name": "Highest_Tension",
+            "dataType": "number",
+            "visibility": "ai_only_boring",
+            "description": "Highest tension level among players.",
+            "updateInstructions": "Update when tension changes.",
+            "initialValue": "0",
+            "initialValueBasedOnPC": "same"
+        },
+        {
+            "id": "truth-spaces",
+            "name": "Truth_Spaces",
+            "dataType": "text",
+            "visibility": "ai_only_boring",
+            "description": "Board spaces that trigger truth cards.",
+            "updateInstructions": "Set once at game start.",
+            "initialValue": "8; 16; 24; 32",
+            "initialValueBasedOnPC": "same"
+        },
+        {
+            "id": "side-quest",
+            "name": "Side_quest_active",
+            "dataType": "text",
+            "visibility": "ai_only_boring",
+            "description": "Whether a side quest is active.",
+            "updateInstructions": "Update when side quests start or end.",
+            "initialValue": "No",
+            "initialValueBasedOnPC": "same"
+        },
+        {
+            "id": "setup-char1",
+            "name": "Character1",
+            "dataType": "text",
+            "visibility": "player_only",
+            "description": "",
+            "updateInstructions": "",
+            "initialValue": "Morgan",
+            "initialValueBasedOnPC": "character"
+        },
+        {
+            "id": "setup-rel1",
+            "name": "Relationship_Character1",
+            "dataType": "text",
+            "visibility": "player_only",
+            "description": "",
+            "updateInstructions": "",
+            "initialValue": "is a good friend of mine",
+            "initialValueBasedOnPC": "character"
+        },
+        {
+            "id": "setup-char2",
+            "name": "Character2",
+            "dataType": "text",
+            "visibility": "player_only",
+            "description": "",
+            "updateInstructions": "",
+            "initialValue": "",
+            "initialValueBasedOnPC": "character"
+        },
+        {
+            "id": "setup-char3",
+            "name": "Character3",
+            "dataType": "text",
+            "visibility": "player_only",
+            "description": "",
+            "updateInstructions": "",
+            "initialValue": "",
+            "initialValueBasedOnPC": "character"
+        },
+        {
+            "id": "setup-rel23",
+            "name": "Relationship_btwn_Character2_3",
+            "dataType": "text",
+            "visibility": "player_only",
+            "description": "",
+            "updateInstructions": "",
+            "initialValue": "",
+            "initialValueBasedOnPC": "character"
+        }
+    ],
+    "instructionBlocks": [
+        {
+            "name": "General Info",
+            "content": "A modern-day game night with friends playing the board game Crystal Quest."
+        },
+        {
+            "name": "Game Mechanics",
+            "content": "The board has 80 spaces. Players roll a six-sided die and move forward. Turn order is fixed at the start. The game ends when any player reaches space 80."
+        },
+        {
+            "name": "Cards and probabilities",
+            "content": "Event Cards:\nCard 1: Advance - Move forward 2 extra spaces.\nCard 2: Swap - Swap positions with another player.\n\nTruth Cards:\nCard 1: Reveal - Share a secret about your strategy.\nCard 2: Rule - Propose a house rule for the next round."
+        },
+        {
+            "name": "Gameplay",
+            "content": "Each turn: roll die, move, draw a card if on an event or truth space, apply effects, end turn."
+        }
+    ],
+    "triggerEvents": [
+        {
+            "name": "Tension exceeds threshold",
+            "canTriggerMoreThanOnce": true,
+            "triggerConditions": [
+                {
+                    "category": "logic",
+                    "operator": "and",
+                    "data": [
+                        {
+                            "type": "triggerOnTrackedItem",
+                            "category": "condition",
+                            "data": {
+                                "trackedItemID": "tension",
+                                "inequality": "at_least",
+                                "requiredValue": "90"
+                            }
+                        },
+                        {
+                            "type": "triggerOnTrackedItem",
+                            "category": "condition",
+                            "data": {
+                                "trackedItemID": "side-quest",
+                                "inequality": "is_exactly",
+                                "requiredValue": "No"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "triggerEffects": [
+                {
+                    "type": "effectTellAIWhatToDo",
+                    "data": "Pause the main game and resolve the tension event before continuing."
+                },
+                {
+                    "type": "effectGiveInfo",
+                    "data": "After the event resolves, reset tension below 25 and resume normal play."
+                }
+            ]
+        },
+        {
+            "name": "Change cards",
+            "canTriggerMoreThanOnce": false,
+            "triggerConditions": [
+                {
+                    "type": "triggerOnTrackedItem",
+                    "category": "condition",
+                    "data": {
+                        "trackedItemID": "leader-pos",
+                        "inequality": "at_least",
+                        "requiredValue": "30"
+                    }
+                }
+            ],
+            "triggerEffects": [
+                {
+                    "type": "effectModifyInstructionBlock",
+                    "data": {
+                        "name": "Cards and probabilities",
+                        "content": "Event Cards:\nCard 1: Boost - Gain an extra turn.\nCard 2: Redirect - Send another player back 3 spaces."
+                    }
+                },
+                {
+                    "type": "effectTellAIWhatToDo",
+                    "data": "The board glows and the card deck reshuffles with advanced rules."
+                }
+            ]
+        }
+    ],
+    "victoryCondition": {
+        "condition": "The player character's game piece reaches space 80.",
+        "text": "The final space glows as the game concludes. Everyone celebrates a memorable game night."
+    }
+}

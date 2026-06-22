@@ -266,6 +266,10 @@ pub fn build_resolve_messages(
         "Player action: {}\n\nResolved checks:\n{checks_text}\n\nCurrent state:\n{state_block}",
         turn.player_action
     );
+    let plan_block = format_plan_and_system_rolls(turn);
+    if !plan_block.is_empty() {
+        body.push_str(&format!("\n\n{plan_block}"));
+    }
     append_characters_section(&mut body, &detail.actors);
     if !context_block.is_empty() {
         body.push_str(&format!("\n\n{context_block}"));
@@ -537,6 +541,133 @@ fn truncate_context_from_start(text: &str, max_chars: usize) -> String {
     )
 }
 
+pub fn resolve_schema() -> serde_json::Value {
+    dreamwell_state::resolve_schema()
+}
+
+const PLAN_SYSTEM: &str = r#"You are a tabletop RPG GM planning assistant for a mechanical scenario with board/card rules.
+
+Given the player action and current state, produce a turn plan JSON:
+- Identify active player and board/card logic from the rules
+- List each system dice roll needed (board die, card die, lotteries) with label, dice_expr (e.g. "1d6"), and purpose
+- Summarize NPC decision logic in npc_decision_summary when relevant
+- Add 2-5 summary_beats describing what will happen mechanically this turn
+- Output ONLY valid JSON matching the schema"#;
+
+pub fn relevant_rules_blocks(game: &Game) -> Vec<&dreamwell_types::RulesBlock> {
+    const PRIORITY: &[&str] = &[
+        "Game Mechanics",
+        "Gameplay",
+        "Cards and probabilities",
+        "Size Rules",
+    ];
+    let mut blocks: Vec<_> = game
+        .rules_blocks
+        .iter()
+        .filter(|b| PRIORITY.contains(&b.name.as_str()))
+        .collect();
+    if blocks.is_empty() {
+        blocks = game.rules_blocks.iter().collect();
+    }
+    blocks
+}
+
+pub fn build_plan_messages(
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    guidance: &str,
+    settings: &Settings,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
+    let state_block = build_state_block(&detail.state, &detail.actors);
+    let rules_text = relevant_rules_blocks(game)
+        .iter()
+        .map(|b| format!("## {}\n{}", b.name, b.content))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut body = format!(
+        "Player action: {}\n\nCurrent state:\n{}\n\nScenario rules:\n{}",
+        turn.player_action, state_block, rules_text
+    );
+    append_characters_section(&mut body, &detail.actors);
+    if !guidance.trim().is_empty() {
+        body.push_str(&format!("\n\nGM guidance: {guidance}"));
+    }
+    let user = user_message_with_scenario(game, &body, &ctx);
+    vec![
+        json!({ "role": "system", "content": PLAN_SYSTEM }),
+        json!({ "role": "user", "content": user }),
+    ]
+}
+
+pub fn plan_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "round": { "type": ["integer", "null"] },
+            "active_player": { "type": ["string", "null"] },
+            "board_positions": {
+                "type": "object",
+                "additionalProperties": { "type": "integer" }
+            },
+            "card_drawn": { "type": ["string", "null"] },
+            "system_rolls_needed": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": { "type": "string" },
+                        "dice_expr": { "type": "string" },
+                        "purpose": { "type": "string" }
+                    },
+                    "required": ["label", "dice_expr", "purpose"]
+                }
+            },
+            "npc_decision_summary": { "type": ["string", "null"] },
+            "summary_beats": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["system_rolls_needed", "summary_beats"]
+    })
+}
+
+pub fn format_plan_and_system_rolls(turn: &GameTurn) -> String {
+    let mut parts = Vec::new();
+    if let Some(plan) = &turn.plan {
+        if !plan.summary_beats.is_empty() {
+            parts.push(format!("Turn plan:\n- {}", plan.summary_beats.join("\n- ")));
+        }
+        if let Some(summary) = &plan.npc_decision_summary {
+            if !summary.is_empty() {
+                parts.push(format!("NPC decisions: {summary}"));
+            }
+        }
+        if let Some(card) = &plan.card_drawn {
+            if !card.is_empty() {
+                parts.push(format!("Card drawn: {card}"));
+            }
+        }
+    }
+    if !turn.system_rolls.is_empty() {
+        let rolls = turn
+            .system_rolls
+            .iter()
+            .map(|r| {
+                format!(
+                    "- {} ({}): {:?} = {}",
+                    r.label,
+                    r.dice_expr,
+                    r.rolls,
+                    r.rolls.iter().sum::<i64>()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("System rolls (canonical):\n{rolls}"));
+    }
+    parts.join("\n\n")
+}
+
 pub fn declare_checks_schema() -> serde_json::Value {
     json!({
         "type": "object",
@@ -559,10 +690,6 @@ pub fn declare_checks_schema() -> serde_json::Value {
         },
         "required": ["checks"]
     })
-}
-
-pub fn resolve_schema() -> serde_json::Value {
-    dreamwell_state::resolve_schema()
 }
 
 #[cfg(test)]
@@ -590,6 +717,11 @@ mod tests {
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),
+            rules_blocks: vec![],
+            state_schema: vec![],
+            win_condition: None,
+            scenario_triggers: vec![],
+            trait_defs: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
             active_job: None,
@@ -608,6 +740,8 @@ mod tests {
             prose: "Steam curls from the kettle.".into(),
             state_changes: vec![],
             checks: vec![],
+            system_rolls: vec![],
+            plan: None,
             is_opening: true,
             generation_error: None,
             created_at: Utc::now(),
@@ -646,6 +780,8 @@ mod tests {
             prose: String::new(),
             state_changes: vec![],
             checks: vec![],
+            system_rolls: vec![],
+            plan: None,
             is_opening: false,
             generation_error: None,
             created_at: Utc::now(),
@@ -804,6 +940,7 @@ mod tests {
                 personality: "",
                 scenario: "",
                 first_message: "",
+                setup_vars: dreamwell_types::empty_setup_vars(),
             },
         );
         assert!(!tiers.recent_prose.contains("Steam curls"));

@@ -3,8 +3,10 @@ mod app_sync;
 mod auth;
 mod auto_grow;
 mod chat_sync;
+mod dice_ui;
 mod game_create_ui;
 mod game_presets_ui;
+mod game_setup_ui;
 mod game_sync;
 mod game_ui;
 mod generation_ui;
@@ -364,6 +366,7 @@ fn app() -> Html {
     let chats = use_state(Vec::<Chat>::new);
     let stories = use_state(Vec::<Story>::new);
     let games = use_state(Vec::<Game>::new);
+    let setup_scenario = use_state(|| None::<Scenario>);
     let archived_chats = use_state(Vec::<Chat>::new);
     let characters = use_state(Vec::<Character>::new);
     let messages = use_state(Vec::<Message>::new);
@@ -1057,7 +1060,12 @@ fn app() -> Html {
     let start_game = {
         let games = games.clone();
         let navigate = navigate.clone();
+        let setup_scenario = setup_scenario.clone();
         Callback::from(move |scenario: Scenario| {
+            if game_setup_ui::scenario_needs_setup(&scenario) {
+                setup_scenario.set(Some(scenario));
+                return;
+            }
             let title = default_game_title(&scenario.title, scenario.id, &games);
             let payload = game_create_from_scenario(&scenario, title);
             let games = games.clone();
@@ -1336,6 +1344,17 @@ fn app() -> Html {
                 <GameCreateModal
                     characters={(*characters).clone()}
                     on_close={close_overlay.clone()}
+                    on_create={create_game.clone()}
+                />
+            }
+            if let Some(scenario) = (*setup_scenario).clone() {
+                <game_setup_ui::GameSetupWizard
+                    scenario={scenario}
+                    games={(*games).clone()}
+                    on_close={Callback::from({
+                        let setup_scenario = setup_scenario.clone();
+                        move |_| setup_scenario.set(None)
+                    })}
                     on_create={create_game.clone()}
                 />
             }
@@ -3008,6 +3027,7 @@ fn message_list(props: &MessageListProps) -> Html {
                 personality: "",
                 scenario: "",
                 first_message: "",
+                setup_vars: dreamwell_types::empty_setup_vars(),
             }
         }
     });

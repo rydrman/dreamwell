@@ -1,5 +1,6 @@
 use dreamwell_types::{
-    DeclareChecksResponse, DeclaredCheck, GameTurnCheck, Job, JobType, Settings,
+    DeclareChecksResponse, DeclaredCheck, GameTurnCheck, GameTurnSystemRoll, Job, JobType,
+    Settings, TurnPlan,
 };
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
@@ -9,10 +10,10 @@ use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_prompts::{
-    build_declare_checks_messages, build_prose_messages, build_resolve_messages,
-    declare_checks_schema, resolve_schema,
+    build_declare_checks_messages, build_plan_messages, build_prose_messages,
+    build_resolve_messages, declare_checks_schema, plan_schema, resolve_schema,
 };
-use crate::game_resolution::{clamp_modifier, roll_dice};
+use crate::game_resolution::{clamp_modifier, roll_dice, roll_system_dice};
 use crate::game_state::{apply_state_changes, skill_modifier, validate_skill};
 use crate::game_summarize::maybe_enqueue_scene_summarize;
 use crate::inference::stream_chat_completion;
@@ -77,9 +78,8 @@ pub async fn run_game_job(
 ) -> AppResult<()> {
     match job.job_type {
         JobType::GameTurnCheck => run_turn_from_checks(pool, job_id, job, settings, &token).await,
-        JobType::GameTurnResolve | JobType::GameTurnScenePlan => {
-            run_turn_resolve(pool, job_id, job, settings, &token).await
-        }
+        JobType::GameTurnScenePlan => run_turn_plan(pool, job_id, job, settings, &token).await,
+        JobType::GameTurnResolve => run_turn_resolve(pool, job_id, job, settings, &token).await,
         JobType::GameTurnProse => run_turn_prose(pool, job_id, job, settings, &token).await,
         JobType::GameSceneSummarize => {
             crate::game_summarize::run_game_scene_summarize_job(
@@ -135,6 +135,27 @@ async fn run_turn_from_checks(
     settings: &Settings,
     token: &CancellationToken,
 ) -> AppResult<()> {
+    let game_id = job
+        .game_id
+        .ok_or_else(|| AppError::internal("game job missing game_id"))?;
+    let turn_id = job
+        .turn_id
+        .ok_or_else(|| AppError::internal("turn job missing turn_id"))?;
+    let detail = db::get_game_detail(pool, game_id).await?;
+    let turn = db::get_turn(pool, game_id, turn_id).await?;
+    if !detail.game.rules_blocks.is_empty() && turn.plan.is_none() {
+        return run_turn_plan(pool, job_id, job, settings, token).await;
+    }
+    run_turn_checks_phase(pool, job_id, job, settings, token, game_id, turn_id).await
+}
+
+async fn run_turn_plan(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &Job,
+    settings: &Settings,
+    token: &CancellationToken,
+) -> AppResult<()> {
     let inference = db::get_inference_config(pool).await?;
     let game_id = job
         .game_id
@@ -147,7 +168,72 @@ async fn run_turn_from_checks(
         return cancel_turn_job(pool, job).await;
     }
 
+    db::update_turn_phase(pool, turn_id, "plan").await?;
+    let detail = db::get_game_detail(pool, game_id).await?;
+    let turn = db::get_turn(pool, game_id, turn_id).await?;
+    let game = detail.game.clone();
+
+    let messages = build_plan_messages(&game, &detail, &turn, &job.guidance_notes, settings);
+    let plan_model = model_for_phase(&game, settings, GameModelPhase::Resolve);
+    let plan: TurnPlan = db::chat_completion_json_for_connection(
+        pool,
+        &inference,
+        &plan_model,
+        &messages,
+        0.3,
+        settings.top_p,
+        structured_output_tokens(settings),
+        Some(&plan_schema()),
+        max_retries(),
+        token,
+    )
+    .await?;
+
+    db::update_turn_plan(pool, turn_id, &plan).await?;
+    db::clear_system_rolls(pool, turn_id).await?;
+
+    for (i, request) in plan.system_rolls_needed.iter().enumerate() {
+        let roll = roll_system_dice(&request.dice_expr)
+            .unwrap_or_else(|| roll_system_dice("1d6").expect("default 1d6 roll"));
+        let summary = format!("Rolled {:?}", roll.rolls);
+        let system_roll = GameTurnSystemRoll {
+            id: 0,
+            turn_id,
+            label: request.label.clone(),
+            dice_expr: request.dice_expr.clone(),
+            rolls: roll.rolls,
+            outcome_key: request.purpose.clone(),
+            outcome_summary: summary,
+            sort_order: i as i64,
+            created_at: chrono::Utc::now(),
+        };
+        db::insert_system_roll(pool, turn_id, &system_roll).await?;
+    }
+
+    if game.step_mode {
+        db::update_turn_phase(pool, turn_id, "plan_pause").await?;
+        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+        db::touch_game(pool, game_id).await?;
+        return Ok(());
+    }
+
+    run_turn_checks_phase(pool, job_id, job, settings, token, game_id, turn_id).await
+}
+
+async fn run_turn_checks_phase(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &Job,
+    settings: &Settings,
+    token: &CancellationToken,
+    game_id: i64,
+    turn_id: i64,
+) -> AppResult<()> {
+    if token.is_cancelled() {
+        return cancel_turn_job(pool, job).await;
+    }
     db::update_turn_phase(pool, turn_id, "checks").await?;
+    let inference = db::get_inference_config(pool).await?;
     let detail = db::get_game_detail(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
@@ -391,7 +477,8 @@ fn validate_declared_check(
     pc: &dreamwell_types::GameActor,
     game: &dreamwell_types::Game,
 ) -> DeclaredCheck {
-    let validated_skill = validate_skill(&check.skill, pc);
+    let allowed_traits: Vec<String> = game.trait_defs.iter().map(|t| t.name.clone()).collect();
+    let validated_skill = validate_skill(&check.skill, pc, &allowed_traits);
     let sheet_mod = skill_modifier(&validated_skill, pc);
     let situational = clamp_modifier(check.modifier, game.modifier_min, game.modifier_max);
     let total_mod = situational + sheet_mod;
@@ -436,6 +523,11 @@ mod tests {
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),
+            rules_blocks: vec![],
+            state_schema: vec![],
+            win_condition: None,
+            scenario_triggers: vec![],
+            trait_defs: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
             active_job: None,

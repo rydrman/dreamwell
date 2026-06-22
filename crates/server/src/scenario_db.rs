@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 
 pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
     let rows = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -16,7 +16,7 @@ pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
 
 pub async fn get_scenario(pool: &SqlitePool, id: i64) -> AppResult<Scenario> {
     let row = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, created_at, updated_at FROM scenarios WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, created_at, updated_at FROM scenarios WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -27,10 +27,9 @@ pub async fn get_scenario(pool: &SqlitePool, id: i64) -> AppResult<Scenario> {
 
 pub async fn create_scenario(pool: &SqlitePool, payload: ScenarioCreate) -> AppResult<Scenario> {
     let now = Utc::now().to_rfc3339();
-    let traits_json = serde_json::to_string(&normalize_game_traits(payload.traits.clone()))
-        .unwrap_or_else(|_| "{}".to_string());
+    let jsons = scenario_json_fields(&payload)?;
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO scenarios (title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) RETURNING id",
+        "INSERT INTO scenarios (title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?21) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
@@ -39,8 +38,19 @@ pub async fn create_scenario(pool: &SqlitePool, payload: ScenarioCreate) -> AppR
     .bind(&payload.opening_message)
     .bind(&payload.pc_name)
     .bind(&payload.pc_description)
-    .bind(&traits_json)
+    .bind(&jsons.traits)
     .bind(payload.character_id)
+    .bind(&jsons.rules_blocks)
+    .bind(&payload.objective)
+    .bind(&payload.setup_text)
+    .bind(&jsons.trait_defs)
+    .bind(&jsons.cast)
+    .bind(&jsons.pc_options)
+    .bind(&jsons.state_schema)
+    .bind(&jsons.win_condition)
+    .bind(&jsons.content_flags)
+    .bind(&jsons.source_meta)
+    .bind(&jsons.scenario_triggers)
     .bind(&now)
     .fetch_one(pool)
     .await?;
@@ -66,12 +76,34 @@ pub async fn update_scenario(
             .map(normalize_game_traits)
             .unwrap_or(existing.traits),
         character_id: payload.character_id.unwrap_or(existing.character_id),
+        rules_blocks: payload.rules_blocks.unwrap_or(existing.rules_blocks),
+        objective: payload.objective.unwrap_or(existing.objective),
+        setup_text: payload.setup_text.unwrap_or(existing.setup_text),
+        trait_defs: payload.trait_defs.unwrap_or(existing.trait_defs),
+        cast: payload.cast.unwrap_or(existing.cast),
+        pc_options: payload.pc_options.unwrap_or(existing.pc_options),
+        state_schema: payload.state_schema.unwrap_or(existing.state_schema),
+        win_condition: payload.win_condition.unwrap_or(existing.win_condition),
+        content_flags: payload.content_flags.unwrap_or(existing.content_flags),
+        source_meta: payload.source_meta.unwrap_or(existing.source_meta),
+        scenario_triggers: payload
+            .scenario_triggers
+            .unwrap_or(existing.scenario_triggers),
         updated_at: Utc::now(),
         ..existing
     };
     let traits_json = serde_json::to_string(&updated.traits).unwrap_or_else(|_| "{}".to_string());
+    let rules_blocks = json_string(&updated.rules_blocks);
+    let trait_defs = json_string(&updated.trait_defs);
+    let cast = json_string(&updated.cast);
+    let pc_options = json_string(&updated.pc_options);
+    let state_schema = json_string(&updated.state_schema);
+    let win_condition = optional_json_string(&updated.win_condition);
+    let content_flags = json_string(&updated.content_flags);
+    let source_meta = optional_json_string(&updated.source_meta);
+    let scenario_triggers = json_string(&updated.scenario_triggers);
     sqlx::query(
-        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, pc_name=?6, pc_description=?7, traits=?8, character_id=?9, updated_at=?10 WHERE id=?11",
+        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, pc_name=?6, pc_description=?7, traits=?8, character_id=?9, rules_blocks=?10, objective=?11, setup_text=?12, trait_defs=?13, cast_json=?14, pc_options_json=?15, state_schema_json=?16, win_condition_json=?17, content_flags_json=?18, source_meta_json=?19, scenario_triggers_json=?20, updated_at=?21 WHERE id=?22",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
@@ -82,6 +114,17 @@ pub async fn update_scenario(
     .bind(&updated.pc_description)
     .bind(&traits_json)
     .bind(updated.character_id)
+    .bind(&rules_blocks)
+    .bind(&updated.objective)
+    .bind(&updated.setup_text)
+    .bind(&trait_defs)
+    .bind(&cast)
+    .bind(&pc_options)
+    .bind(&state_schema)
+    .bind(&win_condition)
+    .bind(&content_flags)
+    .bind(&source_meta)
+    .bind(&scenario_triggers)
     .bind(updated.updated_at.to_rfc3339())
     .bind(id)
     .execute(pool)
@@ -100,6 +143,43 @@ pub async fn delete_scenario(pool: &SqlitePool, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+struct ScenarioJsonFields {
+    traits: String,
+    rules_blocks: String,
+    trait_defs: String,
+    cast: String,
+    pc_options: String,
+    state_schema: String,
+    win_condition: Option<String>,
+    content_flags: String,
+    source_meta: Option<String>,
+    scenario_triggers: String,
+}
+
+fn scenario_json_fields(payload: &ScenarioCreate) -> AppResult<ScenarioJsonFields> {
+    Ok(ScenarioJsonFields {
+        traits: serde_json::to_string(&normalize_game_traits(payload.traits.clone()))
+            .unwrap_or_else(|_| "{}".to_string()),
+        rules_blocks: json_string(&payload.rules_blocks),
+        trait_defs: json_string(&payload.trait_defs),
+        cast: json_string(&payload.cast),
+        pc_options: json_string(&payload.pc_options),
+        state_schema: json_string(&payload.state_schema),
+        win_condition: optional_json_string(&payload.win_condition),
+        content_flags: json_string(&payload.content_flags),
+        source_meta: optional_json_string(&payload.source_meta),
+        scenario_triggers: json_string(&payload.scenario_triggers),
+    })
+}
+
+fn json_string<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn optional_json_string<T: serde::Serialize>(value: &Option<T>) -> Option<String> {
+    value.as_ref().map(|v| json_string(v))
+}
+
 fn scenario_from_row(row: ScenarioRow) -> AppResult<Scenario> {
     let traits = serde_json::from_str(&row.traits).unwrap_or_default();
     Ok(Scenario {
@@ -113,9 +193,34 @@ fn scenario_from_row(row: ScenarioRow) -> AppResult<Scenario> {
         pc_description: row.pc_description,
         traits: normalize_game_traits(traits),
         character_id: row.character_id,
+        rules_blocks: parse_json(&row.rules_blocks),
+        objective: row.objective,
+        setup_text: row.setup_text,
+        trait_defs: parse_json(&row.trait_defs),
+        cast: parse_json(&row.cast_json),
+        pc_options: parse_json(&row.pc_options_json),
+        state_schema: parse_json(&row.state_schema_json),
+        win_condition: row
+            .win_condition_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        content_flags: parse_json_or_default(&row.content_flags_json),
+        source_meta: row
+            .source_meta_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
+        scenario_triggers: parse_json(&row.scenario_triggers_json),
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
     })
+}
+
+fn parse_json<T: serde::de::DeserializeOwned + Default>(json: &str) -> T {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+fn parse_json_or_default<T: serde::de::DeserializeOwned + Default>(json: &str) -> T {
+    serde_json::from_str(json).unwrap_or_default()
 }
 
 #[derive(sqlx::FromRow)]
@@ -130,6 +235,54 @@ struct ScenarioRow {
     pc_description: String,
     traits: String,
     character_id: Option<i64>,
+    rules_blocks: String,
+    objective: String,
+    setup_text: String,
+    trait_defs: String,
+    cast_json: String,
+    pc_options_json: String,
+    state_schema_json: String,
+    win_condition_json: Option<String>,
+    content_flags_json: String,
+    source_meta_json: Option<String>,
+    scenario_triggers_json: String,
     created_at: String,
     updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use dreamwell_types::{RulesBlock, ScenarioCreate};
+
+    use super::*;
+
+    async fn test_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
+
+    #[tokio::test]
+    async fn scenario_round_trips_iw_rules_blocks() {
+        let pool = test_pool().await;
+        let payload = ScenarioCreate {
+            title: "IW Test".into(),
+            rules_blocks: vec![RulesBlock {
+                name: "Game Mechanics".into(),
+                content: "Roll 1d6".into(),
+            }],
+            ..Default::default()
+        };
+        let created = create_scenario(&pool, payload).await.expect("create");
+        assert_eq!(created.rules_blocks.len(), 1);
+        assert_eq!(created.rules_blocks[0].name, "Game Mechanics");
+
+        let fetched = get_scenario(&pool, created.id).await.expect("get");
+        assert_eq!(fetched.rules_blocks, created.rules_blocks);
+    }
 }
