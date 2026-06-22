@@ -358,7 +358,6 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                             { for game_detail.turns.iter().map(|turn| {
                                 let turn_id = turn.id;
                                 let is_opening = turn.is_opening;
-                                let is_active = !is_opening && !matches!(turn.phase.as_str(), "done" | "failed");
                                 let step_paused = turn.phase.ends_with("_pause");
                                 let show_continue = step_paused;
                                 let show_regenerate = turn.phase == "done";
@@ -485,7 +484,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                             if turn.plan.as_ref().map(|p| !p.summary_beats.is_empty()).unwrap_or(false) {
                                                 <PhaseSection
                                                     label={"Plan".to_string()}
-                                                    expanded={Some(expanded_phases.contains(&(turn_id, "plan".to_string())) || is_active)}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "plan".to_string())))}
                                                     on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "plan".to_string())))}
                                                 >
                                                     <PlanBeatsList
@@ -499,7 +498,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                             if !turn.system_rolls.is_empty() {
                                                 <PhaseSection
                                                     label={"System rolls".to_string()}
-                                                    expanded={Some(expanded_phases.contains(&(turn_id, "system".to_string())) || is_active)}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "system".to_string())))}
                                                     on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "system".to_string())))}
                                                 >
                                                     { for turn.system_rolls.iter().map(|r| html! {
@@ -516,35 +515,31 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                             if !turn.checks.is_empty() {
                                                 <PhaseSection
                                                     label={"Checks".to_string()}
-                                                    expanded={Some(expanded_phases.contains(&(turn_id, "checks".to_string())) || is_active)}
+                                                    expanded={Some(
+                                                        expanded_phases.contains(&(turn_id, "checks".to_string()))
+                                                            || expanded_phases.contains(&(turn_id, "roll".to_string())),
+                                                    )}
                                                     on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "checks".to_string())))}
                                                 >
                                                     { for turn.checks.iter().map(|c| html! {
                                                         <div class="check-item">
-                                                            <div class="check-label">{ &c.label }</div>
+                                                            <div class="check-item-header">
+                                                                <div class="check-label">{ &c.label }</div>
+                                                                if !c.rolls.is_empty() {
+                                                                    <DiceRollDisplay
+                                                                        rolls={c.rolls.clone()}
+                                                                        dice_expr={Some(c.dice_expr.clone())}
+                                                                        modifier={Some(c.modifier)}
+                                                                        total={Some(c.total)}
+                                                                        tier={c.tier}
+                                                                        class="check-roll"
+                                                                    />
+                                                                }
+                                                            </div>
                                                             <div class="muted">{ format!("{} {}", c.skill, crate::dice_ui::format_modifier(c.modifier)) }</div>
                                                             <div class="muted">{ &c.stakes }</div>
                                                             <div class="muted small">{ &c.justification }</div>
                                                         </div>
-                                                    }) }
-                                                </PhaseSection>
-                                            }
-
-                                            if turn.checks.iter().any(|c| !c.rolls.is_empty()) {
-                                                <PhaseSection
-                                                    label={"Roll".to_string()}
-                                                    expanded={Some(expanded_phases.contains(&(turn_id, "roll".to_string())) || is_active)}
-                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "roll".to_string())))}
-                                                >
-                                                    { for turn.checks.iter().filter(|c| !c.rolls.is_empty()).map(|c| html! {
-                                                        <DiceRollDisplay
-                                                            rolls={c.rolls.clone()}
-                                                            dice_expr={Some(c.dice_expr.clone())}
-                                                            modifier={Some(c.modifier)}
-                                                            total={Some(c.total)}
-                                                            tier={c.tier}
-                                                            class="roll-result"
-                                                        />
                                                     }) }
                                                 </PhaseSection>
                                             }

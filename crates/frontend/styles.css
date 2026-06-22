@@ -2727,6 +2727,22 @@ details.plan-beats-list {
   margin: 0.35rem 0;
 }
 
+.check-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.check-label {
+  font-weight: 600;
+}
+
+.check-roll {
+  margin: 0;
+}
+
 /* Shared state list pattern: flat rows with dividers; optional outer border in panels. */
 .state-list {
   list-style: none;
