@@ -68,6 +68,13 @@ Rules:
 - State changes should reflect scenario-appropriate consequences; avoid health/stress harm or new threats unless warranted
 - Output ONLY valid JSON matching the schema"#;
 
+const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
+- The player action is the PC's intent. Do not invent new choices, targets, preferences, dialogue, or strategic decisions for the PC.
+- Only resolve outcomes for the PC that follow directly from what the player action (or GM guidance) explicitly states.
+- When the PC must make a choice the player did not specify, stop at revealing what needs deciding — do not pick for them.
+- Partial or vague player actions authorize only what they explicitly request; do not extrapolate unstated follow-on choices for the PC.
+- NPC decisions are fair game: decide freely for NPCs per scenario rules; npc_decision_summary is for NPCs only, never the PC."#;
+
 const PROSE_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose rendering the scene beats.
 
 Rules:
@@ -79,7 +86,12 @@ Rules:
 - Do not inject peril, cliffhangers, or unexplained threats unless the scenario defines that genre or the beats require it
 - Honor resolved roll tiers — a fail must not read as unqualified success
 - Do not contradict established state, scenario parameters, or scene beats
+- NEVER narrate the PC making choices or taking actions beyond what the player action and scene beats specify
 - No JSON, no meta commentary — prose only"#;
+
+fn game_system_prompt(base: &str) -> String {
+    format!("{base}\n\n{PC_AGENCY_RULES}")
+}
 
 const SCENE_SUMMARIZE_SYSTEM: &str = r#"Compress game turn prose into a dense fact summary for downstream context.
 
@@ -216,7 +228,7 @@ pub fn build_declare_checks_messages(
     }
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
-        json!({ "role": "system", "content": DECLARE_CHECKS_SYSTEM }),
+        json!({ "role": "system", "content": game_system_prompt(DECLARE_CHECKS_SYSTEM) }),
         json!({ "role": "user", "content": user }),
     ]
 }
@@ -281,7 +293,10 @@ pub fn build_resolve_messages(
     vec![
         json!({
             "role": "system",
-            "content": format!("{RESOLVE_SYSTEM}\n\n{GAME_SCENE_BEAT_RULES}\n\n{STATE_CHANGE_PROMPT}"),
+            "content": format!(
+                "{}\n\n{GAME_SCENE_BEAT_RULES}\n\n{STATE_CHANGE_PROMPT}",
+                game_system_prompt(RESOLVE_SYSTEM)
+            ),
         }),
         json!({ "role": "user", "content": user }),
     ]
@@ -328,7 +343,7 @@ pub fn build_prose_messages(
     );
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
-        json!({ "role": "system", "content": PROSE_SYSTEM }),
+        json!({ "role": "system", "content": game_system_prompt(PROSE_SYSTEM) }),
         json!({ "role": "user", "content": user }),
     ]
 }
@@ -545,13 +560,14 @@ pub fn resolve_schema() -> serde_json::Value {
     dreamwell_state::resolve_schema()
 }
 
-const PLAN_SYSTEM: &str = r#"You are a tabletop RPG GM planning assistant for a mechanical scenario with board/card rules.
+const PLAN_SYSTEM: &str = r#"You are a tabletop RPG GM planning assistant for a scenario with structured mechanical rules.
 
 Given the player action and current state, produce a turn plan JSON:
-- Identify active player and board/card logic from the rules
-- List each system dice roll needed (board die, card die, lotteries) with label, dice_expr (e.g. "1d6"), and purpose
-- Summarize NPC decision logic in npc_decision_summary when relevant
+- Identify who acts and which scenario mechanics apply from the rules
+- List each system dice roll needed by the rules with label, dice_expr (e.g. "1d6"), and purpose
+- Summarize NPC decision logic in npc_decision_summary when relevant (NPCs only — never the PC)
 - Add 2-5 summary_beats describing what will happen mechanically this turn
+- When the PC owes a decision the player did not specify, plan only through steps the player action authorized; omit rolls and beats that depend on an unstated PC choice; end summary_beats noting what remains undecided
 - Output ONLY valid JSON matching the schema"#;
 
 pub fn relevant_rules_blocks(game: &Game) -> Vec<&dreamwell_types::RulesBlock> {
@@ -596,7 +612,7 @@ pub fn build_plan_messages(
     }
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
-        json!({ "role": "system", "content": PLAN_SYSTEM }),
+        json!({ "role": "system", "content": game_system_prompt(PLAN_SYSTEM) }),
         json!({ "role": "user", "content": user }),
     ]
 }
@@ -724,6 +740,7 @@ mod tests {
             trait_defs: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            archived_at: None,
             active_job: None,
             queued_jobs: 0,
         }
@@ -1172,5 +1189,28 @@ mod tests {
         assert!(DECLARE_CHECKS_SYSTEM.contains("cozy, intimate"));
         assert!(DECLARE_CHECKS_SYSTEM.contains("social, emotional"));
         assert!(!DECLARE_CHECKS_SYSTEM.contains("Prefer no check for low-stakes"));
+    }
+
+    #[test]
+    fn turn_prompts_include_pc_agency_rules() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        for messages in [
+            build_plan_messages(&game, &detail, &turn, "", &settings),
+            build_declare_checks_messages(&game, &detail, &turn, "", &settings),
+            build_resolve_messages(&game, &detail, &turn, &[], "", &settings),
+            build_prose_messages(&game, &detail, &turn, &[], "", &settings),
+        ] {
+            let system = messages[0]["content"].as_str().unwrap();
+            assert!(
+                system.contains("PC agency"),
+                "expected PC agency rules in system prompt"
+            );
+            assert!(system.contains("Do not invent new choices"));
+            assert!(!system.contains("card draw"));
+            assert!(!system.contains("body part"));
+        }
     }
 }
