@@ -10,7 +10,14 @@ pub fn state_changes_schema() -> serde_json::Value {
                 "kind": { "type": "string", "enum": ["resource", "condition", "fact", "clock"] },
                 "key": { "type": "string" },
                 "op": { "type": "string", "enum": ["set", "add", "remove"] },
-                "value": { "type": "string" },
+                "value": {
+                    "oneOf": [
+                        { "type": "string" },
+                        { "type": "number" },
+                        { "type": "boolean" },
+                        { "type": "null" }
+                    ]
+                },
                 "delta": { "type": "integer" }
             },
             "required": ["target", "kind", "key", "op"]
