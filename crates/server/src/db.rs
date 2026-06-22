@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use dreamwell_types::{
     AppliedStateChange, Character, CharacterCreate, CharacterUpdate, Chat, ChatActor, ChatDetail,
-    ChatStateEntry, ChatStateEntryUpdate, ChatUpdate, ChatVariable, ChatVariableUpdate, Job,
-    JobStatus, JobType, Message, MessageRole, Settings, SettingsUpdate, StateKind,
+    ChatStateEntry, ChatStateEntryUpdate, ChatUpdate, ChatVariable, ChatVariableUpdate,
+    InferenceConnection, InferenceConnectionCreate, InferenceConnectionUpdate, Job, JobStatus,
+    JobType, Message, MessageRole, Settings, SettingsUpdate, StateKind,
     CHAT_ARCHIVE_RETENTION_DAYS, DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
 };
 use std::time::Duration;
@@ -18,6 +19,7 @@ pub use stories_db::*;
 
 use crate::config::MAX_CONCURRENT_JOBS;
 use crate::error::{AppError, AppResult};
+use crate::inference::InferenceConfig;
 
 pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
     let url = database_url.strip_prefix("sqlite:").unwrap_or(database_url);
@@ -1177,17 +1179,193 @@ pub async fn finalize_message_typed_generation(
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_adaptive, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages, context_tokens, auto_context_on_model_change FROM app_settings WHERE id = 1",
+        "SELECT inference_url, active_inference_connection_id, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_adaptive, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages, context_tokens, auto_context_on_model_change FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
-    Ok(row.into_settings())
+    let connections = list_inference_connections(pool).await?;
+    let mut settings = row.into_settings(connections.clone());
+    if let Some(active_id) = settings.active_connection_id {
+        if let Some(active) = connections.iter().find(|c| c.id == active_id) {
+            settings.inference_url = active.inference_url.clone();
+        }
+    }
+    Ok(settings)
+}
+
+pub async fn get_inference_config(pool: &SqlitePool) -> AppResult<InferenceConfig> {
+    let row = sqlx::query_as::<_, ActiveConnectionRow>(
+        "SELECT s.inference_url AS fallback_url, c.inference_url AS connection_url, c.api_key
+         FROM app_settings s
+         LEFT JOIN inference_connections c ON c.id = s.active_inference_connection_id
+         WHERE s.id = 1",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let base_url = row
+        .connection_url
+        .filter(|url| !url.is_empty())
+        .unwrap_or(row.fallback_url);
+    Ok(InferenceConfig::new(base_url, row.api_key))
+}
+
+pub async fn list_inference_connections(pool: &SqlitePool) -> AppResult<Vec<InferenceConnection>> {
+    let rows = sqlx::query_as::<_, InferenceConnectionRow>(
+        "SELECT id, name, inference_url, api_key FROM inference_connections ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(InferenceConnectionRow::into_connection)
+        .collect())
+}
+
+pub async fn create_inference_connection(
+    pool: &SqlitePool,
+    payload: InferenceConnectionCreate,
+) -> AppResult<InferenceConnection> {
+    let api_key = payload.api_key.unwrap_or_default();
+    let id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO inference_connections (name, inference_url, api_key) VALUES (?1, ?2, ?3) RETURNING id",
+    )
+    .bind(payload.name.trim())
+    .bind(payload.inference_url.trim())
+    .bind(api_key)
+    .fetch_one(pool)
+    .await?;
+    get_inference_connection(pool, id).await
+}
+
+pub async fn get_inference_connection(
+    pool: &SqlitePool,
+    id: i64,
+) -> AppResult<InferenceConnection> {
+    let row = sqlx::query_as::<_, InferenceConnectionRow>(
+        "SELECT id, name, inference_url, api_key FROM inference_connections WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
+    Ok(row.into_connection())
+}
+
+pub async fn update_inference_connection(
+    pool: &SqlitePool,
+    id: i64,
+    payload: InferenceConnectionUpdate,
+) -> AppResult<InferenceConnection> {
+    let current = sqlx::query_as::<_, InferenceConnectionRow>(
+        "SELECT id, name, inference_url, api_key FROM inference_connections WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
+
+    let name = payload.name.unwrap_or(current.name);
+    let inference_url = payload.inference_url.unwrap_or(current.inference_url);
+    let api_key = match payload.api_key {
+        Some(key) => key,
+        None => current.api_key,
+    };
+
+    sqlx::query(
+        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3 WHERE id = ?4",
+    )
+    .bind(name.trim())
+    .bind(inference_url.trim())
+    .bind(api_key)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    sync_active_connection_url(pool).await?;
+    get_inference_connection(pool, id).await
+}
+
+pub async fn delete_inference_connection(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM inference_connections")
+        .fetch_one(pool)
+        .await?;
+    if count <= 1 {
+        return Err(AppError::bad_request(
+            "Cannot delete the only inference connection",
+        ));
+    }
+
+    let active_id: Option<i64> =
+        sqlx::query_scalar("SELECT active_inference_connection_id FROM app_settings WHERE id = 1")
+            .fetch_one(pool)
+            .await?;
+
+    sqlx::query("DELETE FROM inference_connections WHERE id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    if active_id == Some(id) {
+        let replacement: i64 =
+            sqlx::query_scalar("SELECT id FROM inference_connections ORDER BY id LIMIT 1")
+                .fetch_one(pool)
+                .await?;
+        set_active_inference_connection(pool, replacement).await?;
+    }
+
+    Ok(())
+}
+
+async fn set_active_inference_connection(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let connection = get_inference_connection(pool, id).await?;
+    sqlx::query(
+        "UPDATE app_settings SET active_inference_connection_id = ?1, inference_url = ?2 WHERE id = 1",
+    )
+    .bind(id)
+    .bind(&connection.inference_url)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn sync_active_connection_url(pool: &SqlitePool) -> AppResult<()> {
+    let active_id: Option<i64> =
+        sqlx::query_scalar("SELECT active_inference_connection_id FROM app_settings WHERE id = 1")
+            .fetch_one(pool)
+            .await?;
+    if let Some(id) = active_id {
+        let connection = get_inference_connection(pool, id).await?;
+        sqlx::query("UPDATE app_settings SET inference_url = ?1 WHERE id = 1")
+            .bind(&connection.inference_url)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }
 
 pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppResult<Settings> {
     let mut current = get_settings(pool).await?;
     if let Some(v) = payload.inference_url {
-        current.inference_url = v;
+        current.inference_url = v.clone();
+        if let Some(active_id) = current.active_connection_id {
+            update_inference_connection(
+                pool,
+                active_id,
+                InferenceConnectionUpdate {
+                    inference_url: Some(v),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+    }
+    if let Some(v) = payload.active_connection_id {
+        set_active_inference_connection(pool, v).await?;
+        current.active_connection_id = Some(v);
+        if let Some(active) = current.connections.iter().find(|c| c.id == v) {
+            current.inference_url = active.inference_url.clone();
+        }
     }
     if let Some(v) = payload.model {
         current.model = v;
@@ -1783,6 +1961,7 @@ impl From<JobRow> for Job {
 #[derive(sqlx::FromRow)]
 struct SettingsRow {
     inference_url: String,
+    active_inference_connection_id: Option<i64>,
     model: String,
     temperature: f64,
     top_p: f64,
@@ -1803,9 +1982,11 @@ struct SettingsRow {
 }
 
 impl SettingsRow {
-    fn into_settings(self) -> Settings {
+    fn into_settings(self, connections: Vec<InferenceConnection>) -> Settings {
         Settings {
             inference_url: self.inference_url,
+            active_connection_id: self.active_inference_connection_id,
+            connections,
             model: self.model,
             temperature: self.temperature,
             top_p: self.top_p,
@@ -1826,6 +2007,32 @@ impl SettingsRow {
             max_concurrent_jobs: MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst),
         }
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct InferenceConnectionRow {
+    id: i64,
+    name: String,
+    inference_url: String,
+    api_key: String,
+}
+
+impl InferenceConnectionRow {
+    fn into_connection(self) -> InferenceConnection {
+        InferenceConnection {
+            id: self.id,
+            name: self.name,
+            inference_url: self.inference_url,
+            api_key_set: !self.api_key.is_empty(),
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ActiveConnectionRow {
+    fallback_url: String,
+    connection_url: Option<String>,
+    api_key: Option<String>,
 }
 
 #[cfg(test)]

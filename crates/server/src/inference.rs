@@ -11,6 +11,31 @@ use tokio_stream::StreamExt as TokioStreamExt;
 
 use crate::error::{AppError, AppResult};
 
+/// Resolved inference endpoint credentials for outbound API calls.
+#[derive(Debug, Clone)]
+pub struct InferenceConfig {
+    pub base_url: String,
+    api_key: Option<String>,
+}
+
+impl InferenceConfig {
+    pub fn new(base_url: String, api_key: Option<String>) -> Self {
+        let api_key = api_key.filter(|key| !key.is_empty());
+        Self { base_url, api_key }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn with_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(key) => builder.bearer_auth(key),
+            None => builder,
+        }
+    }
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(900);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -92,9 +117,9 @@ pub fn context_from_llama_props(data: &Value) -> Option<i64> {
         .filter(|n| *n > 0)
 }
 
-pub async fn list_models(base_url: &str) -> AppResult<Vec<ModelInfo>> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let response = http_client().get(&url).send().await?;
+pub async fn list_models(config: &InferenceConfig) -> AppResult<Vec<ModelInfo>> {
+    let url = format!("{}/models", config.url().trim_end_matches('/'));
+    let response = config.with_auth(http_client().get(&url)).send().await?;
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(AppError::inference(format!(
@@ -138,7 +163,7 @@ pub async fn list_models(base_url: &str) -> AppResult<Vec<ModelInfo>> {
     Ok(result)
 }
 
-pub async fn probe_model_capabilities(base_url: &str, model: &str) -> ModelCapabilities {
+pub async fn probe_model_capabilities(config: &InferenceConfig, model: &str) -> ModelCapabilities {
     if model.trim().is_empty() {
         return ModelCapabilities {
             model: model.to_string(),
@@ -147,7 +172,7 @@ pub async fn probe_model_capabilities(base_url: &str, model: &str) -> ModelCapab
         };
     }
 
-    if let Some((length, source)) = probe_ollama_show(base_url, model).await {
+    if let Some((length, source)) = probe_ollama_show(config, model).await {
         return ModelCapabilities {
             model: model.to_string(),
             context_length: Some(length),
@@ -155,7 +180,7 @@ pub async fn probe_model_capabilities(base_url: &str, model: &str) -> ModelCapab
         };
     }
 
-    if let Some((length, source)) = probe_llama_props(base_url, model).await {
+    if let Some((length, source)) = probe_llama_props(config, model).await {
         return ModelCapabilities {
             model: model.to_string(),
             context_length: Some(length),
@@ -170,11 +195,11 @@ pub async fn probe_model_capabilities(base_url: &str, model: &str) -> ModelCapab
     }
 }
 
-async fn probe_ollama_show(base_url: &str, model: &str) -> Option<(i64, String)> {
-    let root = inference_server_root(base_url);
+async fn probe_ollama_show(config: &InferenceConfig, model: &str) -> Option<(i64, String)> {
+    let root = inference_server_root(config.url());
     let url = format!("{root}/api/show");
-    let response = probe_client()
-        .post(&url)
+    let response = config
+        .with_auth(probe_client().post(&url))
         .json(&serde_json::json!({ "model": model }))
         .send()
         .await
@@ -186,10 +211,10 @@ async fn probe_ollama_show(base_url: &str, model: &str) -> Option<(i64, String)>
     context_from_ollama_model_info(&data["model_info"]).map(|n| (n, "ollama_show".to_string()))
 }
 
-async fn probe_llama_props(base_url: &str, model: &str) -> Option<(i64, String)> {
-    let root = inference_server_root(base_url);
-    let response = probe_client()
-        .get(format!("{root}/props"))
+async fn probe_llama_props(config: &InferenceConfig, model: &str) -> Option<(i64, String)> {
+    let root = inference_server_root(config.url());
+    let response = config
+        .with_auth(probe_client().get(format!("{root}/props")))
         .query(&[("model", model)])
         .send()
         .await
@@ -197,7 +222,11 @@ async fn probe_llama_props(base_url: &str, model: &str) -> Option<(i64, String)>
     if !response.status().is_success() {
         // Some backends expose /props without a model query when only one model is loaded.
         let fallback_url = format!("{root}/props");
-        let response = probe_client().get(&fallback_url).send().await.ok()?;
+        let response = config
+            .with_auth(probe_client().get(&fallback_url))
+            .send()
+            .await
+            .ok()?;
         if !response.status().is_success() {
             return None;
         }
@@ -209,14 +238,14 @@ async fn probe_llama_props(base_url: &str, model: &str) -> Option<(i64, String)>
 }
 
 pub async fn stream_chat_completion(
-    base_url: &str,
+    config: &InferenceConfig,
     model: &str,
     messages: &[serde_json::Value],
     temperature: f64,
     top_p: f64,
     max_tokens: i64,
 ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<String>> + Send>>> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let url = format!("{}/chat/completions", config.url().trim_end_matches('/'));
     let payload = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -225,7 +254,11 @@ pub async fn stream_chat_completion(
         "max_tokens": max_tokens,
         "stream": true,
     });
-    let response = streaming_client().post(url).json(&payload).send().await?;
+    let response = config
+        .with_auth(streaming_client().post(url))
+        .json(&payload)
+        .send()
+        .await?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -281,7 +314,7 @@ pub async fn stream_chat_completion(
 }
 
 pub async fn chat_completion(
-    base_url: &str,
+    config: &InferenceConfig,
     model: &str,
     messages: &[serde_json::Value],
     temperature: f64,
@@ -289,7 +322,7 @@ pub async fn chat_completion(
     max_tokens: i64,
 ) -> AppResult<String> {
     chat_completion_with_format(
-        base_url,
+        config,
         model,
         messages,
         temperature,
@@ -301,7 +334,7 @@ pub async fn chat_completion(
 }
 
 pub async fn chat_completion_with_format(
-    base_url: &str,
+    config: &InferenceConfig,
     model: &str,
     messages: &[serde_json::Value],
     temperature: f64,
@@ -309,7 +342,7 @@ pub async fn chat_completion_with_format(
     max_tokens: i64,
     response_format: Option<&Value>,
 ) -> AppResult<String> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let url = format!("{}/chat/completions", config.url().trim_end_matches('/'));
     let mut payload = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -321,7 +354,11 @@ pub async fn chat_completion_with_format(
     if let Some(format) = response_format {
         payload["response_format"] = format.clone();
     }
-    let response = http_client().post(url).json(&payload).send().await?;
+    let response = config
+        .with_auth(http_client().post(url))
+        .json(&payload)
+        .send()
+        .await?;
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(AppError::inference(body));
@@ -336,7 +373,7 @@ pub async fn chat_completion_with_format(
 /// Schema-validated JSON completion with repair retries on parse failure.
 #[allow(clippy::too_many_arguments)]
 pub async fn chat_completion_json<T>(
-    base_url: &str,
+    config: &InferenceConfig,
     model: &str,
     messages: &[serde_json::Value],
     temperature: f64,
@@ -370,7 +407,7 @@ where
         }
 
         let raw = chat_completion_with_format(
-            base_url,
+            config,
             model,
             &attempt_messages,
             temperature,

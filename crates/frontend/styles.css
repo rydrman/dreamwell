@@ -330,6 +330,19 @@ button {
   margin-bottom: 0.75rem;
 }
 
+.settings-connection-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+.settings-connection-row .field {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
 .settings-model-row .field {
   flex: 1;
   min-width: 0;

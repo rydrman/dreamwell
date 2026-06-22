@@ -660,6 +660,8 @@ mod tests {
     fn test_settings() -> Settings {
         Settings {
             inference_url: String::new(),
+            active_connection_id: None,
+            connections: Vec::new(),
             model: String::new(),
             temperature: 0.7,
             top_p: 1.0,

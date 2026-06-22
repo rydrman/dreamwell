@@ -100,6 +100,7 @@ pub async fn run_turn_state_recheck_job(
     guidance: &str,
     settings: &Settings,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let game = db::get_game(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     if turn.prose.trim().is_empty() {
@@ -119,7 +120,7 @@ pub async fn run_turn_state_recheck_job(
     let token = tokio_util::sync::CancellationToken::new();
 
     let response: StateRecheckResponse = chat_completion_json(
-        &settings.inference_url,
+        &inference,
         &model,
         &prompt,
         0.2,

@@ -87,6 +87,7 @@ pub async fn run_story_chapter_summarize_job(
     chapter_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let detail = db::get_story_detail(pool, story_id).await?;
     let chapter = detail
         .chapters
@@ -100,7 +101,7 @@ pub async fn run_story_chapter_summarize_job(
 
     for attempt in 1..=max_attempts {
         match chat_completion(
-            &settings.inference_url,
+            &inference,
             &settings.model,
             &messages,
             0.2,

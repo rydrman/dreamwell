@@ -322,11 +322,13 @@ pub(crate) fn process_summarize_output(raw: &str) -> Result<String, &'static str
 }
 
 async fn call_summarize_model_once(
+    pool: &SqlitePool,
     settings: &Settings,
     prompt: &[serde_json::Value],
 ) -> AppResult<String> {
+    let inference = db::get_inference_config(pool).await?;
     let raw = chat_completion(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         prompt,
         0.3,
@@ -338,6 +340,7 @@ async fn call_summarize_model_once(
 }
 
 async fn call_summarize_model(
+    pool: &SqlitePool,
     settings: &Settings,
     prompt: &[serde_json::Value],
 ) -> AppResult<String> {
@@ -345,7 +348,7 @@ async fn call_summarize_model(
     let mut last_error = "summarization failed".to_string();
 
     for attempt in 1..=max_attempts {
-        match call_summarize_model_once(settings, prompt).await {
+        match call_summarize_model_once(pool, settings, prompt).await {
             Ok(summary) => return Ok(summary),
             Err(err) => {
                 last_error = err.to_string();
@@ -645,10 +648,12 @@ pub async fn run_summarize_job(
     }
 
     let force = kind == SummarizeJobKind::Force;
-    let settings = settings.clone();
-    let progress = execute_summarize_loop(pool, chat_id, &settings, force, |prompt| {
-        let settings = settings.clone();
-        async move { call_summarize_model(&settings, &prompt).await }
+    let settings_for_loop = settings.clone();
+    let pool_for_loop = pool.clone();
+    let progress = execute_summarize_loop(pool, chat_id, settings, force, move |prompt| {
+        let settings = settings_for_loop.clone();
+        let pool = pool_for_loop.clone();
+        async move { call_summarize_model(&pool, &settings, &prompt).await }
     })
     .await?;
 
@@ -696,7 +701,7 @@ async fn run_regenerate_summary_job(
     let batch = select_newest_batch_for_budget(&candidates, &chat.summary, settings);
     let transcript = build_transcript(&batch);
     let prompt = build_regenerate_prompt(&chat.summary, &transcript);
-    let summary = call_summarize_model(settings, &prompt).await?;
+    let summary = call_summarize_model(pool, settings, &prompt).await?;
 
     db::update_chat_summary(pool, chat_id, &summary).await?;
     let count = marker_count.max(1);
@@ -779,6 +784,8 @@ mod tests {
     fn test_settings() -> Settings {
         Settings {
             inference_url: String::new(),
+            active_connection_id: None,
+            connections: Vec::new(),
             model: "m".into(),
             temperature: 0.8,
             top_p: 0.9,

@@ -46,6 +46,7 @@ pub async fn run_chat_state_recheck_job(
     message_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     if !settings.variables_enabled {
         return Err(AppError::bad_request("Chat state is disabled in settings"));
     }
@@ -56,7 +57,7 @@ pub async fn run_chat_state_recheck_job(
     let messages = build_recheck_prompt(&message.content, &state_block);
 
     let response: StateRecheckResponse = chat_completion_json(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         &messages,
         0.2,
@@ -95,6 +96,7 @@ pub async fn run_story_state_recheck_job(
     beat_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     if !settings.variables_enabled {
         return Err(AppError::bad_request("Story state is disabled in settings"));
     }
@@ -105,7 +107,7 @@ pub async fn run_story_state_recheck_job(
     let messages = build_recheck_prompt(&beat.content, &state_block);
 
     let response: StateRecheckResponse = chat_completion_json(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         &messages,
         0.2,

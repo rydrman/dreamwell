@@ -3748,6 +3748,7 @@ impl SettingsSaveContext {
 fn settings_to_update(current: &Settings) -> SettingsUpdate {
     SettingsUpdate {
         inference_url: Some(current.inference_url.clone()),
+        active_connection_id: current.active_connection_id,
         model: Some(current.model.clone()),
         temperature: Some(current.temperature),
         top_p: Some(current.top_p),
@@ -3815,20 +3816,189 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
     let prompt_budget = prompt_token_budget(s.context_tokens, s.max_tokens);
     let (autosave_phase, autosave_error) = settings_autosave_field_props(&phase);
 
+    let active_connection = s
+        .active_connection_id
+        .and_then(|id| s.connections.iter().find(|c| c.id == id).cloned());
+    let connection_name = active_connection
+        .as_ref()
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    let api_key_set = active_connection.as_ref().is_some_and(|c| c.api_key_set);
+
     html! {
         <div>
+            <div class="settings-group">
+                <strong>{"Inference connection"}</strong>
+                <p class="muted" style="margin:0.35rem 0 0.5rem;">
+                    {"Save multiple API endpoints (Ollama, Featherlight.ai, etc.) and switch between them. API keys are stored on the server and sent as Bearer tokens."}
+                </p>
+                <div class="settings-connection-row">
+                    <label class="field">
+                        <span class="muted">{"Active connection"}</span>
+                        <select onchange={{
+                            let save_ctx = save_ctx.clone();
+                            let models = models.clone();
+                            let model_error = model_error.clone();
+                            Callback::from(move |e: Event| {
+                                let input: HtmlInputElement = e.target_unchecked_into();
+                                let id: i64 = input.value().parse().unwrap_or(0);
+                                if id <= 0 {
+                                    return;
+                                }
+                                let save_ctx = save_ctx.clone();
+                                let models = models.clone();
+                                let model_error = model_error.clone();
+                                save_ctx.update_field(|current| {
+                                    current.active_connection_id = Some(id);
+                                    if let Some(conn) = current.connections.iter().find(|c| c.id == id) {
+                                        current.inference_url = conn.inference_url.clone();
+                                    }
+                                });
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    match api::list_models().await {
+                                        Ok(list) => {
+                                            model_error.set(None);
+                                            models.set(list);
+                                        }
+                                        Err(err) => model_error.set(Some(err)),
+                                    }
+                                });
+                            })
+                        }}>
+                            { for s.connections.iter().map(|c| html! {
+                                <option value={c.id.to_string()} selected={Some(c.id) == s.active_connection_id}>
+                                    { c.name.clone() }
+                                </option>
+                            }) }
+                        </select>
+                    </label>
+                    <button class="btn secondary" type="button" onclick={{
+                        let save_ctx = save_ctx.clone();
+                        Callback::from(move |_| {
+                            let save_ctx = save_ctx.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let next_index = (*save_ctx.draft)
+                                    .as_ref()
+                                    .map(|s| s.connections.len())
+                                    .unwrap_or(0)
+                                    + 1;
+                                let payload = InferenceConnectionCreate {
+                                    name: format!("Connection {next_index}"),
+                                    inference_url: "https://api.featherlight.ai/v1".into(),
+                                    api_key: None,
+                                };
+                                match api::create_inference_connection(&payload).await {
+                                    Ok(conn) => {
+                                        save_ctx.update_field(|current| {
+                                            current.connections.push(conn.clone());
+                                            current.active_connection_id = Some(conn.id);
+                                            current.inference_url = conn.inference_url;
+                                        });
+                                    }
+                                    Err(err) => save_ctx.phase.set(SettingsSavePhase::Failed(err)),
+                                }
+                            });
+                        })
+                    }}>{"Add"}</button>
+                    <button class="btn secondary" type="button" disabled={s.connections.len() <= 1} onclick={{
+                        let save_ctx = save_ctx.clone();
+                        let active_id = s.active_connection_id;
+                        Callback::from(move |_| {
+                            let Some(id) = active_id else { return };
+                            let save_ctx = save_ctx.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                match api::delete_inference_connection(id).await {
+                                    Ok(()) => {
+                                        if let Ok(settings) = api::get_settings().await {
+                                            save_ctx.mark_saved(settings);
+                                        }
+                                    }
+                                    Err(err) => save_ctx.phase.set(SettingsSavePhase::Failed(err)),
+                                }
+                            });
+                        })
+                    }}>{"Delete"}</button>
+                </div>
+                if let Some(active_id) = s.active_connection_id {
+                    <label class="field">
+                        <span class="muted">{"Connection name"}</span>
+                        <input value={connection_name} onchange={{
+                            let save_ctx = save_ctx.clone();
+                            Callback::from(move |e: Event| {
+                                let input: HtmlInputElement = e.target_unchecked_into();
+                                let name = input.value();
+                                let save_ctx = save_ctx.clone();
+                                save_ctx.update_field(|current| {
+                                    if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                                        conn.name = name.clone();
+                                    }
+                                });
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let payload = InferenceConnectionUpdate {
+                                        name: Some(name),
+                                        ..Default::default()
+                                    };
+                                    if let Err(err) = api::update_inference_connection(active_id, &payload).await {
+                                        save_ctx.phase.set(SettingsSavePhase::Failed(err));
+                                    }
+                                });
+                            })
+                        }} />
+                    </label>
+                }
+            </div>
             <label class="field">
-                <span class="muted">{"Inference server"}</span>
+                <span class="muted">{"API base URL"}</span>
                 <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
-                    <input value={s.inference_url.clone()} oninput={{
+                    <input value={s.inference_url.clone()} placeholder="https://api.featherlight.ai/v1" oninput={{
                         let save_ctx = save_ctx.clone();
                         Callback::from(move |e: InputEvent| {
                             let input: HtmlInputElement = e.target_unchecked_into();
-                            save_ctx.update_field(|current| current.inference_url = input.value());
+                            let url = input.value();
+                            save_ctx.update_field(|current| {
+                                current.inference_url = url.clone();
+                                if let Some(active_id) = current.active_connection_id {
+                                    if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                                        conn.inference_url = url;
+                                    }
+                                }
+                            });
                         })
                     }} />
                 </AutoSaveField>
             </label>
+            if let Some(active_id) = s.active_connection_id {
+                <label class="field">
+                    <span class="muted">{"API key"}</span>
+                    <input type="password" autocomplete="off" placeholder={if api_key_set { "Leave blank to keep current key" } else { "sk-..." }} onchange={{
+                        let save_ctx = save_ctx.clone();
+                        Callback::from(move |e: Event| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            let key = input.value();
+                            if key.is_empty() {
+                                return;
+                            }
+                            let save_ctx = save_ctx.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let payload = InferenceConnectionUpdate {
+                                    api_key: Some(key),
+                                    ..Default::default()
+                                };
+                                match api::update_inference_connection(active_id, &payload).await {
+                                    Ok(conn) => {
+                                        save_ctx.update_field(|current| {
+                                            if let Some(existing) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                                                *existing = conn;
+                                            }
+                                        });
+                                    }
+                                    Err(err) => save_ctx.phase.set(SettingsSavePhase::Failed(err)),
+                                }
+                            });
+                        })
+                    }} />
+                </label>
+            }
             <div class="settings-model-row">
                 <label class="field">
                     <span class="muted">{"Model"}</span>
