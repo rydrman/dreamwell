@@ -781,6 +781,7 @@ async fn run_chat_typed_generation_attempt(
     _messages: &[serde_json::Value],
     token: &CancellationToken,
 ) -> AppResult<ChatGenerationOutcome> {
+    let inference = db::get_inference_config(pool).await?;
     let chat = db::get_chat(pool, chat_id).await?;
     let character = db::get_character(pool, chat.character_id).await.ok();
 
@@ -789,7 +790,7 @@ async fn run_chat_typed_generation_attempt(
         build_plan_messages(pool, chat_id, &chat.summary, chat.character_id, settings).await?;
 
     let plan: dreamwell_types::PlanPhaseResponse = match chat_completion_json(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         &plan_messages,
         0.4,
@@ -836,7 +837,7 @@ async fn run_chat_typed_generation_attempt(
     .await?;
 
     let mut stream = match stream_chat_completion(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         &prose_messages,
         settings.temperature,
@@ -916,8 +917,9 @@ async fn run_chat_legacy_generation_attempt(
     messages: &[serde_json::Value],
     token: &CancellationToken,
 ) -> AppResult<ChatGenerationOutcome> {
+    let inference = db::get_inference_config(pool).await?;
     let mut stream = match stream_chat_completion(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         messages,
         settings.temperature,
@@ -1059,6 +1061,7 @@ async fn run_story_propose_chapters(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1092,7 +1095,7 @@ async fn run_story_propose_chapters(
                 return cancel_job_record(pool, job).await;
             }
             result = chat_completion(
-                &settings.inference_url,
+                &inference,
                 &settings.model,
                 &messages,
                 0.7,
@@ -1131,6 +1134,7 @@ async fn run_story_propose_beats(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1177,7 +1181,7 @@ async fn run_story_propose_beats(
                 return cancel_job_record(pool, job).await;
             }
             result = chat_completion(
-                &settings.inference_url,
+                &inference,
                 &settings.model,
                 &messages,
                 0.7,
@@ -1216,6 +1220,7 @@ async fn run_story_chapter_outline(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1262,7 +1267,7 @@ async fn run_story_chapter_outline(
                 return cancel_job_record(pool, job).await;
             }
             result = chat_completion(
-                &settings.inference_url,
+                &inference,
                 &settings.model,
                 &messages,
                 0.7,
@@ -1302,6 +1307,7 @@ async fn run_story_beat_outline(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1357,7 +1363,7 @@ async fn run_story_beat_outline(
                 return cancel_job_record(pool, job).await;
             }
             result = chat_completion(
-                &settings.inference_url,
+                &inference,
                 &settings.model,
                 &messages,
                 0.7,
@@ -1397,6 +1403,7 @@ async fn run_story_typed_beat_prose(
     settings: &dreamwell_types::Settings,
     token: &CancellationToken,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("missing story_id"))?;
@@ -1430,7 +1437,7 @@ async fn run_story_typed_beat_prose(
     );
 
     let plan: dreamwell_types::PlanPhaseResponse = chat_completion_json(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         &plan_messages,
         0.4,
@@ -1471,7 +1478,7 @@ async fn run_story_typed_beat_prose(
     );
 
     let mut stream = stream_chat_completion(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         &prose_messages,
         settings.temperature,
@@ -1672,9 +1679,10 @@ async fn run_beat_prose_generation_attempt(
     existing_variable_updates: &[dreamwell_types::BeatVariableUpdate],
     token: &CancellationToken,
 ) -> AppResult<BeatProseOutcome> {
+    let inference = db::get_inference_config(pool).await?;
     let base = append_base.unwrap_or("");
     let mut stream = match stream_chat_completion(
-        &settings.inference_url,
+        &inference,
         &settings.model,
         messages,
         settings.temperature,

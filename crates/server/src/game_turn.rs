@@ -135,6 +135,7 @@ async fn run_turn_from_checks(
     settings: &Settings,
     token: &CancellationToken,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let game_id = job
         .game_id
         .ok_or_else(|| AppError::internal("game job missing game_id"))?;
@@ -155,7 +156,7 @@ async fn run_turn_from_checks(
         build_declare_checks_messages(&game, &detail, &turn, &job.guidance_notes, settings);
     let checks_model = model_for_phase(&game, settings, GameModelPhase::Checks);
     let declared: DeclareChecksResponse = chat_completion_json(
-        &settings.inference_url,
+        &inference,
         &checks_model,
         &messages,
         0.4,
@@ -232,6 +233,7 @@ async fn run_resolve_and_prose(
     game_id: i64,
     turn_id: i64,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     if token.is_cancelled() {
         return cancel_turn_job(pool, job).await;
     }
@@ -252,7 +254,7 @@ async fn run_resolve_and_prose(
     );
     let resolve_model = model_for_phase(&game, settings, GameModelPhase::Resolve);
     let resolved: dreamwell_types::ResolveTurnResponse = chat_completion_json(
-        &settings.inference_url,
+        &inference,
         &resolve_model,
         &messages,
         0.5,
@@ -310,6 +312,7 @@ async fn stream_turn_prose(
     game_id: i64,
     turn_id: i64,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     if token.is_cancelled() {
         return cancel_turn_job(pool, job).await;
     }
@@ -328,7 +331,7 @@ async fn stream_turn_prose(
 
     let prose_model = model_for_phase(&detail.game, settings, GameModelPhase::Prose);
     let mut stream = stream_chat_completion(
-        &settings.inference_url,
+        &inference,
         &prose_model,
         &messages,
         settings.temperature,

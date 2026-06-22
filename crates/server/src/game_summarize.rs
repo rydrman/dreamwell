@@ -28,6 +28,7 @@ pub async fn run_game_scene_summarize_job(
     game_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let detail = db::get_game_detail(pool, game_id).await?;
     let scene = detail
         .scenes
@@ -40,7 +41,7 @@ pub async fn run_game_scene_summarize_job(
 
     for attempt in 1..=max_attempts {
         match chat_completion(
-            &settings.inference_url,
+            &inference,
             &settings.model,
             &messages,
             0.3,

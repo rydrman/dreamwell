@@ -115,6 +115,7 @@ pub async fn run_beat_prose_recheck_job(
     guidance: &str,
     settings: &Settings,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let beat = db::get_beat(pool, story_id, chapter_id, beat_id).await?;
     let visible = strip_variables_for_display(&beat.content, false);
     if visible.trim().is_empty() || beat.mechanical.trim().is_empty() {
@@ -128,7 +129,7 @@ pub async fn run_beat_prose_recheck_job(
 
     for attempt in 1..=max_attempts {
         match chat_completion(
-            &settings.inference_url,
+            &inference,
             &settings.model,
             &prompt,
             0.2,
