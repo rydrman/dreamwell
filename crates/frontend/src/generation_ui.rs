@@ -3,6 +3,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{HtmlDocument, HtmlTextAreaElement};
 use yew::prelude::*;
 
+use crate::chat_sync::messages_stale_vs_chat;
 use crate::summary_ui::{chat_summarize_in_progress, SummaryKind};
 
 const GENERATION_FAILED_PREFIX: &str = "[Generation failed: ";
@@ -176,17 +177,8 @@ pub fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<GenerationNo
             SummaryKind::ChatHistory,
         )));
     }
-    if messages
-        .iter()
-        .any(|message| message.job_status == Some(JobStatus::Running))
-    {
-        return Some(GenerationNotice::Running(GenerationPhase::Writing));
-    }
-    if messages
-        .iter()
-        .any(|message| message.job_status == Some(JobStatus::Queued))
-    {
-        return Some(GenerationNotice::Queued);
+    if messages_stale_vs_chat(messages, chat) {
+        return None;
     }
     let job = chat.active_job.as_ref()?;
     match job.status {
@@ -197,16 +189,12 @@ pub fn composer_notice(chat: &Chat, messages: &[Message]) -> Option<GenerationNo
 }
 
 pub fn story_notice(detail: &StoryDetail) -> Option<GenerationNotice> {
-    for chapter in &detail.chapters {
-        for beat in &chapter.beats {
-            match beat.job_status {
-                Some(JobStatus::Running) => {
-                    return Some(GenerationNotice::Running(GenerationPhase::Writing));
-                }
-                Some(JobStatus::Queued) => return Some(GenerationNotice::Queued),
-                _ => {}
-            }
-        }
+    let beats_show_active = detail
+        .chapters
+        .iter()
+        .any(|chapter| chapter.beats.iter().any(beat_has_generation_job));
+    if beats_show_active && detail.story.active_job.is_none() {
+        return None;
     }
 
     let job = detail.story.active_job.as_ref()?;
@@ -707,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn beat_job_running_takes_precedence_in_story_notice() {
+    fn story_notice_uses_story_active_job_when_beats_also_show_running() {
         let detail: StoryDetail = serde_json::from_value(serde_json::json!({
             "story": {
                 "id": 1,
@@ -755,6 +743,102 @@ mod tests {
         .expect("story detail");
         assert_eq!(
             story_notice(&detail),
+            Some(GenerationNotice::Running(GenerationPhase::ProposingOutline))
+        );
+    }
+
+    #[test]
+    fn story_notice_hides_when_beats_still_show_running_but_story_job_cleared() {
+        let detail: StoryDetail = serde_json::from_value(serde_json::json!({
+            "story": {
+                "id": 1,
+                "title": "Test",
+                "premise": "",
+                "tone": "",
+                "genre": "",
+                "pov": "",
+                "length_preset": "short",
+                "notes": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "queued_jobs": 0,
+                "active_job": null
+            },
+            "chapters": [{
+                "id": 10,
+                "story_id": 1,
+                "title": "Ch1",
+                "synopsis": "",
+                "sort_order": 0,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "beats": [{
+                    "id": 20,
+                    "chapter_id": 10,
+                    "title": "Beat",
+                    "synopsis": "",
+                    "content": "done",
+                    "sort_order": 0,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "job_status": "running"
+                }]
+            }]
+        }))
+        .expect("story detail");
+        assert_eq!(story_notice(&detail), None);
+    }
+
+    fn sample_chat(active_job: Option<Job>) -> Chat {
+        Chat {
+            id: 1,
+            title: "Test".into(),
+            character_id: 1,
+            character_name: "Char".into(),
+            summary: String::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            archived_at: None,
+            active_job,
+            queued_jobs: 0,
+        }
+    }
+
+    fn assistant_message(job_status: Option<JobStatus>) -> Message {
+        Message {
+            id: 1,
+            chat_id: 1,
+            role: MessageRole::Assistant,
+            content: "Hello".into(),
+            thought_content: String::new(),
+            thought_duration_ms: None,
+            thought_in_progress: false,
+            variable_updates: vec![],
+            reply_beats: vec![],
+            state_changes: vec![],
+            generation_phase: String::new(),
+            is_summary: false,
+            in_summary: false,
+            created_at: chrono::Utc::now(),
+            job_status,
+            generation_error: None,
+        }
+    }
+
+    #[test]
+    fn composer_notice_hides_when_messages_stale() {
+        let chat = sample_chat(None);
+        let messages = vec![assistant_message(Some(JobStatus::Running))];
+        assert_eq!(composer_notice(&chat, &messages), None);
+    }
+
+    #[test]
+    fn composer_notice_uses_chat_active_job() {
+        let job = sample_job(JobStatus::Running, JobType::ChatMessage);
+        let chat = sample_chat(Some(job));
+        let messages = vec![assistant_message(Some(JobStatus::Running))];
+        assert_eq!(
+            composer_notice(&chat, &messages),
             Some(GenerationNotice::Running(GenerationPhase::Writing))
         );
     }
