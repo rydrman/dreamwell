@@ -10,7 +10,9 @@ pub struct AppSidebarProps {
     pub chats: Vec<Chat>,
     pub archived_chats: Vec<Chat>,
     pub stories: Vec<Story>,
+    pub archived_stories: Vec<Story>,
     pub games: Vec<Game>,
+    pub archived_games: Vec<Game>,
     pub selected_chat_id: Option<i64>,
     pub selected_story_id: Option<i64>,
     pub selected_game_id: Option<i64>,
@@ -25,15 +27,24 @@ pub struct AppSidebarProps {
     pub on_open_characters: Callback<()>,
     pub on_open_scenarios: Callback<()>,
     pub on_new_game: Callback<()>,
-    pub on_delete_story: Callback<i64>,
+    pub on_archive_story: Callback<i64>,
+    pub on_restore_story: Callback<i64>,
+    pub on_permanent_delete_story: Callback<i64>,
     pub on_select_game: Callback<i64>,
-    pub on_delete_game: Callback<i64>,
+    pub on_archive_game: Callback<i64>,
+    pub on_restore_game: Callback<i64>,
+    pub on_permanent_delete_game: Callback<i64>,
 }
 
 #[function_component(AppSidebar)]
 pub fn app_sidebar(props: &AppSidebarProps) -> Html {
     let archive_open = use_state(|| false);
-    let archive_count = props.archived_chats.len();
+    let archive_count = match props.mode {
+        AppMode::Chats => props.archived_chats.len(),
+        AppMode::Stories => props.archived_stories.len(),
+        AppMode::Game => props.archived_games.len(),
+        _ => 0,
+    };
 
     html! {
         <aside class="sidebar">
@@ -113,7 +124,13 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                                             <span class={classes!("badge", status.variant_class())}>{ status.label }</span>
                                         }
                                     </div>
-                                    <button class="btn secondary btn-compact" onclick={props.on_delete_story.reform(move |_| id)}>{"✕"}</button>
+                                    <button
+                                        class="btn secondary btn-compact"
+                                        title="Archive story"
+                                        onclick={props.on_archive_story.reform(move |_| id)}
+                                    >
+                                        {"✕"}
+                                    </button>
                                 </div>
                             </div>
                         }
@@ -132,14 +149,20 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                                             <span class={classes!("badge", status.variant_class())}>{ status.label }</span>
                                         }
                                     </div>
-                                    <button class="btn secondary btn-compact" onclick={props.on_delete_game.reform(move |_| id)}>{"✕"}</button>
+                                    <button
+                                        class="btn secondary btn-compact"
+                                        title="Archive game"
+                                        onclick={props.on_archive_game.reform(move |_| id)}
+                                    >
+                                        {"✕"}
+                                    </button>
                                 </div>
                             </div>
                         }
                     }) }
                 }
             </div>
-            if props.mode == AppMode::Chats && archive_count > 0 {
+            if archive_count > 0 {
                 <div class="archive-panel">
                     <button class="archive-toggle" onclick={{
                         let archive_open = archive_open.clone();
@@ -150,25 +173,65 @@ pub fn app_sidebar(props: &AppSidebarProps) -> Html {
                     </button>
                     if *archive_open {
                         <div class="archive-list">
-                            { for props.archived_chats.iter().map(|chat| {
-                                let id = chat.id;
-                                let days_left = chat
-                                    .archived_at
-                                    .map(dreamwell_types::days_until_chat_archive_purge);
-                                html! {
-                                    <div key={id} class="chat-item archived">
-                                        <div class="archive-item-title">{ &chat.title }</div>
-                                        <div class="chat-character">{ &chat.character_name }</div>
-                                        if let Some(days) = days_left {
-                                            <div class="archive-meta muted">{ format!("{days} days left") }</div>
-                                        }
-                                        <div class="archive-actions">
-                                            <button class="btn secondary btn-compact" onclick={props.on_restore_chat.reform(move |_| id)}>{"Restore"}</button>
-                                            <button class="btn secondary btn-compact text-danger" onclick={props.on_permanent_delete_chat.reform(move |_| id)}>{"Delete"}</button>
+                            if props.mode == AppMode::Chats {
+                                { for props.archived_chats.iter().map(|chat| {
+                                    let id = chat.id;
+                                    let days_left = chat
+                                        .archived_at
+                                        .map(dreamwell_types::days_until_chat_archive_purge);
+                                    html! {
+                                        <div key={id} class="chat-item archived">
+                                            <div class="archive-item-title">{ &chat.title }</div>
+                                            <div class="chat-character">{ &chat.character_name }</div>
+                                            if let Some(days) = days_left {
+                                                <div class="archive-meta muted">{ format!("{days} days left") }</div>
+                                            }
+                                            <div class="archive-actions">
+                                                <button class="btn secondary btn-compact" onclick={props.on_restore_chat.reform(move |_| id)}>{"Restore"}</button>
+                                                <button class="btn secondary btn-compact text-danger" onclick={props.on_permanent_delete_chat.reform(move |_| id)}>{"Delete"}</button>
+                                            </div>
                                         </div>
-                                    </div>
-                                }
-                            }) }
+                                    }
+                                }) }
+                            } else if props.mode == AppMode::Stories {
+                                { for props.archived_stories.iter().map(|story| {
+                                    let id = story.id;
+                                    let days_left = story
+                                        .archived_at
+                                        .map(dreamwell_types::days_until_chat_archive_purge);
+                                    html! {
+                                        <div key={id} class="chat-item archived">
+                                            <div class="archive-item-title">{ &story.title }</div>
+                                            if let Some(days) = days_left {
+                                                <div class="archive-meta muted">{ format!("{days} days left") }</div>
+                                            }
+                                            <div class="archive-actions">
+                                                <button class="btn secondary btn-compact" onclick={props.on_restore_story.reform(move |_| id)}>{"Restore"}</button>
+                                                <button class="btn secondary btn-compact text-danger" onclick={props.on_permanent_delete_story.reform(move |_| id)}>{"Delete"}</button>
+                                            </div>
+                                        </div>
+                                    }
+                                }) }
+                            } else if props.mode == AppMode::Game {
+                                { for props.archived_games.iter().map(|game| {
+                                    let id = game.id;
+                                    let days_left = game
+                                        .archived_at
+                                        .map(dreamwell_types::days_until_chat_archive_purge);
+                                    html! {
+                                        <div key={id} class="chat-item archived">
+                                            <div class="archive-item-title">{ &game.title }</div>
+                                            if let Some(days) = days_left {
+                                                <div class="archive-meta muted">{ format!("{days} days left") }</div>
+                                            }
+                                            <div class="archive-actions">
+                                                <button class="btn secondary btn-compact" onclick={props.on_restore_game.reform(move |_| id)}>{"Restore"}</button>
+                                                <button class="btn secondary btn-compact text-danger" onclick={props.on_permanent_delete_game.reform(move |_| id)}>{"Delete"}</button>
+                                            </div>
+                                        </div>
+                                    }
+                                }) }
+                            }
                         </div>
                     }
                 </div>

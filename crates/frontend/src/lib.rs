@@ -329,6 +329,20 @@ fn publish_archived_chats(archived_chats: &UseStateHandle<Vec<Chat>>, next: Vec<
     }
 }
 
+fn publish_archived_stories(archived_stories: &UseStateHandle<Vec<Story>>, next: Vec<Story>) {
+    let next = sort_archived_stories(next);
+    if **archived_stories != next {
+        archived_stories.set(next);
+    }
+}
+
+fn publish_archived_games(archived_games: &UseStateHandle<Vec<Game>>, next: Vec<Game>) {
+    let next = sort_archived_games(next);
+    if **archived_games != next {
+        archived_games.set(next);
+    }
+}
+
 fn spawn_gated_messages_fetch(
     chat_id: i64,
     messages: &UseStateHandle<Vec<Message>>,
@@ -368,6 +382,8 @@ fn app() -> Html {
     let games = use_state(Vec::<Game>::new);
     let setup_scenario = use_state(|| None::<Scenario>);
     let archived_chats = use_state(Vec::<Chat>::new);
+    let archived_stories = use_state(Vec::<Story>::new);
+    let archived_games = use_state(Vec::<Game>::new);
     let characters = use_state(Vec::<Character>::new);
     let messages = use_state(Vec::<Message>::new);
     let messages_loading = use_state(|| false);
@@ -412,6 +428,8 @@ fn app() -> Html {
     {
         let chats = chats.clone();
         let archived_chats = archived_chats.clone();
+        let archived_stories = archived_stories.clone();
+        let archived_games = archived_games.clone();
         let characters = characters.clone();
         let settings = settings.clone();
         let stories = stories.clone();
@@ -488,8 +506,26 @@ fn app() -> Html {
                     }
                     Err(_) => {}
                 }
+                match api::list_archived_stories().await {
+                    Ok(list) => publish_archived_stories(&archived_stories, list),
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) => {}
+                }
                 match api::list_games().await {
                     Ok(list) => games.set(list),
+                    Err(ref err) if api::is_auth_expired(err) => {
+                        auth_expired.set(true);
+                        loading.set(false);
+                        return;
+                    }
+                    Err(_) => {}
+                }
+                match api::list_archived_games().await {
+                    Ok(list) => publish_archived_games(&archived_games, list),
                     Err(ref err) if api::is_auth_expired(err) => {
                         auth_expired.set(true);
                         loading.set(false);
@@ -1348,7 +1384,9 @@ fn app() -> Html {
                 chats={(*chats).clone()}
                 archived_chats={(*archived_chats).clone()}
                 stories={(*stories).clone()}
+                archived_stories={(*archived_stories).clone()}
                 games={(*games).clone()}
+                archived_games={(*archived_games).clone()}
                 selected_chat_id={selected_chat_id}
                 selected_story_id={story_id_from_route(&route)}
                 selected_game_id={game_id_from_route(&route)}
@@ -1498,16 +1536,18 @@ fn app() -> Html {
                     }
                 })}
                 on_open_characters={open_characters.clone()}
-                on_delete_story={Callback::from({
+                on_archive_story={Callback::from({
                     let stories = stories.clone();
+                    let archived_stories = archived_stories.clone();
                     let navigate = navigate.clone();
                     let route = route.clone();
                     move |id| {
                         let stories = stories.clone();
+                        let archived_stories = archived_stories.clone();
                         let navigate = navigate.clone();
                         let route = route.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::delete_story(id).await;
+                            let _ = api::archive_story(id).await;
                             if let Ok(list) = api::list_stories().await {
                                 if story_id_from_route(&route) == Some(id) {
                                     navigate.emit((
@@ -1521,6 +1561,53 @@ fn app() -> Html {
                                     ));
                                 }
                                 stories.set(list);
+                            }
+                            if let Ok(list) = api::list_archived_stories().await {
+                                publish_archived_stories(&archived_stories, list);
+                            }
+                        });
+                    }
+                })}
+                on_restore_story={Callback::from({
+                    let stories = stories.clone();
+                    let archived_stories = archived_stories.clone();
+                    let navigate = navigate.clone();
+                    move |id| {
+                        let stories = stories.clone();
+                        let archived_stories = archived_stories.clone();
+                        let navigate = navigate.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if api::restore_story(id).await.is_ok() {
+                                if let Ok(list) = api::list_stories().await {
+                                    stories.set(list);
+                                }
+                                if let Ok(list) = api::list_archived_stories().await {
+                                    publish_archived_stories(&archived_stories, list);
+                                }
+                                navigate.emit((
+                                    AppRoute::Stories {
+                                        story_id: Some(id),
+                                        nav: StoryNav::None,
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            }
+                        });
+                    }
+                })}
+                on_permanent_delete_story={Callback::from({
+                    let archived_stories = archived_stories.clone();
+                    move |id| {
+                        let archived_stories = archived_stories.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if !confirm_permanent_story_delete() {
+                                return;
+                            }
+                            let _ = api::permanently_delete_story(id).await;
+                            if let Ok(list) = api::list_archived_stories().await {
+                                publish_archived_stories(&archived_stories, list);
                             }
                         });
                     }
@@ -1551,16 +1638,18 @@ fn app() -> Html {
                         navigate.emit((next, true));
                     }
                 })}
-                on_delete_game={Callback::from({
+                on_archive_game={Callback::from({
                     let games = games.clone();
+                    let archived_games = archived_games.clone();
                     let navigate = navigate.clone();
                     let route = route.clone();
                     move |id| {
                         let games = games.clone();
+                        let archived_games = archived_games.clone();
                         let navigate = navigate.clone();
                         let route = route.clone();
                         wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::delete_game(id).await;
+                            let _ = api::archive_game(id).await;
                             if let Ok(list) = api::list_games().await {
                                 if game_id_from_route(&route) == Some(id) {
                                     navigate.emit((
@@ -1573,6 +1662,52 @@ fn app() -> Html {
                                     ));
                                 }
                                 games.set(list);
+                            }
+                            if let Ok(list) = api::list_archived_games().await {
+                                publish_archived_games(&archived_games, list);
+                            }
+                        });
+                    }
+                })}
+                on_restore_game={Callback::from({
+                    let games = games.clone();
+                    let archived_games = archived_games.clone();
+                    let navigate = navigate.clone();
+                    move |id| {
+                        let games = games.clone();
+                        let archived_games = archived_games.clone();
+                        let navigate = navigate.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if api::restore_game(id).await.is_ok() {
+                                if let Ok(list) = api::list_games().await {
+                                    games.set(list);
+                                }
+                                if let Ok(list) = api::list_archived_games().await {
+                                    publish_archived_games(&archived_games, list);
+                                }
+                                navigate.emit((
+                                    AppRoute::Games {
+                                        game_id: Some(id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            }
+                        });
+                    }
+                })}
+                on_permanent_delete_game={Callback::from({
+                    let archived_games = archived_games.clone();
+                    move |id| {
+                        let archived_games = archived_games.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if !confirm_permanent_game_delete() {
+                                return;
+                            }
+                            let _ = api::permanently_delete_game(id).await;
+                            if let Ok(list) = api::list_archived_games().await {
+                                publish_archived_games(&archived_games, list);
                             }
                         });
                     }
@@ -2287,10 +2422,46 @@ fn sort_archived_chats(mut chats: Vec<Chat>) -> Vec<Chat> {
     chats
 }
 
+fn sort_archived_stories(mut stories: Vec<Story>) -> Vec<Story> {
+    stories.sort_by(|a, b| {
+        b.archived_at
+            .cmp(&a.archived_at)
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    stories
+}
+
+fn sort_archived_games(mut games: Vec<Game>) -> Vec<Game> {
+    games.sort_by(|a, b| {
+        b.archived_at
+            .cmp(&a.archived_at)
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    games
+}
+
 fn confirm_permanent_chat_delete() -> bool {
     web_sys::window()
         .and_then(|w| {
             w.confirm_with_message("Permanently delete this archived chat? This cannot be undone.")
+                .ok()
+        })
+        .unwrap_or(false)
+}
+
+fn confirm_permanent_story_delete() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.confirm_with_message("Permanently delete this archived story? This cannot be undone.")
+                .ok()
+        })
+        .unwrap_or(false)
+}
+
+fn confirm_permanent_game_delete() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.confirm_with_message("Permanently delete this archived game? This cannot be undone.")
                 .ok()
         })
         .unwrap_or(false)

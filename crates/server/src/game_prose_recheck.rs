@@ -264,6 +264,7 @@ mod tests {
             trait_defs: vec![],
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            archived_at: None,
             active_job: None,
             queued_jobs: 0,
         };

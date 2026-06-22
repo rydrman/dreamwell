@@ -8,7 +8,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use dreamwell_types::{
@@ -26,10 +26,13 @@ use crate::variables::strip_variable_key_from_story_beats;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_stories).post(create_story))
+        .route("/archived", get(list_archived_stories))
         .route(
             "/:id",
-            get(get_story).patch(update_story).delete(delete_story),
+            get(get_story).patch(update_story).delete(archive_story),
         )
+        .route("/:id/restore", post(restore_story))
+        .route("/:id/permanent", delete(permanently_delete_story))
         .route("/:id/stream", get(stream_story))
         .route("/:id/generate-chapter", post(generate_chapter))
         .route("/:id/propose-chapters", post(propose_chapters))
@@ -103,6 +106,10 @@ async fn list_stories(State(state): State<AppState>) -> AppResult<Json<Vec<Story
     Ok(Json(db::list_stories(&state.pool).await?))
 }
 
+async fn list_archived_stories(State(state): State<AppState>) -> AppResult<Json<Vec<Story>>> {
+    Ok(Json(db::list_archived_stories(&state.pool).await?))
+}
+
 async fn create_story(
     State(state): State<AppState>,
     Json(payload): Json<StoryCreate>,
@@ -127,11 +134,30 @@ async fn update_story(
     Ok(Json(db::get_story_detail(&state.pool, id).await?))
 }
 
-async fn delete_story(
+async fn archive_story(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<OkResponse>> {
-    db::delete_story(&state.pool, id).await?;
+    let _ = db::get_story(&state.pool, id).await?;
+    for job in db::list_active_jobs_for_story(&state.pool, id).await? {
+        let _ = state.queue.cancel_job(&state.pool, job.id).await;
+    }
+    db::archive_story(&state.pool, id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn restore_story(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<Story>> {
+    Ok(Json(db::restore_story(&state.pool, id).await?))
+}
+
+async fn permanently_delete_story(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<OkResponse>> {
+    db::permanently_delete_story(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 

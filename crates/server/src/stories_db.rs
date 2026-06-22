@@ -9,11 +9,39 @@ use sqlx::SqlitePool;
 
 use crate::db::{get_job, get_settings, job_type_str, parse_dt, parse_job_status, JobRow};
 use crate::error::{AppError, AppResult};
+use dreamwell_types::CHAT_ARCHIVE_RETENTION_DAYS;
+
+const STORY_COLUMNS: &str = "id, title, premise, tone, genre, pov, length_preset, notes, tracked_details, created_at, updated_at, archived_at";
+
+pub async fn purge_expired_archived_stories(pool: &SqlitePool) -> AppResult<u64> {
+    let cutoff = (Utc::now() - chrono::Duration::days(CHAT_ARCHIVE_RETENTION_DAYS)).to_rfc3339();
+    let result =
+        sqlx::query("DELETE FROM stories WHERE archived_at IS NOT NULL AND archived_at < ?1")
+            .bind(&cutoff)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected())
+}
 
 pub async fn list_stories(pool: &SqlitePool) -> AppResult<Vec<Story>> {
-    let rows = sqlx::query_as::<_, StoryRow>(
-        "SELECT id, title, premise, tone, genre, pov, length_preset, notes, tracked_details, created_at, updated_at FROM stories ORDER BY updated_at DESC",
-    )
+    purge_expired_archived_stories(pool).await?;
+    let rows = sqlx::query_as::<_, StoryRow>(&format!(
+        "SELECT {STORY_COLUMNS} FROM stories WHERE archived_at IS NULL ORDER BY updated_at DESC"
+    ))
+    .fetch_all(pool)
+    .await?;
+    let mut stories = Vec::with_capacity(rows.len());
+    for row in rows {
+        stories.push(story_from_row(pool, row).await?);
+    }
+    Ok(stories)
+}
+
+pub async fn list_archived_stories(pool: &SqlitePool) -> AppResult<Vec<Story>> {
+    purge_expired_archived_stories(pool).await?;
+    let rows = sqlx::query_as::<_, StoryRow>(&format!(
+        "SELECT {STORY_COLUMNS} FROM stories WHERE archived_at IS NOT NULL ORDER BY archived_at DESC, title ASC"
+    ))
     .fetch_all(pool)
     .await?;
     let mut stories = Vec::with_capacity(rows.len());
@@ -24,14 +52,27 @@ pub async fn list_stories(pool: &SqlitePool) -> AppResult<Vec<Story>> {
 }
 
 pub async fn get_story(pool: &SqlitePool, id: i64) -> AppResult<Story> {
-    let row = sqlx::query_as::<_, StoryRow>(
-        "SELECT id, title, premise, tone, genre, pov, length_preset, notes, tracked_details, created_at, updated_at FROM stories WHERE id = ?1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Story not found"))?;
+    let row = fetch_story_row(pool, id, false)
+        .await?
+        .ok_or_else(|| AppError::not_found("Story not found"))?;
     story_from_row(pool, row).await
+}
+
+async fn fetch_story_row(
+    pool: &SqlitePool,
+    id: i64,
+    include_archived: bool,
+) -> AppResult<Option<StoryRow>> {
+    let sql = if include_archived {
+        format!("SELECT {STORY_COLUMNS} FROM stories WHERE id = ?1")
+    } else {
+        format!("SELECT {STORY_COLUMNS} FROM stories WHERE id = ?1 AND archived_at IS NULL")
+    };
+    sqlx::query_as::<_, StoryRow>(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
 }
 
 pub async fn get_story_detail(pool: &SqlitePool, id: i64) -> AppResult<StoryDetail> {
@@ -195,13 +236,21 @@ fn parse_string_array(raw: &str) -> Vec<String> {
 }
 
 async fn story_from_row(pool: &SqlitePool, row: StoryRow) -> AppResult<Story> {
-    let active_job = get_active_story_job(pool, row.id).await?;
-    let queued_jobs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM generation_jobs WHERE story_id = ?1 AND status = 'queued'",
-    )
-    .bind(row.id)
-    .fetch_one(pool)
-    .await?;
+    let active_job = if row.archived_at.is_none() {
+        get_active_story_job(pool, row.id).await?
+    } else {
+        None
+    };
+    let queued_jobs: i64 = if row.archived_at.is_none() {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM generation_jobs WHERE story_id = ?1 AND status = 'queued'",
+        )
+        .bind(row.id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        0
+    };
     Ok(Story {
         id: row.id,
         title: row.title,
@@ -214,6 +263,7 @@ async fn story_from_row(pool: &SqlitePool, row: StoryRow) -> AppResult<Story> {
         tracked_details: row.tracked_details,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
+        archived_at: row.archived_at.as_deref().map(parse_dt).transpose()?,
         active_job,
         queued_jobs,
     })
@@ -308,15 +358,57 @@ pub async fn update_story(pool: &SqlitePool, id: i64, payload: StoryUpdate) -> A
     get_story(pool, id).await
 }
 
-pub async fn delete_story(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM stories WHERE id = ?1")
+pub async fn archive_story(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let exists = fetch_story_row(pool, id, false).await?;
+    if exists.is_none() {
+        return Err(AppError::not_found("Story not found"));
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE stories SET archived_at = ?1 WHERE id = ?2 AND archived_at IS NULL")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn restore_story(pool: &SqlitePool, id: i64) -> AppResult<Story> {
+    let exists = fetch_story_row(pool, id, true).await?;
+    if exists
+        .as_ref()
+        .and_then(|row| row.archived_at.as_deref())
+        .is_none()
+    {
+        return Err(AppError::not_found("Archived story not found"));
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE stories SET archived_at = NULL, updated_at = ?1 WHERE id = ?2")
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    get_story(pool, id).await
+}
+
+pub async fn permanently_delete_story(pool: &SqlitePool, id: i64) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM stories WHERE id = ?1 AND archived_at IS NOT NULL")
         .bind(id)
         .execute(pool)
         .await?;
     if result.rows_affected() == 0 {
-        return Err(AppError::not_found("Story not found"));
+        return Err(AppError::not_found("Archived story not found"));
     }
     Ok(())
+}
+
+pub async fn list_active_jobs_for_story(pool: &SqlitePool, story_id: i64) -> AppResult<Vec<Job>> {
+    let rows = sqlx::query_as::<_, JobRow>(
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE story_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC",
+    )
+    .bind(story_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 pub async fn touch_story(pool: &SqlitePool, story_id: i64) -> AppResult<()> {
@@ -1328,6 +1420,7 @@ struct StoryRow {
     tracked_details: String,
     created_at: String,
     updated_at: String,
+    archived_at: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]

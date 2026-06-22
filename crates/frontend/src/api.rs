@@ -613,6 +613,10 @@ pub async fn list_stories() -> Result<Vec<Story>, String> {
     json(api_request("GET", "/api/stories")).await
 }
 
+pub async fn list_archived_stories() -> Result<Vec<Story>, String> {
+    json(api_request("GET", "/api/stories/archived")).await
+}
+
 pub async fn create_story(payload: &StoryCreate) -> Result<StoryDetail, String> {
     json_body("POST", "/api/stories", payload).await
 }
@@ -625,8 +629,25 @@ pub async fn update_story(id: i64, payload: &StoryUpdate) -> Result<StoryDetail,
     json_body("PATCH", &format!("/api/stories/{id}"), payload).await
 }
 
-pub async fn delete_story(id: i64) -> Result<(), String> {
+pub async fn archive_story(id: i64) -> Result<(), String> {
     send_empty(api_request("DELETE", &format!("/api/stories/{id}"))).await
+}
+
+pub async fn restore_story(id: i64) -> Result<Story, String> {
+    json_body(
+        "POST",
+        &format!("/api/stories/{id}/restore"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn permanently_delete_story(id: i64) -> Result<(), String> {
+    send_empty(api_request(
+        "DELETE",
+        &format!("/api/stories/{id}/permanent"),
+    ))
+    .await
 }
 
 pub async fn update_chapter(
@@ -863,6 +884,10 @@ pub async fn list_games() -> Result<Vec<Game>, String> {
     json(api_request("GET", "/api/games")).await
 }
 
+pub async fn list_archived_games() -> Result<Vec<Game>, String> {
+    json(api_request("GET", "/api/games/archived")).await
+}
+
 pub async fn import_game_draft(file: &web_sys::File) -> Result<ImportGameDraftResponse, String> {
     let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
     form.append_with_blob("file", file)
@@ -889,8 +914,21 @@ pub async fn update_game(id: i64, payload: &GameUpdate) -> Result<GameDetail, St
     json_body("PATCH", &format!("/api/games/{id}"), payload).await
 }
 
-pub async fn delete_game(id: i64) -> Result<(), String> {
+pub async fn archive_game(id: i64) -> Result<(), String> {
     send_empty(api_request("DELETE", &format!("/api/games/{id}"))).await
+}
+
+pub async fn restore_game(id: i64) -> Result<Game, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{id}/restore"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn permanently_delete_game(id: i64) -> Result<(), String> {
+    send_empty(api_request("DELETE", &format!("/api/games/{id}/permanent"))).await
 }
 
 pub async fn submit_turn(game_id: i64, payload: &SubmitTurnRequest) -> Result<GameDetail, String> {
