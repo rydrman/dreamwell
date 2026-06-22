@@ -13,7 +13,7 @@ use crate::chat_state::{apply_state_changes, build_state_block};
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::inference::{chat_completion, chat_completion_json, stream_chat_completion};
+use crate::inference::{chat_completion, stream_chat_completion};
 use crate::message_followups::{enqueue_chat_followups, ChatGenerationComplete};
 use crate::prompts::build_messages_for_inference;
 use crate::story_prompts::{
@@ -789,7 +789,8 @@ async fn run_chat_typed_generation_attempt(
     let plan_messages =
         build_plan_messages(pool, chat_id, &chat.summary, chat.character_id, settings).await?;
 
-    let plan: dreamwell_types::PlanPhaseResponse = match chat_completion_json(
+    let plan: dreamwell_types::PlanPhaseResponse = match db::chat_completion_json_for_connection(
+        pool,
         &inference,
         &settings.model,
         &plan_messages,
@@ -1436,7 +1437,8 @@ async fn run_story_typed_beat_prose(
         &job.guidance_notes,
     );
 
-    let plan: dreamwell_types::PlanPhaseResponse = chat_completion_json(
+    let plan: dreamwell_types::PlanPhaseResponse = db::chat_completion_json_for_connection(
+        pool,
         &inference,
         &settings.model,
         &plan_messages,

@@ -3835,6 +3835,10 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
         .map(|c| c.name.clone())
         .unwrap_or_default();
     let api_key_set = active_connection.as_ref().is_some_and(|c| c.api_key_set);
+    let json_format_strategy = active_connection
+        .as_ref()
+        .map(|c| c.json_format_strategy)
+        .unwrap_or(JsonFormatStrategy::Auto);
 
     html! {
         <div>
@@ -4008,6 +4012,52 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                             });
                         })
                     }} />
+                </label>
+                <label class="field">
+                    <span class="muted">{"Structured JSON format"}</span>
+                    <select onchange={{
+                        let save_ctx = save_ctx.clone();
+                        Callback::from(move |e: Event| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            let strategy = match input.value().as_str() {
+                                "response_json_schema" => JsonFormatStrategy::ResponseJsonSchema,
+                                "guided_json" => JsonFormatStrategy::GuidedJson,
+                                "json_object" => JsonFormatStrategy::JsonObject,
+                                _ => JsonFormatStrategy::Auto,
+                            };
+                            let save_ctx = save_ctx.clone();
+                            save_ctx.update_field(|current| {
+                                if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                                    conn.json_format_strategy = strategy;
+                                }
+                            });
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let payload = InferenceConnectionUpdate {
+                                    json_format_strategy: Some(strategy),
+                                    ..Default::default()
+                                };
+                                if let Err(err) = api::update_inference_connection(active_id, &payload).await {
+                                    save_ctx.phase.set(SettingsSavePhase::Failed(err));
+                                }
+                            });
+                        })
+                    }}>
+                        <option value="auto" selected={json_format_strategy == JsonFormatStrategy::Auto}>
+                            { JsonFormatStrategy::Auto.label() }
+                        </option>
+                        <option value="response_json_schema" selected={json_format_strategy == JsonFormatStrategy::ResponseJsonSchema}>
+                            { JsonFormatStrategy::ResponseJsonSchema.label() }
+                        </option>
+                        <option value="guided_json" selected={json_format_strategy == JsonFormatStrategy::GuidedJson}>
+                            { JsonFormatStrategy::GuidedJson.label() }
+                        </option>
+                        <option value="json_object" selected={json_format_strategy == JsonFormatStrategy::JsonObject}>
+                            { JsonFormatStrategy::JsonObject.label() }
+                        </option>
+                    </select>
+                    <p class="muted" style="margin:0.35rem 0 0;">
+                        {"Game and story structured phases need schema-constrained JSON. Auto tries formats once, then caches the winner for this connection."}
+                    </p>
                 </label>
             }
             <div class="settings-model-row">

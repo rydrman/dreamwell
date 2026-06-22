@@ -15,7 +15,7 @@ use crate::game_prompts::{
 use crate::game_resolution::{clamp_modifier, roll_dice};
 use crate::game_state::{apply_state_changes, skill_modifier, validate_skill};
 use crate::game_summarize::maybe_enqueue_scene_summarize;
-use crate::inference::{chat_completion_json, stream_chat_completion};
+use crate::inference::stream_chat_completion;
 
 #[derive(Debug, Clone, Copy)]
 pub enum GameModelPhase {
@@ -155,7 +155,8 @@ async fn run_turn_from_checks(
     let messages =
         build_declare_checks_messages(&game, &detail, &turn, &job.guidance_notes, settings);
     let checks_model = model_for_phase(&game, settings, GameModelPhase::Checks);
-    let declared: DeclareChecksResponse = chat_completion_json(
+    let declared: DeclareChecksResponse = db::chat_completion_json_for_connection(
+        pool,
         &inference,
         &checks_model,
         &messages,
@@ -253,7 +254,8 @@ async fn run_resolve_and_prose(
         settings,
     );
     let resolve_model = model_for_phase(&game, settings, GameModelPhase::Resolve);
-    let resolved: dreamwell_types::ResolveTurnResponse = chat_completion_json(
+    let resolved: dreamwell_types::ResolveTurnResponse = db::chat_completion_json_for_connection(
+        pool,
         &inference,
         &resolve_model,
         &messages,

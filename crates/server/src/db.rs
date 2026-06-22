@@ -3,7 +3,7 @@ use dreamwell_types::{
     AppliedStateChange, Character, CharacterCreate, CharacterUpdate, Chat, ChatActor, ChatDetail,
     ChatStateEntry, ChatStateEntryUpdate, ChatUpdate, ChatVariable, ChatVariableUpdate,
     InferenceConnection, InferenceConnectionCreate, InferenceConnectionUpdate, Job, JobStatus,
-    JobType, Message, MessageRole, Settings, SettingsUpdate, StateKind,
+    JobType, JsonFormatStrategy, Message, MessageRole, Settings, SettingsUpdate, StateKind,
     CHAT_ARCHIVE_RETENTION_DAYS, DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
 };
 use std::time::Duration;
@@ -19,7 +19,8 @@ pub use stories_db::*;
 
 use crate::config::MAX_CONCURRENT_JOBS;
 use crate::error::{AppError, AppResult};
-use crate::inference::InferenceConfig;
+use crate::inference::{chat_completion_json, InferenceConfig};
+use tokio_util::sync::CancellationToken;
 
 pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
     let url = database_url.strip_prefix("sqlite:").unwrap_or(database_url);
@@ -1195,7 +1196,7 @@ pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
 
 pub async fn get_inference_config(pool: &SqlitePool) -> AppResult<InferenceConfig> {
     let row = sqlx::query_as::<_, ActiveConnectionRow>(
-        "SELECT s.inference_url AS fallback_url, c.inference_url AS connection_url, c.api_key
+        "SELECT s.inference_url AS fallback_url, c.id AS connection_id, c.inference_url AS connection_url, c.api_key, COALESCE(c.json_format_strategy, 'auto') AS json_format_strategy
          FROM app_settings s
          LEFT JOIN inference_connections c ON c.id = s.active_inference_connection_id
          WHERE s.id = 1",
@@ -1207,12 +1208,90 @@ pub async fn get_inference_config(pool: &SqlitePool) -> AppResult<InferenceConfi
         .connection_url
         .filter(|url| !url.is_empty())
         .unwrap_or(row.fallback_url);
-    Ok(InferenceConfig::new(base_url, row.api_key))
+    Ok(InferenceConfig::with_connection(
+        base_url,
+        row.api_key,
+        row.connection_id,
+        parse_json_format_strategy(&row.json_format_strategy),
+    ))
+}
+
+/// Structured JSON completion using the active connection's format preference.
+#[allow(clippy::too_many_arguments)]
+pub async fn chat_completion_json_for_connection<T>(
+    pool: &SqlitePool,
+    config: &InferenceConfig,
+    model: &str,
+    messages: &[serde_json::Value],
+    temperature: f64,
+    top_p: f64,
+    max_tokens: i64,
+    response_format: Option<&serde_json::Value>,
+    max_attempts: u32,
+    token: &CancellationToken,
+) -> AppResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut learned = None;
+    let result = chat_completion_json(
+        config,
+        model,
+        messages,
+        temperature,
+        top_p,
+        max_tokens,
+        response_format,
+        max_attempts,
+        token,
+        &mut learned,
+    )
+    .await?;
+    if let (Some(connection_id), Some(strategy)) = (config.connection_id, learned) {
+        persist_learned_json_format_strategy(pool, connection_id, strategy).await?;
+    }
+    Ok(result)
+}
+
+pub async fn persist_learned_json_format_strategy(
+    pool: &SqlitePool,
+    connection_id: i64,
+    strategy: JsonFormatStrategy,
+) -> AppResult<()> {
+    if strategy == JsonFormatStrategy::Auto {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE inference_connections SET json_format_strategy = ?1 WHERE id = ?2 AND json_format_strategy = 'auto'",
+    )
+    .bind(json_format_strategy_to_db(strategy))
+    .bind(connection_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn json_format_strategy_to_db(strategy: JsonFormatStrategy) -> &'static str {
+    match strategy {
+        JsonFormatStrategy::Auto => "auto",
+        JsonFormatStrategy::ResponseJsonSchema => "response_json_schema",
+        JsonFormatStrategy::GuidedJson => "guided_json",
+        JsonFormatStrategy::JsonObject => "json_object",
+    }
+}
+
+fn parse_json_format_strategy(raw: &str) -> JsonFormatStrategy {
+    match raw {
+        "response_json_schema" => JsonFormatStrategy::ResponseJsonSchema,
+        "guided_json" => JsonFormatStrategy::GuidedJson,
+        "json_object" => JsonFormatStrategy::JsonObject,
+        _ => JsonFormatStrategy::Auto,
+    }
 }
 
 pub async fn list_inference_connections(pool: &SqlitePool) -> AppResult<Vec<InferenceConnection>> {
     let rows = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key FROM inference_connections ORDER BY id",
+        "SELECT id, name, inference_url, api_key, json_format_strategy FROM inference_connections ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -1243,7 +1322,7 @@ pub async fn get_inference_connection(
     id: i64,
 ) -> AppResult<InferenceConnection> {
     let row = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key FROM inference_connections WHERE id = ?1",
+        "SELECT id, name, inference_url, api_key, json_format_strategy FROM inference_connections WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1258,7 +1337,7 @@ pub async fn update_inference_connection(
     payload: InferenceConnectionUpdate,
 ) -> AppResult<InferenceConnection> {
     let current = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key FROM inference_connections WHERE id = ?1",
+        "SELECT id, name, inference_url, api_key, json_format_strategy FROM inference_connections WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1271,13 +1350,18 @@ pub async fn update_inference_connection(
         Some(key) => key,
         None => current.api_key,
     };
+    let json_format_strategy = payload
+        .json_format_strategy
+        .map(json_format_strategy_to_db)
+        .unwrap_or(current.json_format_strategy.as_str());
 
     sqlx::query(
-        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3 WHERE id = ?4",
+        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, json_format_strategy = ?4 WHERE id = ?5",
     )
     .bind(name.trim())
     .bind(inference_url.trim())
     .bind(api_key)
+    .bind(json_format_strategy)
     .bind(id)
     .execute(pool)
     .await?;
@@ -2015,6 +2099,7 @@ struct InferenceConnectionRow {
     name: String,
     inference_url: String,
     api_key: String,
+    json_format_strategy: String,
 }
 
 impl InferenceConnectionRow {
@@ -2024,6 +2109,7 @@ impl InferenceConnectionRow {
             name: self.name,
             inference_url: self.inference_url,
             api_key_set: !self.api_key.is_empty(),
+            json_format_strategy: parse_json_format_strategy(&self.json_format_strategy),
         }
     }
 }
@@ -2031,8 +2117,10 @@ impl InferenceConnectionRow {
 #[derive(sqlx::FromRow)]
 struct ActiveConnectionRow {
     fallback_url: String,
+    connection_id: Option<i64>,
     connection_url: Option<String>,
     api_key: Option<String>,
+    json_format_strategy: String,
 }
 
 #[cfg(test)]
