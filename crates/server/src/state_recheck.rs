@@ -6,7 +6,6 @@ use crate::chat_state::{apply_state_changes, build_state_block};
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::inference::chat_completion_json;
 use crate::story_state::{
     apply_state_changes as apply_story_state_changes, build_state_block as build_story_state_block,
 };
@@ -56,7 +55,8 @@ pub async fn run_chat_state_recheck_job(
     let state_block = build_state_block(&state, &actors);
     let messages = build_recheck_prompt(&message.content, &state_block);
 
-    let response: StateRecheckResponse = chat_completion_json(
+    let response: StateRecheckResponse = db::chat_completion_json_for_connection(
+        pool,
         &inference,
         &settings.model,
         &messages,
@@ -106,7 +106,8 @@ pub async fn run_story_state_recheck_job(
     let state_block = build_story_state_block(&state, &actors);
     let messages = build_recheck_prompt(&beat.content, &state_block);
 
-    let response: StateRecheckResponse = chat_completion_json(
+    let response: StateRecheckResponse = db::chat_completion_json_for_connection(
+        pool,
         &inference,
         &settings.model,
         &messages,

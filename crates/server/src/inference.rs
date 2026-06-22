@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use dreamwell_types::{ModelCapabilities, ModelInfo};
+use dreamwell_types::{JsonFormatStrategy, ModelCapabilities, ModelInfo};
 use futures_util::Stream;
 use futures_util::StreamExt as FuturesStreamExt;
 use reqwest::Client;
@@ -16,12 +16,24 @@ use crate::error::{AppError, AppResult};
 pub struct InferenceConfig {
     pub base_url: String,
     api_key: Option<String>,
+    pub connection_id: Option<i64>,
+    pub json_format_strategy: JsonFormatStrategy,
 }
 
 impl InferenceConfig {
-    pub fn new(base_url: String, api_key: Option<String>) -> Self {
+    pub fn with_connection(
+        base_url: String,
+        api_key: Option<String>,
+        connection_id: Option<i64>,
+        json_format_strategy: JsonFormatStrategy,
+    ) -> Self {
         let api_key = api_key.filter(|key| !key.is_empty());
-        Self { base_url, api_key }
+        Self {
+            base_url,
+            api_key,
+            connection_id,
+            json_format_strategy,
+        }
     }
 
     pub fn url(&self) -> &str {
@@ -329,10 +341,12 @@ pub async fn chat_completion(
         top_p,
         max_tokens,
         None,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn chat_completion_with_format(
     config: &InferenceConfig,
     model: &str,
@@ -341,6 +355,7 @@ pub async fn chat_completion_with_format(
     top_p: f64,
     max_tokens: i64,
     response_format: Option<&Value>,
+    guided_json: Option<&Value>,
 ) -> AppResult<String> {
     let url = format!("{}/chat/completions", config.url().trim_end_matches('/'));
     let mut payload = serde_json::json!({
@@ -353,6 +368,9 @@ pub async fn chat_completion_with_format(
     });
     if let Some(format) = response_format {
         payload["response_format"] = format.clone();
+    }
+    if let Some(schema) = guided_json {
+        payload["guided_json"] = schema.clone();
     }
     let response = config
         .with_auth(http_client().post(url))
@@ -370,7 +388,138 @@ pub async fn chat_completion_with_format(
         .to_string())
 }
 
+fn json_schema_response_format(schema: &Value) -> Value {
+    serde_json::json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "response",
+            "strict": true,
+            "schema": schema
+        }
+    })
+}
+
+fn json_object_response_format() -> Value {
+    serde_json::json!({ "type": "json_object" })
+}
+
+/// Concrete wire format for schema-constrained JSON (excludes [`JsonFormatStrategy::Auto`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WireJsonFormatStrategy {
+    ResponseJsonSchema,
+    GuidedJson,
+    JsonObject,
+}
+
+impl From<WireJsonFormatStrategy> for JsonFormatStrategy {
+    fn from(value: WireJsonFormatStrategy) -> Self {
+        match value {
+            WireJsonFormatStrategy::ResponseJsonSchema => Self::ResponseJsonSchema,
+            WireJsonFormatStrategy::GuidedJson => Self::GuidedJson,
+            WireJsonFormatStrategy::JsonObject => Self::JsonObject,
+        }
+    }
+}
+
+fn initial_wire_strategy(preference: JsonFormatStrategy) -> (WireJsonFormatStrategy, bool) {
+    match preference {
+        JsonFormatStrategy::Auto => (WireJsonFormatStrategy::ResponseJsonSchema, true),
+        JsonFormatStrategy::ResponseJsonSchema => {
+            (WireJsonFormatStrategy::ResponseJsonSchema, false)
+        }
+        JsonFormatStrategy::GuidedJson => (WireJsonFormatStrategy::GuidedJson, false),
+        JsonFormatStrategy::JsonObject => (WireJsonFormatStrategy::JsonObject, false),
+    }
+}
+
+fn advance_wire_strategy(
+    current: WireJsonFormatStrategy,
+    auto_detect: bool,
+) -> Option<WireJsonFormatStrategy> {
+    if !auto_detect {
+        return None;
+    }
+    match current {
+        WireJsonFormatStrategy::ResponseJsonSchema => Some(WireJsonFormatStrategy::GuidedJson),
+        WireJsonFormatStrategy::GuidedJson => Some(WireJsonFormatStrategy::JsonObject),
+        WireJsonFormatStrategy::JsonObject => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn chat_completion_with_json_format_fallback(
+    config: &InferenceConfig,
+    model: &str,
+    messages: &[serde_json::Value],
+    temperature: f64,
+    top_p: f64,
+    max_tokens: i64,
+    schema: Option<&Value>,
+    strategy: &mut WireJsonFormatStrategy,
+    auto_detect: bool,
+) -> AppResult<String> {
+    loop {
+        let result = match *strategy {
+            WireJsonFormatStrategy::ResponseJsonSchema => {
+                let response_format = schema.map(json_schema_response_format);
+                chat_completion_with_format(
+                    config,
+                    model,
+                    messages,
+                    temperature,
+                    top_p,
+                    max_tokens,
+                    response_format.as_ref(),
+                    None,
+                )
+                .await
+            }
+            WireJsonFormatStrategy::GuidedJson => {
+                chat_completion_with_format(
+                    config,
+                    model,
+                    messages,
+                    temperature,
+                    top_p,
+                    max_tokens,
+                    None,
+                    schema,
+                )
+                .await
+            }
+            WireJsonFormatStrategy::JsonObject => {
+                chat_completion_with_format(
+                    config,
+                    model,
+                    messages,
+                    temperature,
+                    top_p,
+                    max_tokens,
+                    Some(&json_object_response_format()),
+                    None,
+                )
+                .await
+            }
+        };
+
+        match result {
+            Ok(raw) => return Ok(raw),
+            Err(AppError::Inference(body)) if schema.is_some() => {
+                if let Some(next) = advance_wire_strategy(*strategy, auto_detect) {
+                    *strategy = next;
+                } else {
+                    return Err(AppError::Inference(body));
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// Schema-validated JSON completion with repair retries on parse failure.
+///
+/// When `learned_strategy` is set and the connection preference is [`JsonFormatStrategy::Auto`],
+/// the caller should persist the learned value for that connection.
 #[allow(clippy::too_many_arguments)]
 pub async fn chat_completion_json<T>(
     config: &InferenceConfig,
@@ -382,21 +531,13 @@ pub async fn chat_completion_json<T>(
     response_format: Option<&Value>,
     max_attempts: u32,
     token: &tokio_util::sync::CancellationToken,
+    learned_strategy: &mut Option<JsonFormatStrategy>,
 ) -> AppResult<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    let format = response_format.map(|schema| {
-        serde_json::json!({
-            "type": "json_schema",
-            "json_schema": {
-                "name": "response",
-                "strict": true,
-                "schema": schema
-            }
-        })
-    });
-    let format_ref = format.as_ref();
+    let schema = response_format;
+    let (mut strategy, auto_detect) = initial_wire_strategy(config.json_format_strategy);
 
     let attempts = max_attempts.max(1);
     let mut last_error = "JSON parse failed".to_string();
@@ -408,20 +549,27 @@ where
             return Err(AppError::internal("cancelled"));
         }
 
-        let raw = chat_completion_with_format(
+        let raw = chat_completion_with_json_format_fallback(
             config,
             model,
             &attempt_messages,
             temperature,
             top_p,
             max_tokens,
-            format_ref,
+            schema,
+            &mut strategy,
+            auto_detect,
         )
         .await?;
 
         let json_str = strip_json_fence(&raw);
         match serde_json::from_str::<T>(json_str) {
-            Ok(parsed) => return Ok(parsed),
+            Ok(parsed) => {
+                if auto_detect && schema.is_some() {
+                    *learned_strategy = Some(strategy.into());
+                }
+                return Ok(parsed);
+            }
             Err(err) => {
                 last_error = err.to_string();
                 last_raw = raw.clone();

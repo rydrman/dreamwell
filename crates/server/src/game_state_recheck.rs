@@ -9,7 +9,6 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_prompts::build_characters_block;
 use crate::game_state::{apply_state_changes, build_state_block};
-use crate::inference::chat_completion_json;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct StateRecheckResponse {
@@ -119,7 +118,8 @@ pub async fn run_turn_state_recheck_job(
     );
     let token = tokio_util::sync::CancellationToken::new();
 
-    let response: StateRecheckResponse = chat_completion_json(
+    let response: StateRecheckResponse = db::chat_completion_json_for_connection(
+        pool,
         &inference,
         &model,
         &prompt,

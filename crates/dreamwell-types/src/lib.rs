@@ -578,12 +578,39 @@ pub struct QueueStatus {
     pub queued: Vec<Job>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum JsonFormatStrategy {
+    /// Probe on first structured JSON call, then cache per connection.
+    #[default]
+    Auto,
+    /// OpenAI `response_format.type = json_schema`.
+    ResponseJsonSchema,
+    /// vLLM top-level `guided_json` (Featherless and similar).
+    GuidedJson,
+    /// OpenAI `response_format.type = json_object`.
+    JsonObject,
+}
+
+impl JsonFormatStrategy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (detect on first use)",
+            Self::ResponseJsonSchema => "OpenAI json_schema",
+            Self::GuidedJson => "vLLM guided_json",
+            Self::JsonObject => "json_object",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InferenceConnection {
     pub id: i64,
     pub name: String,
     pub inference_url: String,
     pub api_key_set: bool,
+    #[serde(default)]
+    pub json_format_strategy: JsonFormatStrategy,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -600,6 +627,7 @@ pub struct InferenceConnectionUpdate {
     pub inference_url: Option<String>,
     /// Omitted keeps the existing key; an empty string clears it.
     pub api_key: Option<String>,
+    pub json_format_strategy: Option<JsonFormatStrategy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
