@@ -3,13 +3,15 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use dreamwell_types::*;
-use web_sys::{HtmlInputElement, HtmlTextAreaElement};
+use gloo_timers::callback::Timeout;
+use web_sys::{HtmlElement, HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::api;
 use crate::game_presets_ui::GmTonePresetPicker;
 use crate::game_sync::{detail_stale_vs_sse, should_replace_detail_from_sse};
 use crate::generation_ui::{game_notice, GenerationErrorAlert, GenerationStatusBar};
+use crate::item_list::GameList;
 use crate::markdown::render_message_content;
 use crate::message_menu::MessageOptionsMenu;
 use crate::router::{AppRoute, Overlay};
@@ -18,12 +20,16 @@ use crate::state_ui::{
     StateEntryRow,
 };
 use crate::title_editor::TitleEditor;
+use crate::view_scroll::scroll_content_view_to_bottom;
 
 #[derive(Properties, PartialEq)]
 pub struct GameShellProps {
     pub route: AppRoute,
     pub on_navigate: Callback<(AppRoute, bool)>,
     pub settings: Option<Settings>,
+    pub games: Vec<Game>,
+    pub on_select_game: Callback<i64>,
+    pub on_new_game: Callback<()>,
 }
 
 fn game_id_from_route(route: &AppRoute) -> Option<i64> {
@@ -78,6 +84,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
     let guidance_input = use_state(String::new);
     let submitting = use_state(|| false);
     let expanded_phases = use_state(HashSet::<(i64, String)>::new);
+    let turn_feed_ref = use_node_ref();
 
     {
         let detail = detail.clone();
@@ -125,6 +132,33 @@ pub fn game_shell(props: &GameShellProps) -> Html {
             move || {
                 drop(stream);
             }
+        });
+    }
+
+    let scroll_key = (*detail).as_ref().map(|game_detail| {
+        let last = game_detail.turns.last();
+        (
+            game_detail.turns.len(),
+            last.map(|turn| (turn.id, turn.phase.clone(), turn.prose.len())),
+        )
+    });
+    {
+        let turn_feed_ref = turn_feed_ref.clone();
+        use_effect_with((game_id, scroll_key), move |(game_id, scroll_key)| {
+            if game_id.is_some() && scroll_key.is_some() {
+                let turn_feed_ref = turn_feed_ref.clone();
+                Timeout::new(0, move || {
+                    if let Some(window) = web_sys::window() {
+                        if let Ok(event) = web_sys::Event::new("resize") {
+                            let _ = window.dispatch_event(&event);
+                        }
+                    }
+                    let el = turn_feed_ref.cast::<HtmlElement>();
+                    scroll_content_view_to_bottom(el.as_ref());
+                })
+                .forget();
+            }
+            || ()
         });
     }
 
@@ -336,7 +370,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     </header>
 
                     <div class="content-scroll">
-                        <div class="messages game-turn-feed">
+                        <div class="messages game-turn-feed" ref={turn_feed_ref.clone()}>
                             { for game_detail.turns.iter().map(|turn| {
                                 let turn_id = turn.id;
                                 let is_opening = turn.is_opening;
@@ -574,24 +608,38 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                         </div>
                     </div>
                 } else if game_id.is_some() {
-                    <p class="muted">{"Loading game…"}</p>
+                    <>
+                        <header class="header content-header">
+                            <h1 class="header-title">{"Loading game…"}</h1>
+                        </header>
+                        <div class="loading-screen muted">{"Loading game…"}</div>
+                    </>
                 } else {
-                    <div class="empty-state muted">
-                        <p>{"No game selected. Pick a scenario to play or create one in Scenarios."}</p>
-                        <button class="btn" style="margin-top:0.75rem;" onclick={{
-                            let on_navigate = props.on_navigate.clone();
-                            Callback::from(move |_| {
-                                on_navigate.emit((
-                                    AppRoute::Scenarios {
-                                        scenario_id: None,
-                                        game_id: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            })
-                        }}>{"Open scenarios"}</button>
-                    </div>
+                    <>
+                        <header class="header content-header">
+                            <h1 class="header-title">{"Games"}</h1>
+                            if props.games.is_empty() {
+                                <p class="header-subtitle muted">{"Start a game from Scenarios or create one from the sidebar."}</p>
+                            } else {
+                                <p class="header-subtitle muted">{"Pick a game below to continue."}</p>
+                            }
+                        </header>
+                        <div class="content-scroll">
+                            if props.games.is_empty() {
+                                <div class="empty-state muted">
+                                    <p>{"No games yet. Start one from Scenarios or click New game in the sidebar."}</p>
+                                    <button class="btn" style="margin-top:0.75rem;" onclick={props.on_new_game.reform(|_| ())}>
+                                        {"New game"}
+                                    </button>
+                                </div>
+                            } else {
+                                <GameList
+                                    games={props.games.clone()}
+                                    on_select={props.on_select_game.clone()}
+                                />
+                            }
+                        </div>
+                    </>
                 }
             </div>
         </>

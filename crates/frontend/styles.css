@@ -2431,7 +2431,7 @@ input.header-title {
     transform: translateY(0);
   }
 
-  .app-layout--chat-scroll-chrome.mobile-chrome-visible .main {
+  .app-layout--chat-scroll-chrome .main {
     padding-top: var(--sidebar-inset-top, 0px);
     transition: padding-top 0.2s ease;
   }
