@@ -465,6 +465,27 @@ pub async fn update_settings(payload: &SettingsUpdate) -> Result<Settings, Strin
     json_body("PATCH", "/api/settings", payload).await
 }
 
+pub async fn create_inference_connection(
+    payload: &InferenceConnectionCreate,
+) -> Result<InferenceConnection, String> {
+    json_body("POST", "/api/settings/connections", payload).await
+}
+
+pub async fn update_inference_connection(
+    id: i64,
+    payload: &InferenceConnectionUpdate,
+) -> Result<InferenceConnection, String> {
+    json_body("PATCH", &format!("/api/settings/connections/{id}"), payload).await
+}
+
+pub async fn delete_inference_connection(id: i64) -> Result<(), String> {
+    send_empty(api_request(
+        "DELETE",
+        &format!("/api/settings/connections/{id}"),
+    ))
+    .await
+}
+
 pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
     json(api_request("GET", "/api/settings/models")).await
 }

@@ -153,6 +153,7 @@ pub async fn run_turn_prose_recheck_job(
     guidance: &str,
     settings: &Settings,
 ) -> AppResult<()> {
+    let inference = db::get_inference_config(pool).await?;
     let game = db::get_game(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     if turn.prose.trim().is_empty() || turn.scene_beats.is_empty() {
@@ -178,7 +179,7 @@ pub async fn run_turn_prose_recheck_job(
 
     for attempt in 1..=max_attempts {
         match chat_completion(
-            &settings.inference_url,
+            &inference,
             &model,
             &prompt,
             0.2,

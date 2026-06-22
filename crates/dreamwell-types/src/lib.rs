@@ -579,8 +579,34 @@ pub struct QueueStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InferenceConnection {
+    pub id: i64,
+    pub name: String,
+    pub inference_url: String,
+    pub api_key_set: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InferenceConnectionCreate {
+    pub name: String,
+    pub inference_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InferenceConnectionUpdate {
+    pub name: Option<String>,
+    pub inference_url: Option<String>,
+    /// Omitted keeps the existing key; an empty string clears it.
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub inference_url: String,
+    pub active_connection_id: Option<i64>,
+    pub connections: Vec<InferenceConnection>,
     pub model: String,
     pub temperature: f64,
     pub top_p: f64,
@@ -609,6 +635,7 @@ pub struct Settings {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SettingsUpdate {
     pub inference_url: Option<String>,
+    pub active_connection_id: Option<i64>,
     pub model: Option<String>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
