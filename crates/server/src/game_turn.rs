@@ -1,6 +1,6 @@
 use dreamwell_types::{
-    DeclareChecksResponse, DeclaredCheck, GameTurnCheck, GameTurnSystemRoll, Job, JobType,
-    Settings, TurnPlan,
+    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, GameTurnCheck,
+    GameTurnSystemRoll, Job, JobType, Settings, TurnPlan,
 };
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
@@ -59,14 +59,6 @@ fn max_retries() -> u32 {
     config::GENERATION_MAX_RETRIES
         .load(std::sync::atomic::Ordering::SeqCst)
         .max(1)
-}
-
-fn structured_output_tokens(settings: &Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        (settings.context_tokens / 6).clamp(512, 1024)
-    } else {
-        768
-    }
 }
 
 pub async fn run_game_job(
