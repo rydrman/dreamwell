@@ -17,7 +17,7 @@ use crate::markdown::render_message_content;
 use crate::message_menu::MessageOptionsMenu;
 use crate::router::{AppRoute, Overlay};
 use crate::state_ui::{
-    sort_state_rows, PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel,
+    sort_state_rows, InlineStateChangesGroup, PhaseSection, PlanBeatsList, StateEntriesPanel,
     StateEntryRow,
 };
 use crate::title_editor::TitleEditor;
@@ -48,6 +48,7 @@ fn phase_label(phase: &str) -> &str {
         "resolved" | "resolved_pause" => "State",
         "scene" | "scene_pause" => "Scene",
         "prose" => "Prose",
+        "structured" => "Structured agent",
         "done" => "Done",
         "failed" => "Failed",
         _ => phase,
@@ -393,7 +394,14 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let step_paused = turn.phase.ends_with("_pause");
                                 let show_continue = step_paused;
                                 let show_regenerate = turn.phase == "done";
-                                let show_retry = turn.phase == "failed";
+                                let structured_mode =
+                                    game_detail.game.engine_mode == EngineMode::ToolsStructured;
+                                let show_retry = turn.phase == "failed"
+                                    || (structured_mode
+                                        && !is_opening
+                                        && turn.phase != "done"
+                                        && turn.phase != "pending"
+                                        && !turn.phase.ends_with("_pause"));
                                 let show_align_prose = turn.phase == "done"
                                     && !turn.prose.is_empty()
                                     && !turn.scene_beats.is_empty();
@@ -429,6 +437,17 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 } else {
                                     turn.prose.clone()
                                 };
+                                let prose_has_inline_mech =
+                                    display_prose.contains(PROSE_MECH_MARKER_OPEN);
+                                let prose_has_inline_state =
+                                    display_prose.contains(PROSE_STATE_MARKER_OPEN);
+                                let prose_has_inline_check =
+                                    display_prose.contains(PROSE_CHECK_MARKER_OPEN);
+                                let prose_has_inline_blocks = prose_has_inline_mech
+                                    || prose_has_inline_state
+                                    || prose_has_inline_check;
+                                let hide_detached_phases =
+                                    structured_mode && prose_has_inline_blocks;
                                 html! {
                                     <div key={turn_id} class={classes!("game-turn-pair", is_opening.then_some("game-opening"))}>
                                         if !is_opening && !turn.player_action.trim().is_empty() {
@@ -479,7 +498,11 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     class="message-menu-item"
                                                                     onclick={on_regenerate.reform(move |_| turn_id)}
                                                                 >
-                                                                    {"Retry"}
+                                                                    { if structured_mode && turn.phase != "failed" {
+                                                                        "Re-run structured agent"
+                                                                    } else {
+                                                                        "Retry"
+                                                                    } }
                                                                 </button>
                                                             }
                                                             if show_align_prose {
@@ -540,7 +563,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.mechanical_results.is_empty() {
+                                            if !turn.mechanical_results.is_empty() && !prose_has_inline_mech {
                                                 <PhaseSection
                                                     label={"Mechanics".to_string()}
                                                     expanded={Some(expanded_phases.contains(&(turn_id, "mechanics".to_string())))}
@@ -564,7 +587,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.system_rolls.is_empty() {
+                                            if !turn.system_rolls.is_empty() && !hide_detached_phases {
                                                 <PhaseSection
                                                     label={"System rolls".to_string()}
                                                     expanded={Some(expanded_phases.contains(&(turn_id, "system".to_string())))}
@@ -581,7 +604,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.checks.is_empty() {
+                                            if !turn.checks.is_empty() && !hide_detached_phases {
                                                 <PhaseSection
                                                     label={"Checks".to_string()}
                                                     expanded={Some(
@@ -627,19 +650,13 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.state_changes.is_empty() {
-                                                <PhaseSection
-                                                    label={"State changes".to_string()}
-                                                    expanded={Some(expanded_phases.contains(&(turn_id, "state".to_string())))}
-                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "state".to_string())))}
-                                                >
-                                                    <StateChangesList changes={turn.state_changes.clone()} />
-                                                </PhaseSection>
+                                            if !turn.state_changes.is_empty() && !hide_detached_phases {
+                                                <InlineStateChangesGroup changes={turn.state_changes.clone()} />
                                             }
 
                                             if !display_prose.is_empty() || turn.phase == "prose" {
                                                 <div class="game-prose markdown-body">
-                                                    { render_message_content(&display_prose) }
+                                                    { render_prose_with_blocks(&display_prose, turn) }
                                                 </div>
                                             }
                                         </div>
@@ -740,6 +757,7 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
     let game_detail = &props.game_detail;
     let detail_state = props.on_detail.clone();
     let game_id = game_detail.game.id;
+    let engine_mode_error = use_state(|| None::<String>);
     let state_rows = sort_state_rows(game_detail.state.iter().map(StateEntryRow::from).collect());
 
     html! {
@@ -951,6 +969,7 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                         class="input input-compact"
                         onchange={{
                             let detail_state = detail_state.clone();
+                            let engine_mode_error = engine_mode_error.clone();
                             Callback::from(move |e: Event| {
                                 let select: web_sys::HtmlSelectElement = e.target_unchecked_into();
                                 let mode = match select.value().as_str() {
@@ -959,13 +978,18 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                                     _ => EngineMode::Pipeline,
                                 };
                                 let detail_state = detail_state.clone();
+                                let engine_mode_error = engine_mode_error.clone();
+                                engine_mode_error.set(None);
                                 wasm_bindgen_futures::spawn_local(async move {
                                     let payload = GameUpdate {
                                         engine_mode: Some(mode),
                                         ..Default::default()
                                     };
-                                    if let Ok(d) = api::update_game(game_id, &payload).await {
-                                        detail_state.emit(d);
+                                    match api::update_game(game_id, &payload).await {
+                                        Ok(d) => detail_state.emit(d),
+                                        Err(err) => {
+                                            engine_mode_error.set(Some(err));
+                                        }
                                     }
                                 });
                             })
@@ -982,6 +1006,12 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                         </option>
                     </select>
                 </label>
+                if let Some(err) = (*engine_mode_error).clone() {
+                    <div class="message-error composer-notice" role="alert">
+                        <strong>{"Could not save engine mode"}</strong>
+                        <span>{ err }</span>
+                    </div>
+                }
                 <details class="game-settings-panel">
                     <summary>{"Game settings"}</summary>
                     <div class="game-settings-fields">
@@ -1133,6 +1163,198 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                         />
                     </div>
                 </details>
+            </div>
+        </div>
+    }
+}
+
+/// Render turn prose, expanding inline `⟦mech:N⟧`, `⟦state:N⟧`, and `⟦check:N⟧` markers
+/// into styled blocks at the exact point in the narration where they fired.
+fn render_prose_with_blocks(prose: &str, turn: &GameTurn) -> Html {
+    let has_inline = prose.contains(PROSE_MECH_MARKER_OPEN)
+        || prose.contains(PROSE_STATE_MARKER_OPEN)
+        || prose.contains(PROSE_CHECK_MARKER_OPEN);
+    if !has_inline {
+        return render_message_content(prose);
+    }
+
+    let mut nodes: Vec<Html> = Vec::new();
+    let mut rest = prose;
+    while let Some((open_idx, tag, open_tag)) = next_inline_marker(rest) {
+        let before = &rest[..open_idx];
+        let after_open = &rest[open_idx + open_tag.len()..];
+        let Some(close_idx) = after_open.find(PROSE_INLINE_MARKER_CLOSE) else {
+            break;
+        };
+        let num_str = after_open[..close_idx].trim();
+        let remainder = &after_open[close_idx + PROSE_INLINE_MARKER_CLOSE.len()..];
+
+        let trimmed_before = before.trim();
+        if !trimmed_before.is_empty() {
+            nodes.push(render_message_content(trimmed_before));
+        }
+        if let Ok(index) = num_str.parse::<i64>() {
+            if tag == InlineMarkerTag::State {
+                let mut indices = vec![index];
+                rest = remainder;
+                while let Some((next_idx, consumed)) = parse_state_marker_at(rest) {
+                    indices.push(next_idx);
+                    rest = &rest[consumed..];
+                }
+                nodes.push(render_inline_state_group(&indices, turn));
+            } else {
+                nodes.push(match tag {
+                    InlineMarkerTag::Mech => turn
+                        .mechanical_results
+                        .iter()
+                        .find(|r| r.sort_order == index)
+                        .map(render_inline_mechanic)
+                        .unwrap_or_default(),
+                    InlineMarkerTag::State => html! {},
+                    InlineMarkerTag::Check => turn
+                        .checks
+                        .iter()
+                        .find(|c| c.sort_order == index)
+                        .map(render_inline_check)
+                        .unwrap_or_default(),
+                });
+                rest = remainder;
+            }
+        } else {
+            rest = remainder;
+        }
+    }
+    let trimmed_rest = rest.trim();
+    if !trimmed_rest.is_empty() {
+        nodes.push(render_message_content(trimmed_rest));
+    }
+    html! { <>{ for nodes }</> }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InlineMarkerTag {
+    Mech,
+    State,
+    Check,
+}
+
+fn next_inline_marker(rest: &str) -> Option<(usize, InlineMarkerTag, &'static str)> {
+    let candidates = [
+        (InlineMarkerTag::Mech, PROSE_MECH_MARKER_OPEN),
+        (InlineMarkerTag::State, PROSE_STATE_MARKER_OPEN),
+        (InlineMarkerTag::Check, PROSE_CHECK_MARKER_OPEN),
+    ];
+    candidates
+        .iter()
+        .filter_map(|(tag, open)| rest.find(open).map(|idx| (idx, *tag, *open)))
+        .min_by_key(|(idx, _, _)| *idx)
+}
+
+fn parse_state_marker_at(s: &str) -> Option<(i64, usize)> {
+    let leading_ws = s.len() - s.trim_start().len();
+    let trimmed = s.trim_start();
+    if !trimmed.starts_with(PROSE_STATE_MARKER_OPEN) {
+        return None;
+    }
+    let after_open = &trimmed[PROSE_STATE_MARKER_OPEN.len()..];
+    let close_idx = after_open.find(PROSE_INLINE_MARKER_CLOSE)?;
+    let index: i64 = after_open[..close_idx].trim().parse().ok()?;
+    let consumed =
+        leading_ws + PROSE_STATE_MARKER_OPEN.len() + close_idx + PROSE_INLINE_MARKER_CLOSE.len();
+    Some((index, consumed))
+}
+
+fn render_inline_state_group(indices: &[i64], turn: &GameTurn) -> Html {
+    let changes: Vec<AppliedStateChange> = indices
+        .iter()
+        .filter_map(|i| turn.state_changes.get(*i as usize).cloned())
+        .collect();
+    html! {
+        <InlineStateChangesGroup changes={changes} />
+    }
+}
+
+/// A single mechanic result rendered as an inline block inside the narration.
+fn render_inline_mechanic(result: &MechanicalResult) -> Html {
+    match (&result.kind, &result.data) {
+        (
+            MechanicalKind::DiceRoll,
+            MechanicalData::DiceRoll {
+                dice_expr,
+                rolls,
+                total,
+            },
+        ) => html! {
+            <div class="game-inline-mechanic game-inline-dice">
+                <DiceRollDisplay
+                    rolls={rolls.clone()}
+                    dice_expr={Some(dice_expr.clone())}
+                    total={Some(*total)}
+                    label={Some(result.label.clone())}
+                    class="roll-result"
+                />
+            </div>
+        },
+        (MechanicalKind::CardDraw, MechanicalData::CardDraw { name, text, .. }) => html! {
+            <div class="game-inline-mechanic game-inline-card">
+                <div class="inline-mechanic-label muted small">{ "Card drawn" }</div>
+                <div class="inline-card-name">{ name }</div>
+                <div class="inline-card-text">{ text }</div>
+            </div>
+        },
+        (
+            MechanicalKind::BoardMove,
+            MechanicalData::BoardMove {
+                actor,
+                roll,
+                from_space,
+                to_space,
+                space_tags,
+                ..
+            },
+        ) => html! {
+            <div class="game-inline-mechanic game-inline-board">
+                <DiceRollDisplay
+                    rolls={vec![*roll]}
+                    dice_expr={Some("1d6".to_string())}
+                    label={Some(format!("{actor} moves"))}
+                    class="roll-result"
+                />
+                <span class="inline-board-move">
+                    { format!("space {from_space} → {to_space}") }
+                </span>
+                if !space_tags.is_empty() {
+                    <span class="muted small">{ format!(" ({})", space_tags.join(", ")) }</span>
+                }
+            </div>
+        },
+        _ => html! {
+            <div class="game-inline-mechanic muted small">{ mechanical_result_summary(result) }</div>
+        },
+    }
+}
+
+fn render_inline_check(check: &GameTurnCheck) -> Html {
+    html! {
+        <div class="game-inline-mechanic game-inline-check">
+            <div class="check-item">
+                <div class="check-item-header">
+                    <div class="check-label">{ &check.label }</div>
+                    if !check.rolls.is_empty() {
+                        <DiceRollDisplay
+                            rolls={check.rolls.clone()}
+                            dice_expr={Some(check.dice_expr.clone())}
+                            modifier={Some(check.modifier)}
+                            total={Some(check.total)}
+                            tier={check.tier}
+                            class="check-roll"
+                        />
+                    }
+                </div>
+                <div class="muted">{ format!("{} {}", check.skill, crate::dice_ui::format_modifier(check.modifier)) }</div>
+                if !check.stakes.is_empty() {
+                    <div class="muted">{ &check.stakes }</div>
+                }
             </div>
         </div>
     }

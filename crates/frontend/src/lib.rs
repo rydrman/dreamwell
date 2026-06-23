@@ -4093,6 +4093,23 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
         .as_ref()
         .map(|c| c.json_format_strategy)
         .unwrap_or(JsonFormatStrategy::Auto);
+    let tool_call_parser = active_connection
+        .as_ref()
+        .map(|c| c.tool_call_parser.clone())
+        .unwrap_or_else(|| "auto".to_string());
+    let tool_parsers = use_state(Vec::<String>::new);
+
+    {
+        let tool_parsers = tool_parsers.clone();
+        use_effect_with((), move |_| {
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(list) = api::list_tool_parsers().await {
+                    tool_parsers.set(list);
+                }
+            });
+            || ()
+        });
+    }
 
     html! {
         <div>
@@ -4306,6 +4323,46 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     </select>
                     <p class="muted" style="margin:0.35rem 0 0;">
                         {"Game and story structured phases need schema-constrained JSON. Auto tries formats once, then caches the winner for this connection."}
+                    </p>
+                </label>
+                <label class="field">
+                    <span class="muted">{"Inline tool-call parser"}</span>
+                    <select onchange={{
+                        let save_ctx = save_ctx.clone();
+                        Callback::from(move |e: Event| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            let parser = input.value();
+                            let save_ctx = save_ctx.clone();
+                            save_ctx.update_field(|current| {
+                                if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                                    conn.tool_call_parser = parser.clone();
+                                }
+                            });
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let payload = InferenceConnectionUpdate {
+                                    tool_call_parser: Some(parser),
+                                    ..Default::default()
+                                };
+                                if let Err(err) = api::update_inference_connection(active_id, &payload).await {
+                                    save_ctx.phase.set(SettingsSavePhase::Failed(err));
+                                }
+                            });
+                        })
+                    }}>
+                        <option value="auto" selected={tool_call_parser == "auto"}>
+                            {"Auto (detect from model name)"}
+                        </option>
+                        <option value="none" selected={tool_call_parser == "none"}>
+                            {"None (native tool_calls only)"}
+                        </option>
+                        { for (*tool_parsers).iter().filter(|name| **name != "default").map(|name| html! {
+                            <option value={name.clone()} selected={tool_call_parser == *name}>
+                                { name.clone() }
+                            </option>
+                        }) }
+                    </select>
+                    <p class="muted" style="margin:0.35rem 0 0;">
+                        {"Game structured narration uses this to parse text-embedded tool calls (e.g. Gemma call:name{...}) during streaming."}
                     </p>
                 </label>
             }

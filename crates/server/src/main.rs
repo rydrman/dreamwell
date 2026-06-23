@@ -32,6 +32,7 @@ mod story_variable_recheck;
 mod story_variables;
 mod summarize;
 mod thoughts;
+mod tool_stream;
 mod variable_recheck;
 mod variable_state;
 mod variables;

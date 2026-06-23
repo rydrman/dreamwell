@@ -2,11 +2,12 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use dreamwell_types::{
-    normalize_game_traits, substitute_macros, AppliedStateChange, ElementInstances, EngineMode,
-    Game, GameActor, GameActorUpdate, GameCreate, GameDetail, GameElementsConfig, GameScene,
-    GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck, GameTurnSystemRoll, GameUpdate,
-    Job, JobType, MacroContext, MechanicalResult, ResolutionSystem, RulesBlock, ScenarioTrigger,
-    StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnObservability, TurnPlan,
+    normalize_game_elements, normalize_game_traits, substitute_macros, AppliedStateChange,
+    ElementInstances, EngineMode, Game, GameActor, GameActorUpdate, GameCreate, GameDetail,
+    GameElementsConfig, GameScene, GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck,
+    GameTurnSystemRoll, GameUpdate, Job, JobType, MacroContext, MechanicalResult, ResolutionSystem,
+    RulesBlock, ScenarioTrigger, StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef,
+    TurnObservability, TurnPlan,
 };
 use sqlx::SqlitePool;
 
@@ -137,7 +138,9 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
             .and_then(|s| serde_json::from_str(s).ok()),
         scenario_triggers: parse_json_vec::<ScenarioTrigger>(&row.scenario_triggers_json),
         trait_defs: parse_json_vec::<TraitDef>(&row.trait_defs_json),
-        game_elements: parse_json_default::<GameElementsConfig>(&row.game_elements_json),
+        game_elements: normalize_game_elements(parse_json_default::<GameElementsConfig>(
+            &row.game_elements_json,
+        )),
         element_instances: parse_json_default::<ElementInstances>(&row.element_instances_json),
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
@@ -883,6 +886,12 @@ pub async fn prepare_continue_turn(
     game_id: i64,
     turn_id: i64,
 ) -> AppResult<Job> {
+    let game = get_game(pool, game_id).await?;
+    if game.engine_mode == EngineMode::ToolsStructured {
+        return Err(AppError::bad_request(
+            "Structured agent mode does not support step-mode continue",
+        ));
+    }
     let turn = get_turn(pool, game_id, turn_id).await?;
     if !turn.phase.ends_with("_pause")
         && turn.phase != "rolled"
@@ -911,18 +920,22 @@ pub async fn prepare_regenerate_turn(
     game_id: i64,
     turn_id: i64,
 ) -> AppResult<Job> {
+    let game = get_game(pool, game_id).await?;
     let turn = get_turn(pool, game_id, turn_id).await?;
     if turn.is_opening {
         return Err(AppError::bad_request("Opening scene cannot be regenerated"));
+    }
+    if has_active_turn_job(pool, turn_id).await? {
+        return Err(AppError::bad_request("Turn already has an active job"));
+    }
+    if game.engine_mode == EngineMode::ToolsStructured {
+        return prepare_structured_agent_rerun(pool, game_id, turn_id, &turn).await;
     }
     if turn.phase == "failed" {
         return prepare_retry_turn(pool, game_id, turn_id, &turn).await;
     }
     if turn.phase != "done" {
         return Err(AppError::bad_request("Turn is not complete"));
-    }
-    if has_active_turn_job(pool, turn_id).await? {
-        return Err(AppError::bad_request("Turn already has an active job"));
     }
     let detail = get_game_detail(pool, game_id).await?;
     crate::game_state::revert_turn_state_changes(
@@ -992,7 +1005,7 @@ pub async fn fork_game_at_turn(
     let win_condition_json = optional_json_string(&source.win_condition);
     let scenario_triggers_json = json_string(&source.scenario_triggers);
     let trait_defs_json = json_string(&source.trait_defs);
-    let game_elements_json = json_string(&source.game_elements);
+    let game_elements_json = json_string(&normalize_game_elements(source.game_elements.clone()));
     let instances = crate::game_mechanics::replay_element_instances(
         &source.game_elements,
         &kept_turns.iter().copied().cloned().collect::<Vec<_>>(),
@@ -1147,6 +1160,53 @@ async fn clone_turn_to_game(
     Ok(())
 }
 
+async fn prepare_structured_agent_rerun(
+    pool: &SqlitePool,
+    game_id: i64,
+    turn_id: i64,
+    turn: &GameTurn,
+) -> AppResult<Job> {
+    if has_active_turn_job(pool, turn_id).await? {
+        return Err(AppError::bad_request("Turn already has an active job"));
+    }
+    let detail = get_game_detail(pool, game_id).await?;
+    let prior_turns: Vec<GameTurn> = detail
+        .turns
+        .iter()
+        .filter(|t| t.sort_order < turn.sort_order)
+        .cloned()
+        .collect();
+    let instances =
+        crate::game_mechanics::replay_element_instances(&detail.game.game_elements, &prior_turns);
+    update_game_element_instances(pool, game_id, &instances).await?;
+    crate::game_state::revert_turn_state_changes(
+        pool,
+        game_id,
+        turn_id,
+        &turn.state_changes,
+        &detail.actors,
+    )
+    .await?;
+    clear_turn_checks(pool, turn_id).await?;
+    clear_system_rolls(pool, turn_id).await?;
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', plan_json=NULL, mechanical_results_json='[]', observability_json='{}', phase='pending', updated_at=?1 WHERE id=?2",
+    )
+    .bind(&now)
+    .bind(turn_id)
+    .execute(pool)
+    .await?;
+    enqueue_game_job(
+        pool,
+        JobType::GameTurnStructuredAgent,
+        game_id,
+        Some(turn_id),
+        String::new(),
+    )
+    .await
+}
+
 async fn prepare_retry_turn(
     pool: &SqlitePool,
     game_id: i64,
@@ -1155,6 +1215,10 @@ async fn prepare_retry_turn(
 ) -> AppResult<Job> {
     if has_active_turn_job(pool, turn_id).await? {
         return Err(AppError::bad_request("Turn already has an active job"));
+    }
+    let game = get_game(pool, game_id).await?;
+    if game.engine_mode == EngineMode::ToolsStructured {
+        return prepare_structured_agent_rerun(pool, game_id, turn_id, turn).await;
     }
     if turn.checks.is_empty() {
         sqlx::query(

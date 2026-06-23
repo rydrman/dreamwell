@@ -1,40 +1,45 @@
 [package]
+build = "build.rs"
+edition.workspace = true
 name = "dreamwell-server"
 version.workspace = true
-edition.workspace = true
-build = "build.rs"
 
 [[bin]]
 name = "dreamwell-server"
 path = "src/main.rs"
 
 [dependencies]
-dreamwell-types = { workspace = true }
-dreamwell-state = { workspace = true }
-axum = { version = "0.7", features = ["multipart"] }
-tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
-tokio-stream = "0.1"
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-serde = { workspace = true }
-serde_json = { workspace = true }
-chrono = { workspace = true }
-thiserror = { workspace = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-futures-util = "0.3"
-regex = "1"
 async-stream = "0.3"
-png = "0.17"
+axum = { version = "0.7", features = ["multipart"] }
 base64 = "0.22"
 bytes = "1"
+chrono = { workspace = true }
+dreamwell-state = { workspace = true }
+dreamwell-types = { workspace = true }
+dynamo-parsers = "2.1"
+futures-util = "0.3"
+png = "0.17"
 rand = { workspace = true }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
 futures-util = "0.3"
+http-body-util = "0.1"
+tempfile = "3"
 tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }

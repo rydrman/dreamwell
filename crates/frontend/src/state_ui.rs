@@ -116,27 +116,51 @@ pub fn state_changes_list(props: &StateChangesListProps) -> Html {
     }
     html! {
         <ul class="state-list state-list--changes">
-            { for props.changes.iter().enumerate().map(|(i, sc)| {
-                let value_text = format_state_change_value(sc);
-                html! {
-                    <li class="state-row state-row--change" key={i}>
-                        <span class={classes!("state-chip", "state-chip--op", op_chip_class(sc.op))}>
-                            { op_label(sc.op) }
-                        </span>
-                        <span class={classes!("state-chip", "state-chip--kind", format!("state-chip--kind-{}", kind_label(sc.kind)))}>
-                            { kind_label(sc.kind) }
-                        </span>
-                        if !sc.target.is_empty() {
-                            <span class="state-row-target">{ &sc.target }</span>
-                        }
-                        <span class="state-row-key">{ &sc.key }</span>
-                        if !value_text.is_empty() {
-                            <span class="state-row-value">{ value_text }</span>
-                        }
-                    </li>
-                }
+            { for props.changes.iter().enumerate().map(|(i, sc)| html! {
+                <li key={i}>{ render_state_change_row(sc) }</li>
             }) }
         </ul>
+    }
+}
+
+/// Minimal expandable group for inline state-change markers in game prose.
+#[function_component(InlineStateChangesGroup)]
+pub fn inline_state_changes_group(props: &StateChangesListProps) -> Html {
+    if props.changes.is_empty() {
+        return html! {};
+    }
+    let count = props.changes.len();
+    html! {
+        <details class="game-inline-state-group">
+            <summary class="game-inline-state-group-summary muted small">
+                { format!("State changes ({count})") }
+            </summary>
+            <div class="game-inline-state-group-body">
+                <StateChangesList changes={props.changes.clone()} />
+            </div>
+        </details>
+    }
+}
+
+/// One applied state change row (shared by list and inline game prose).
+pub fn render_state_change_row(sc: &AppliedStateChange) -> Html {
+    let value_text = format_state_change_value(sc);
+    html! {
+        <div class="state-row state-row--change">
+            <span class={classes!("state-chip", "state-chip--op", op_chip_class(sc.op))}>
+                { op_label(sc.op) }
+            </span>
+            <span class={classes!("state-chip", "state-chip--kind", format!("state-chip--kind-{}", kind_label(sc.kind)))}>
+                { kind_label(sc.kind) }
+            </span>
+            if !sc.target.is_empty() {
+                <span class="state-row-target">{ &sc.target }</span>
+            }
+            <span class="state-row-key">{ &sc.key }</span>
+            if !value_text.is_empty() {
+                <span class="state-row-value">{ value_text }</span>
+            }
+        </div>
     }
 }
 

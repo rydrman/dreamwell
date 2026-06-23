@@ -11,10 +11,13 @@ mod scenario_iw;
 mod serde_helpers;
 
 pub use game_elements::{
-    build_game_elements_from_iw, default_board_game_mechanicals, parse_cards_from_rules_block,
-    parse_truth_spaces, BoardDef, BoardTagRule, CardDef, DeckDef, DeckFrom, DeckInstance,
+    build_game_elements_from_iw, default_board_game_mechanicals, normalize_game_elements,
+    parse_cards_from_rules_block, parse_truth_spaces, prose_check_marker, prose_mech_marker,
+    prose_state_marker, BoardDef, BoardTagRule, CardDef, DeckDef, DeckFrom, DeckInstance,
     ElementInstances, EngineMode, GameElementsConfig, MechanicalData, MechanicalKind,
-    MechanicalResult, MechanicalStep, MechanicalWhen, TurnObservability,
+    MechanicalResult, MechanicalStep, MechanicalWhen, TurnObservability, PROSE_CHECK_MARKER_OPEN,
+    PROSE_INLINE_MARKER_CLOSE, PROSE_MECH_MARKER_CLOSE, PROSE_MECH_MARKER_OPEN,
+    PROSE_STATE_MARKER_OPEN,
 };
 pub use game_import::{
     game_create_from_character, scenario_create_from_character,
@@ -633,6 +636,13 @@ pub struct InferenceConnection {
     pub model: String,
     #[serde(default)]
     pub json_format_strategy: JsonFormatStrategy,
+    /// Text-embedded tool-call parser for streaming game narration (`auto`, `none`, or a dynamo parser name).
+    #[serde(default = "default_tool_call_parser")]
+    pub tool_call_parser: String,
+}
+
+fn default_tool_call_parser() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -651,6 +661,7 @@ pub struct InferenceConnectionUpdate {
     pub api_key: Option<String>,
     pub model: Option<String>,
     pub json_format_strategy: Option<JsonFormatStrategy>,
+    pub tool_call_parser: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

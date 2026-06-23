@@ -1199,7 +1199,7 @@ pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
 
 pub async fn get_inference_config(pool: &SqlitePool) -> AppResult<InferenceConfig> {
     let row = sqlx::query_as::<_, ActiveConnectionRow>(
-        "SELECT s.inference_url AS fallback_url, c.id AS connection_id, c.inference_url AS connection_url, c.api_key, COALESCE(c.json_format_strategy, 'auto') AS json_format_strategy
+        "SELECT s.inference_url AS fallback_url, c.id AS connection_id, c.inference_url AS connection_url, c.api_key, COALESCE(c.json_format_strategy, 'auto') AS json_format_strategy, COALESCE(c.tool_call_parser, 'auto') AS tool_call_parser
          FROM app_settings s
          LEFT JOIN inference_connections c ON c.id = s.active_inference_connection_id
          WHERE s.id = 1",
@@ -1216,6 +1216,7 @@ pub async fn get_inference_config(pool: &SqlitePool) -> AppResult<InferenceConfi
         row.api_key,
         row.connection_id,
         parse_json_format_strategy(&row.json_format_strategy),
+        row.tool_call_parser,
     ))
 }
 
@@ -1294,7 +1295,7 @@ fn parse_json_format_strategy(raw: &str) -> JsonFormatStrategy {
 
 pub async fn list_inference_connections(pool: &SqlitePool) -> AppResult<Vec<InferenceConnection>> {
     let rows = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, model, json_format_strategy FROM inference_connections ORDER BY id",
+        "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser FROM inference_connections ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -1325,7 +1326,7 @@ pub async fn get_inference_connection(
     id: i64,
 ) -> AppResult<InferenceConnection> {
     let row = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, model, json_format_strategy FROM inference_connections WHERE id = ?1",
+        "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser FROM inference_connections WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1340,7 +1341,7 @@ pub async fn update_inference_connection(
     payload: InferenceConnectionUpdate,
 ) -> AppResult<InferenceConnection> {
     let current = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, model, json_format_strategy FROM inference_connections WHERE id = ?1",
+        "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser FROM inference_connections WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1357,16 +1358,18 @@ pub async fn update_inference_connection(
         .json_format_strategy
         .map(json_format_strategy_to_db)
         .unwrap_or(current.json_format_strategy.as_str());
+    let tool_call_parser = payload.tool_call_parser.unwrap_or(current.tool_call_parser);
     let model = payload.model.unwrap_or(current.model);
 
     sqlx::query(
-        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, model = ?4, json_format_strategy = ?5 WHERE id = ?6",
+        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, model = ?4, json_format_strategy = ?5, tool_call_parser = ?6 WHERE id = ?7",
     )
     .bind(name.trim())
     .bind(inference_url.trim())
     .bind(api_key)
     .bind(model)
     .bind(json_format_strategy)
+    .bind(tool_call_parser)
     .bind(id)
     .execute(pool)
     .await?;
@@ -2138,6 +2141,7 @@ struct InferenceConnectionRow {
     api_key: String,
     model: String,
     json_format_strategy: String,
+    tool_call_parser: String,
 }
 
 impl InferenceConnectionRow {
@@ -2149,6 +2153,7 @@ impl InferenceConnectionRow {
             api_key_set: !self.api_key.is_empty(),
             model: self.model,
             json_format_strategy: parse_json_format_strategy(&self.json_format_strategy),
+            tool_call_parser: self.tool_call_parser,
         }
     }
 }
@@ -2160,6 +2165,7 @@ struct ActiveConnectionRow {
     connection_url: Option<String>,
     api_key: Option<String>,
     json_format_strategy: String,
+    tool_call_parser: String,
 }
 
 #[cfg(test)]

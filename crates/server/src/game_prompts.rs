@@ -1,7 +1,8 @@
-use dreamwell_state::STATE_CHANGE_PROMPT;
+use dreamwell_state::{state_kind_str, STATE_CHANGE_PROMPT};
 use dreamwell_types::{
     substitute_macros, Game, GameActor, GameDetail, GameScene, GameTurn, GameTurnCheck,
-    MacroContext, Settings,
+    MacroContext, Settings, PROSE_CHECK_MARKER_OPEN, PROSE_INLINE_MARKER_CLOSE,
+    PROSE_MECH_MARKER_OPEN, PROSE_STATE_MARKER_OPEN,
 };
 use serde_json::json;
 
@@ -43,6 +44,7 @@ Rules:
 - Checks add gameplay even in cozy, intimate, or slice-of-life scenarios — use them when the outcome is uncertain or when success/failure would change the scene
 - In gentle or low-peril scenarios, stakes can be social, emotional, craft, memory, composure, or subtle consequence — not combat, injury, or alarm
 - Skip a check only when the action is purely observational or already guaranteed with no meaningful uncertainty
+- When the scenario resolves the action through its own board/deck/dice mechanics (rolling the game's die, moving a piece, drawing or resolving a card), do NOT add a separate dramatic check for that routine mechanical step — return an empty checks array; reserve checks for genuinely uncertain dramatic, social, or interpersonal moments the game's own mechanics do not already cover
 - Do not invent danger, opposition, clocks, or escalation unless the scenario or player action calls for it
 - When checks are needed: use 2d6 + modifier PbtA-style resolution
 - Propose skill, modifier, stakes, and justification for each check; stakes must fit the scenario tone, not default adventure peril
@@ -90,6 +92,51 @@ Rules:
 - Do not contradict established state, scenario parameters, scene beats, or the turn plan
 - NEVER narrate the PC making choices or taking actions beyond what the player action and scene beats specify
 - No JSON, no meta commentary — prose only"#;
+
+const INLINE_PROSE_AGENT_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose that resolves the player's action and moves the scene forward, calling tools inline to fire any real game mechanic.
+
+POV (overrides GM style):
+- Always narrate the PC in second person: "you"/"your" — NEVER "I"/"my"/"me" for the PC, even if GM style says first person.
+- GM style first-person instructions apply to tone, pacing, and detail level only — not pronouns.
+- NPCs and their dialogue use third person or quoted speech as usual.
+
+Turn shape (decide this BEFORE you narrate or call any tool):
+- A turn is EITHER (A) resolving a card/effect left pending from a previous turn, OR (B) starting a fresh move. It is almost never both.
+- FIRST check for a pending card: did a previous turn draw a card that told the PC to Choose/Name a target or roll, and is the player's action this turn the answer to that? The "Card still in play" block (when present) and the most recent prose tell you. If so, you are in case (A).
+- Case (A) — RESOLVE the pending card: apply the player's stated choice, call roll_dice for any die the card specifies, call apply_state_changes for the resulting state changes, and narrate the effect IN FULL per the scenario's writing style. Do NOT call board_move and do NOT draw_card this turn — finishing the pending card IS the entire turn.
+- Case (B) — START a fresh move: call board_move ONCE to advance the piece, then draw_card for the space you land on. Then either resolve the card (if the player action already supplies its choices) or stop with ask_pc_decision.
+- Hard rules: at most ONE board_move per turn; never board_move or draw_card while a card's effect is unresolved; never skip resolving a drawn card by moving on.
+
+How to narrate:
+- Narrate the world, NPCs, environment, and the consequences of the player's stated action — in second person ("you").
+- Follow GM style and scenario rules for pacing, length, and level of detail. When the scenario's writing style asks for a long, detailed sequence when an effect resolves, deliver it — do not compress a resolved card effect into a single sentence.
+- Prefer plain action and dialogue over lyrical description and stacked metaphors unless GM style calls for richer prose.
+- Honor any resolved check tiers already rolled for this turn — a fail must not read as unqualified success.
+
+Inline mechanics (use tools, never invent outcomes):
+- board_move rolls the board move die internally — call board_move alone for movement; NEVER call roll_dice for the move die first.
+- roll_dice is ONLY for a drawn card's effect roll (after the player has chosen its targets) or other scenario rules — not for board movement.
+- Whenever the scenario calls for a real mechanic — moving on a board, drawing a card, or rolling dice for a card — CALL THE MATCHING TOOL at that exact moment in the narration instead of describing the result yourself.
+- After a tool returns, its result is inserted into the narration as a visible block; continue narrating from the actual outcome the tool produced (e.g. use the canonical card text the tool returned, and the actual rolled numbers).
+- Do not fabricate dice numbers, card text, or board movement — always route those through the tools.
+- Do not run mandatory turn mechanics up front; only fire board_move, draw_card, and roll_dice when the narration reaches that moment.
+
+Card choices (PC agency):
+- When a drawn card says "Choose" or "Name" a player, body part, or target and the player action did not specify those choices, call ask_pc_decision with a concrete question BEFORE roll_dice or apply_state_changes for the effect.
+- Do not pick card targets, body parts, or strategic options for the PC.
+
+Tracked state (apply_state_changes tool):
+- When the scene establishes or changes durable tracked facts (location, mood, inventory, NPC attributes, clocks, resources) OR resolves a card or mechanic effect, call apply_state_changes with the changes array — do not only mention them in prose.
+- Use apply_state_changes for every state update the scenario or current state block implies; the tool is the source of truth, not the prose alone.
+- Do not apply transformation or card-effect state the player has not chosen yet.
+
+Ending the turn:
+- When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question for the player, then stop — do not narrate the PC's choice.
+- Do not end with menu-style options ("watch X's turn" / "roll and continue") unless the player action explicitly asked for that — use ask_pc_decision for a single clear question instead.
+- After fully resolving a pending card (case A), end the turn — do not roll into the next player's move unless the player action asked for it.
+- Otherwise narrate up to the next point where the player must decide what to do, then stop.
+- End the turn at that decision point; do not narrate the PC's next choice for them.
+- Plain prose and tool calls only — no JSON, no meta commentary, no headers."#;
 
 fn game_system_prompt(base: &str) -> String {
     format!("{base}\n\n{PC_AGENCY_RULES}")
@@ -216,6 +263,8 @@ enum TurnPromptPhase {
     DeclareChecks,
     Resolve,
     Prose,
+    /// Single-pass narration that calls scenario mechanic tools inline (structured engine mode).
+    ProseInline,
 }
 
 /// Inputs shared by every turn-pipeline prompt builder.
@@ -313,7 +362,7 @@ fn history_context_for_phase(
             },
             0,
         ),
-        TurnPromptPhase::Prose => (budget, 1),
+        TurnPromptPhase::Prose | TurnPromptPhase::ProseInline => (budget, 1),
         TurnPromptPhase::Plan | TurnPromptPhase::DeclareChecks => (budget, 0),
     };
     let tiers = build_turn_context_tiers_with_budget(
@@ -355,6 +404,13 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
     let state_block = build_state_block(&detail.state, &detail.actors);
     push_section(&mut body, &format!("Current state:\n{state_block}"));
 
+    if phase == TurnPromptPhase::ProseInline {
+        let schema = format_tracked_state_schema(&game.state_schema);
+        if !schema.is_empty() {
+            push_section(&mut body, &schema);
+        }
+    }
+
     let history = history_context_for_phase(detail, turn, phase, settings, ctx);
     push_section(&mut body, &history);
 
@@ -366,9 +422,18 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         }
     }
 
-    if matches!(phase, TurnPromptPhase::Resolve | TurnPromptPhase::Prose) {
+    if matches!(
+        phase,
+        TurnPromptPhase::Resolve | TurnPromptPhase::Prose | TurnPromptPhase::ProseInline
+    ) {
         let checks_text = format_resolved_checks(checks);
         push_section(&mut body, &format!("Resolved checks:\n{checks_text}"));
+    }
+
+    if phase == TurnPromptPhase::ProseInline {
+        if let Some(section) = card_in_play_section(detail, turn) {
+            push_section(&mut body, &section);
+        }
     }
 
     if phase == TurnPromptPhase::Prose && !turn.scene_beats.is_empty() {
@@ -389,7 +454,64 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         );
     }
 
+    if phase == TurnPromptPhase::ProseInline {
+        push_section(
+            &mut body,
+            "Narrate this turn now in second person (\"you\"). \
+             FIRST: if a card is still in play from the previous turn and the player's action answers it, resolve that card (roll its die, apply the state changes, narrate the full effect) and do NOT call board_move or draw_card this turn. \
+             Only if no card is in play, start the turn with board_move only (it rolls the move die), then draw_card for the space you land on. \
+             After draw_card, if the card text says Choose/Name and the player did not specify, call ask_pc_decision before roll_dice or apply_state_changes. \
+             Call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
+        );
+    }
+
     body
+}
+
+/// When the immediately previous turn ended on a freshly drawn card whose effect was
+/// never resolved (the last mechanical result is the card draw, with no resolving roll
+/// after it), surface that card so the inline-prose agent finishes resolving it this
+/// turn instead of advancing the piece and drawing again.
+fn card_in_play_section(detail: &GameDetail, current: &GameTurn) -> Option<String> {
+    use dreamwell_types::MechanicalData;
+    let prev = detail
+        .turns
+        .iter()
+        .filter(|t| t.id != current.id && t.sort_order < current.sort_order)
+        .filter(|t| !t.mechanical_results.is_empty())
+        .max_by_key(|t| t.sort_order)?;
+    let MechanicalData::CardDraw { name, text, .. } = &prev.mechanical_results.last()?.data else {
+        return None;
+    };
+    Some(format!(
+        "Card still in play (drawn last turn, effect not yet resolved):\n- {name}: {text}\n\
+         If the player's action this turn supplies the choice(s) this card needs, RESOLVE this card now — \
+         roll any die it specifies, apply the resulting state changes, and narrate the full effect — \
+         and do NOT call board_move or draw_card this turn.",
+    ))
+}
+
+fn format_tracked_state_schema(schema: &[dreamwell_types::TrackedVarDef]) -> String {
+    if schema.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = schema
+        .iter()
+        .map(|def| {
+            let mut line = format!("- {} ({})", def.key, state_kind_str(def.kind));
+            if !def.description.trim().is_empty() {
+                line.push_str(&format!(": {}", def.description.trim()));
+            }
+            if !def.update_hints.trim().is_empty() {
+                line.push_str(&format!(" [hint: {}]", def.update_hints.trim()));
+            }
+            line
+        })
+        .collect();
+    format!(
+        "Tracked state schema (use apply_state_changes to update these):\n{}",
+        lines.join("\n")
+    )
 }
 
 pub fn build_declare_checks_messages(
@@ -471,6 +593,40 @@ pub fn build_prose_messages(
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": game_system_prompt(PROSE_SYSTEM) }),
+        json!({ "role": "user", "content": user }),
+    ]
+}
+
+/// Messages for the single-pass inline-prose tool agent (structured engine mode):
+/// the model narrates and calls scenario mechanic tools inline.
+pub fn build_inline_prose_agent_messages(
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    checks: &[GameTurnCheck],
+    guidance: &str,
+    settings: &Settings,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
+    let inputs = TurnPromptInputs {
+        game,
+        detail,
+        turn,
+        checks,
+        guidance,
+        settings,
+        ctx: &ctx,
+    };
+    let body = build_cumulative_turn_body(TurnPromptPhase::ProseInline, &inputs);
+    let user = user_message_with_scenario(game, &body, &ctx);
+    vec![
+        json!({
+            "role": "system",
+            "content": format!(
+                "{}\n\n{STATE_CHANGE_PROMPT}",
+                game_system_prompt(INLINE_PROSE_AGENT_SYSTEM)
+            ),
+        }),
         json!({ "role": "user", "content": user }),
     ]
 }
@@ -574,8 +730,46 @@ pub(crate) fn format_turn_context_sections(tiers: &TurnContextTiers) -> String {
     sections.join("\n\n")
 }
 
+/// Remove inline `⟦mech:N⟧` / `⟦state:N⟧` / `⟦check:N⟧` markers from stored prose so they never
+/// leak into history context or summaries (the surrounding narration already conveys
+/// the outcome). Collapses the blank lines the markers were padded with.
+fn strip_prose_inline_markers(prose: &str) -> String {
+    let marker_opens = [
+        PROSE_MECH_MARKER_OPEN,
+        PROSE_STATE_MARKER_OPEN,
+        PROSE_CHECK_MARKER_OPEN,
+    ];
+    let mut out = String::with_capacity(prose.len());
+    let mut rest = prose;
+    while let Some((open_idx, open_tag)) = marker_opens
+        .iter()
+        .filter_map(|tag| rest.find(tag).map(|idx| (idx, *tag)))
+        .min_by_key(|(idx, _)| *idx)
+    {
+        out.push_str(&rest[..open_idx]);
+        let after = &rest[open_idx + open_tag.len()..];
+        match after.find(PROSE_INLINE_MARKER_CLOSE) {
+            Some(close) => rest = &after[close + PROSE_INLINE_MARKER_CLOSE.len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    while out.contains("\n\n\n") {
+        out = out.replace("\n\n\n", "\n\n");
+    }
+    out
+}
+
+fn strip_prose_mech_markers(prose: &str) -> String {
+    strip_prose_inline_markers(prose)
+}
+
 fn format_prior_prose_chunk(turn: &GameTurn, ctx: &MacroContext<'_>) -> String {
-    let prose = substitute_macros(turn.prose.trim(), ctx);
+    let cleaned = strip_prose_mech_markers(turn.prose.trim());
+    let prose = substitute_macros(cleaned.trim(), ctx);
     if turn.is_opening {
         format!("Opening:\n{prose}")
     } else {
@@ -652,8 +846,7 @@ fn most_recent_prior_prose(
 ) -> Option<String> {
     turns
         .iter()
-        .filter(|t| t.id < before_id && !t.prose.trim().is_empty())
-        .next_back()
+        .rfind(|t| t.id < before_id && !t.prose.trim().is_empty())
         .map(|turn| format_prior_prose_chunk(turn, ctx))
 }
 
@@ -1099,6 +1292,22 @@ mod tests {
         assert!(user.contains("Recent turns (prose"));
         assert!(user.contains("Opening:"));
         assert!(user.contains("Steam curls"));
+    }
+
+    #[test]
+    fn inline_prose_system_overrides_first_person_gm_style() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let msgs = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let system = msgs[0]["content"].as_str().unwrap();
+        assert!(system.contains(r#"second person ("you")"#));
+        assert!(system.contains(r#"NEVER "I"/"my"/"me""#));
+        assert!(system.contains("board_move rolls the board move die"));
+        assert!(system.contains("ask_pc_decision"));
+        let user = msgs[1]["content"].as_str().unwrap();
+        assert!(user.contains("board_move only"));
     }
 
     #[test]

@@ -544,8 +544,7 @@ fn characters_route(character_id: Option<i64>, chat_id: Option<i64>, sidebar: bo
 
 fn route_if_settings(segments: &[&str]) -> Option<AppRoute> {
     segments
-        .iter()
-        .any(|segment| *segment == "settings")
+        .contains(&"settings")
         .then_some(AppRoute::Settings { sidebar: false })
 }
 
