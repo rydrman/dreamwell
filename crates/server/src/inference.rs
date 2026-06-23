@@ -619,14 +619,37 @@ fn format_json_parse_failure(
     )
 }
 
+/// Extract JSON from a model response that may have wrapped it in a Markdown
+/// code fence. Handles the common cases models produce:
+/// - the whole response fenced (```json ... ``` or ``` ... ```)
+/// - prose before and/or after the fence
+/// - a missing closing fence (truncated response)
+///
+/// When no fence is present the trimmed input is returned unchanged.
 fn strip_json_fence(text: &str) -> &str {
     let trimmed = text.trim();
-    trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .and_then(|s| s.strip_suffix("```"))
-        .map(str::trim)
-        .unwrap_or(trimmed)
+    let Some(open) = trimmed.find("```") else {
+        return trimmed;
+    };
+    // Skip the opening fence and an optional language tag on the same line
+    // (e.g. ```json), up to and including the newline.
+    let after_open = &trimmed[open + 3..];
+    let body = match after_open.find('\n') {
+        Some(nl) => &after_open[nl + 1..],
+        // Fence and content on one line: ```{...}``` or ```json {...}
+        None => after_open.trim_start_matches("json").trim_start(),
+    };
+    // Take everything up to the closing fence, if there is one.
+    let inner = match body.find("```") {
+        Some(close) => &body[..close],
+        None => body,
+    };
+    let inner = inner.trim();
+    if inner.is_empty() {
+        trimmed
+    } else {
+        inner
+    }
 }
 
 #[cfg(test)]
@@ -648,6 +671,27 @@ mod tests {
             inference_server_root("http://localhost:8080"),
             "http://localhost:8080"
         );
+    }
+
+    #[test]
+    fn strip_json_fence_handles_fence_variants() {
+        // Plain JSON, no fence.
+        assert_eq!(strip_json_fence("{\"a\":1}"), "{\"a\":1}");
+        // Fenced with json tag.
+        assert_eq!(strip_json_fence("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+        // Fenced without language tag.
+        assert_eq!(strip_json_fence("```\n{\"a\":1}\n```"), "{\"a\":1}");
+        // Prose before and after the fence.
+        assert_eq!(
+            strip_json_fence("Here you go:\n```json\n{\"a\":1}\n```\nHope that helps!"),
+            "{\"a\":1}"
+        );
+        // Missing closing fence (truncated response).
+        assert_eq!(strip_json_fence("```json\n{\"a\":1}"), "{\"a\":1}");
+        // Fence and content on a single line.
+        assert_eq!(strip_json_fence("```json {\"a\":1}```"), "{\"a\":1}");
+        // Empty fence falls back to the original trimmed text.
+        assert_eq!(strip_json_fence("```\n```"), "```\n```");
     }
 
     #[test]
