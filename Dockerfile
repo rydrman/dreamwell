@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
 
-ARG RUST_VERSION=1.86
+ARG RUST_VERSION=1.93
 ARG TRUNK_VERSION=v0.21.14
 ARG TRUNK_BASE_URL=https://github.com/trunk-rs/trunk/releases/download
 
 FROM rust:${RUST_VERSION}-bookworm AS rust-base
 ARG TRUNK_VERSION
 ARG TRUNK_BASE_URL
-RUN rustup target add wasm32-unknown-unknown \
+RUN rustup component add rustfmt clippy \
+    && rustup target add wasm32-unknown-unknown \
     && curl -fsSL "${TRUNK_BASE_URL}/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
     | tar -xz -C /usr/local/cargo/bin trunk
 
