@@ -277,26 +277,23 @@ async fn run_turn_mechanicals(
     Ok(())
 }
 
-async fn run_turn_checks_phase(
+/// Ask the model which dramatic checks (if any) the action needs based on the PC's
+/// skills, then validate, roll, and persist them. Shared by the pipeline checks phase
+/// and the structured inline-prose agent. Caller owns the surrounding turn phase markers.
+pub async fn declare_and_roll_checks(
     pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
     game_id: i64,
     turn_id: i64,
-) -> AppResult<()> {
-    if token.is_cancelled() {
-        return cancel_turn_job(pool, job).await;
-    }
-    db::update_turn_phase(pool, turn_id, "checks").await?;
+    guidance: &str,
+    settings: &Settings,
+    token: &CancellationToken,
+) -> AppResult<Vec<GameTurnCheck>> {
     let inference = db::get_inference_config(pool).await?;
     let detail = db::get_game_detail(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
 
-    let messages =
-        build_declare_checks_messages(&game, &detail, &turn, &job.guidance_notes, settings);
+    let messages = build_declare_checks_messages(&game, &detail, &turn, guidance, settings);
     let checks_model = model_for_phase(&game, settings, GameModelPhase::Checks);
     let declared: DeclareChecksResponse = db::chat_completion_json_for_connection(
         pool,
@@ -343,6 +340,25 @@ async fn run_turn_checks_phase(
         db::insert_turn_check(pool, turn_id, &game_check).await?;
         rolled_checks.push(game_check);
     }
+    Ok(rolled_checks)
+}
+
+async fn run_turn_checks_phase(
+    pool: &SqlitePool,
+    job_id: i64,
+    job: &Job,
+    settings: &Settings,
+    token: &CancellationToken,
+    game_id: i64,
+    turn_id: i64,
+) -> AppResult<()> {
+    if token.is_cancelled() {
+        return cancel_turn_job(pool, job).await;
+    }
+    db::update_turn_phase(pool, turn_id, "checks").await?;
+    let game = db::get_game_detail(pool, game_id).await?.game;
+
+    declare_and_roll_checks(pool, game_id, turn_id, &job.guidance_notes, settings, token).await?;
 
     db::update_turn_phase(pool, turn_id, "rolled").await?;
 

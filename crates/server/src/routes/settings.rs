@@ -13,11 +13,13 @@ use crate::db;
 use crate::error::AppResult;
 use crate::inference::{list_models, probe_model_capabilities};
 use crate::routes::AppState;
+use crate::tool_stream::list_tool_parsers;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(get_settings).patch(patch_settings))
         .route("/models", get(get_models))
+        .route("/tool-parsers", get(get_tool_parsers))
         .route("/model-capabilities", get(get_model_capabilities))
         .route(
             "/connections",
@@ -45,6 +47,15 @@ async fn patch_settings(
 async fn get_models(State(state): State<AppState>) -> AppResult<Json<Vec<ModelInfo>>> {
     let inference = db::get_inference_config(&state.pool).await?;
     Ok(Json(list_models(&inference).await?))
+}
+
+async fn get_tool_parsers() -> AppResult<Json<Vec<String>>> {
+    Ok(Json(
+        list_tool_parsers()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

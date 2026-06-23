@@ -648,6 +648,7 @@ pub fn story_scope_from_value(value: &str) -> (i64, i64) {
     )
 }
 
+#[allow(dead_code)]
 fn chat_key_source(
     messages: &[Message],
     panel: &[ChatVariable],
@@ -829,6 +830,7 @@ fn previous_value_cell(link: &PreviousValueLink) -> Html {
     }
 }
 
+#[allow(dead_code)]
 fn merge_chat_inline_rows(
     scoped: Vec<VariableRowModel>,
     updates: &[MessageVariableUpdate],
@@ -1279,6 +1281,7 @@ pub fn make_story_variable_handlers(
     (on_save, on_delete)
 }
 
+#[allow(dead_code)]
 #[derive(Properties, PartialEq)]
 pub struct InlineChatVariablesProps {
     pub chat_id: i64,

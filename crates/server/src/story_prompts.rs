@@ -961,7 +961,7 @@ mod tests {
         let beat = chapter.beats[0].clone();
         let messages = build_beat_mechanical_messages(
             &sample_story(),
-            &[chapter.clone()],
+            std::slice::from_ref(&chapter),
             &chapter,
             &beat,
             "",
@@ -999,7 +999,7 @@ mod tests {
                 .to_string();
         let messages = build_beat_prose_messages(
             &sample_story(),
-            &[chapter.clone()],
+            std::slice::from_ref(&chapter),
             &chapter,
             &beat,
             "",
@@ -1026,7 +1026,7 @@ mod tests {
         story.tracked_details = "- protagonist name\n- the silver locket".to_string();
         let messages = build_beat_prose_messages(
             &story,
-            &[chapter.clone()],
+            std::slice::from_ref(&chapter),
             &chapter,
             &beat,
             "",
@@ -1054,7 +1054,7 @@ mod tests {
         beat.mechanical = "- She haggles for bread.\n- She leaves with a loaf.".to_string();
         let messages = build_beat_prose_continue_messages(
             &sample_story(),
-            &[chapter.clone()],
+            std::slice::from_ref(&chapter),
             &chapter,
             &beat,
             "",

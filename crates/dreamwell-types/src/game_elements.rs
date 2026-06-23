@@ -2,6 +2,31 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Inline marker emitted into turn prose to anchor a mechanical-result block at the
+/// exact point in the narration where the model triggered it. The frontend splits
+/// prose on these markers and renders the matching `MechanicalResult` inline.
+pub const PROSE_MECH_MARKER_OPEN: &str = "\u{27E6}mech:";
+pub const PROSE_STATE_MARKER_OPEN: &str = "\u{27E6}state:";
+pub const PROSE_CHECK_MARKER_OPEN: &str = "\u{27E6}check:";
+pub const PROSE_INLINE_MARKER_CLOSE: &str = "\u{27E7}";
+/// Legacy alias — all inline marker types share the same closing delimiter.
+pub const PROSE_MECH_MARKER_CLOSE: &str = PROSE_INLINE_MARKER_CLOSE;
+
+/// Build the inline prose marker for the mechanical result with the given sort order.
+pub fn prose_mech_marker(sort_order: i64) -> String {
+    format!("{PROSE_MECH_MARKER_OPEN}{sort_order}{PROSE_INLINE_MARKER_CLOSE}")
+}
+
+/// Anchor an applied state change at a point in the narration.
+pub fn prose_state_marker(index: i64) -> String {
+    format!("{PROSE_STATE_MARKER_OPEN}{index}{PROSE_INLINE_MARKER_CLOSE}")
+}
+
+/// Anchor a dramatic check (rolled before prose) at the start of narration.
+pub fn prose_check_marker(sort_order: i64) -> String {
+    format!("{PROSE_CHECK_MARKER_OPEN}{sort_order}{PROSE_INLINE_MARKER_CLOSE}")
+}
+
 /// How a game turn is orchestrated.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -214,6 +239,17 @@ pub struct TurnObservability {
     pub phase_timings_ms: HashMap<String, u64>,
 }
 
+/// Fill in the default board-game mechanical step template when boards/decks exist but
+/// `turn_mechanicals` was never seeded (e.g. games created before import wired it in).
+pub fn normalize_game_elements(mut config: GameElementsConfig) -> GameElementsConfig {
+    let has_board_game_content =
+        !config.boards.is_empty() || config.decks.iter().any(|deck| !deck.cards.is_empty());
+    if config.turn_mechanicals.is_empty() && has_board_game_content {
+        config.turn_mechanicals = default_board_game_mechanicals();
+    }
+    config
+}
+
 /// Default turn template for board game scenarios.
 pub fn default_board_game_mechanicals() -> Vec<MechanicalStep> {
     vec![
@@ -343,6 +379,25 @@ pub fn parse_truth_spaces(value: &str) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_game_elements_fills_turn_mechanicals() {
+        let config = GameElementsConfig {
+            boards: vec![BoardDef {
+                id: "main".to_string(),
+                spaces: 80,
+                move_dice: "1d6".to_string(),
+                tag_rules: vec![],
+                default_tag: "transformation".to_string(),
+            }],
+            ..Default::default()
+        };
+        let normalized = normalize_game_elements(config);
+        assert_eq!(
+            normalized.turn_mechanicals,
+            default_board_game_mechanicals()
+        );
+    }
 
     #[test]
     fn engine_mode_round_trips_db() {

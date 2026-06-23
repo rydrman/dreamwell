@@ -29,6 +29,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn renders_blockquote() {
+        let html = message_content_to_html("> Who do you target?");
+        assert!(html.contains("<blockquote>"));
+        assert!(html.contains("Who do you target?"));
+    }
+
+    #[test]
     fn renders_italics_and_bold() {
         let html = message_content_to_html("*italic* and **bold**");
         assert!(html.contains("<em>italic</em>"));

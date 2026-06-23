@@ -18,6 +18,7 @@ pub struct InferenceConfig {
     api_key: Option<String>,
     pub connection_id: Option<i64>,
     pub json_format_strategy: JsonFormatStrategy,
+    pub tool_call_parser: String,
 }
 
 impl InferenceConfig {
@@ -26,6 +27,7 @@ impl InferenceConfig {
         api_key: Option<String>,
         connection_id: Option<i64>,
         json_format_strategy: JsonFormatStrategy,
+        tool_call_parser: String,
     ) -> Self {
         let api_key = api_key.filter(|key| !key.is_empty());
         Self {
@@ -33,6 +35,7 @@ impl InferenceConfig {
             api_key,
             connection_id,
             json_format_strategy,
+            tool_call_parser,
         }
     }
 
@@ -323,6 +326,150 @@ pub async fn stream_chat_completion(
             Err(err) => vec![Err(err)],
         })
     })))
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolStreamChunk {
+    Content(String),
+    Done {
+        native_tool_calls: Vec<ToolCall>,
+        #[allow(dead_code)]
+        finish_reason: Option<String>,
+    },
+}
+
+#[derive(Default)]
+struct NativeToolCallBuilder {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_chat_completion_with_tools(
+    config: &InferenceConfig,
+    model: &str,
+    messages: &[serde_json::Value],
+    tools: &[serde_json::Value],
+    tool_choice: &serde_json::Value,
+    temperature: f64,
+    top_p: f64,
+    max_tokens: i64,
+) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<ToolStreamChunk>> + Send>>> {
+    let url = format!("{}/chat/completions", config.url().trim_end_matches('/'));
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_tokens": max_tokens,
+        "stream": true,
+    });
+    let response = config
+        .with_auth(streaming_client().post(url))
+        .json(&payload)
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::inference(format!(
+            "Inference server returned {status}: {body}"
+        )));
+    }
+
+    let byte_stream = TokioStreamExt::timeout(
+        FuturesStreamExt::map(response.bytes_stream(), |chunk| {
+            chunk.map_err(AppError::from)
+        }),
+        STREAM_IDLE_TIMEOUT,
+    );
+    let byte_stream = FuturesStreamExt::map(byte_stream, |result| match result {
+        Ok(item) => item,
+        Err(_elapsed) => Err(AppError::inference(format!(
+            "Inference stream stalled (no data for {}s)",
+            STREAM_IDLE_TIMEOUT.as_secs()
+        ))),
+    });
+
+    let stream = async_stream::try_stream! {
+        let mut native_calls: std::collections::BTreeMap<usize, NativeToolCallBuilder> =
+            std::collections::BTreeMap::new();
+        let mut finish_reason = None;
+        let mut byte_stream = std::pin::pin!(byte_stream);
+        while let Some(chunk_result) = FuturesStreamExt::next(&mut byte_stream).await {
+            let chunk: bytes::Bytes = chunk_result?;
+            let text = String::from_utf8_lossy(&chunk);
+            let mut saw_done = false;
+            for line in text.lines() {
+                let line = line.trim();
+                if !line.starts_with("data: ") {
+                    continue;
+                }
+                let data = line.trim_start_matches("data: ").trim();
+                if data == "[DONE]" {
+                    saw_done = true;
+                    break;
+                }
+                let Ok(json) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
+                if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
+                    finish_reason = Some(reason.to_string());
+                }
+                let delta = &json["choices"][0]["delta"];
+                if let Some(token) = delta["content"].as_str() {
+                    if !token.is_empty() {
+                        yield ToolStreamChunk::Content(token.to_string());
+                    }
+                }
+                if let Some(calls) = delta["tool_calls"].as_array() {
+                    for call in calls {
+                        let index = call["index"].as_u64().unwrap_or(0) as usize;
+                        let entry = native_calls.entry(index).or_default();
+                        if let Some(id) = call["id"].as_str() {
+                            entry.id = Some(id.to_string());
+                        }
+                        if let Some(name) = call["function"]["name"].as_str() {
+                            entry.name = Some(name.to_string());
+                        }
+                        if let Some(args) = call["function"]["arguments"].as_str() {
+                            entry.arguments.push_str(args);
+                        }
+                    }
+                }
+            }
+            if saw_done {
+                break;
+            }
+        }
+        let native_tool_calls = native_calls
+            .into_values()
+            .filter_map(|builder| {
+                let name = builder.name?;
+                if name.is_empty() {
+                    return None;
+                }
+                Some(ToolCall {
+                    id: builder.id.unwrap_or_else(|| "call".to_string()),
+                    name,
+                    arguments: if builder.arguments.is_empty() {
+                        "{}".to_string()
+                    } else {
+                        builder.arguments
+                    },
+                })
+            })
+            .collect();
+        yield ToolStreamChunk::Done {
+            native_tool_calls,
+            finish_reason,
+        };
+    };
+
+    Ok(Box::pin(stream))
 }
 
 pub async fn chat_completion(

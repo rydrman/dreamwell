@@ -490,6 +490,10 @@ pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
     json(api_request("GET", "/api/settings/models")).await
 }
 
+pub async fn list_tool_parsers() -> Result<Vec<String>, String> {
+    json(api_request("GET", "/api/settings/tool-parsers")).await
+}
+
 pub async fn get_model_capabilities(model: &str) -> Result<ModelCapabilities, String> {
     let encoded = js_sys::encode_uri_component(model);
     json(api_request(

@@ -2743,6 +2743,104 @@ details.plan-beats-list {
   margin: 0;
 }
 
+/* Inline mechanic blocks rendered mid-narration in full-structured game turns. */
+.game-inline-mechanic {
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #6b8afd);
+  border-radius: 0.5rem;
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+}
+
+.game-inline-dice {
+  display: flex;
+  align-items: center;
+}
+
+.game-inline-board {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.game-inline-board .roll-result {
+  margin: 0;
+}
+
+.game-inline-state .state-row--change {
+  margin: 0;
+}
+
+.game-inline-state-group {
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+}
+
+.game-inline-state-group-summary {
+  cursor: pointer;
+  padding: 0.35rem 0.6rem;
+  list-style: none;
+  user-select: none;
+}
+
+.game-inline-state-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.game-inline-state-group-summary::before {
+  content: "▸ ";
+  display: inline-block;
+  width: 0.85em;
+}
+
+.game-inline-state-group[open] > .game-inline-state-group-summary::before {
+  content: "▾ ";
+}
+
+.game-inline-state-group-body {
+  padding: 0 0.6rem 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.game-inline-state-group-body .state-list--changes {
+  margin-top: 0.35rem;
+}
+
+.game-prose .message-body blockquote {
+  border-left: 3px solid var(--accent, #6b8afd);
+  padding: 0.35rem 0 0.35rem 0.85rem;
+  margin: 0.75rem 0;
+  color: inherit;
+  font-style: normal;
+}
+
+.game-inline-dice .roll-result {
+  margin: 0;
+}
+
+.inline-mechanic-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.2rem;
+}
+
+.inline-card-name {
+  font-weight: 600;
+  margin-bottom: 0.15rem;
+}
+
+.inline-card-text {
+  white-space: pre-wrap;
+}
+
+.inline-board-move {
+  font-weight: 600;
+}
+
 /* Shared state list pattern: flat rows with dividers; optional outer border in panels. */
 .state-list {
   list-style: none;

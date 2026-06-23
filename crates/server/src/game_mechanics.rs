@@ -324,6 +324,20 @@ pub async fn sync_board_positions_to_state(
     Ok(())
 }
 
+pub async fn flush_turn_mechanicals_streaming(
+    pool: &sqlx::SqlitePool,
+    game_id: i64,
+    turn_id: i64,
+    results: &[MechanicalResult],
+    instances: &ElementInstances,
+) -> crate::error::AppResult<()> {
+    use crate::db;
+    db::update_turn_mechanical_results(pool, turn_id, results).await?;
+    db::update_game_element_instances(pool, game_id, instances).await?;
+    db::touch_game(pool, game_id).await?;
+    Ok(())
+}
+
 pub async fn persist_turn_mechanicals(
     pool: &sqlx::SqlitePool,
     game_id: i64,
