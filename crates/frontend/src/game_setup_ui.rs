@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use web_sys::HtmlSelectElement;
 use yew::prelude::*;
 
-use crate::scenario_ui::{
-    game_create_from_scenario, scenario_is_infinite_worlds, sorted_trait_rows, traits_from_rows,
-};
+use crate::scenario_ui::{game_create_from_scenario, sorted_trait_rows, traits_from_rows};
 
 #[derive(Properties, PartialEq)]
 pub struct GameSetupWizardProps {
@@ -330,7 +328,5 @@ pub fn game_setup_wizard(props: &GameSetupWizardProps) -> Html {
 }
 
 pub fn scenario_needs_setup(scenario: &Scenario) -> bool {
-    !scenario.setup_text.is_empty()
-        || !scenario.pc_options.is_empty()
-        || scenario_is_infinite_worlds(scenario)
+    !scenario.setup_text.is_empty() || !scenario.pc_options.is_empty()
 }

@@ -104,7 +104,6 @@ pub struct TriggerCondition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TriggerEffect {
-    InjectRulesBlock { block_name: String },
     SetState { key: String, value: String },
     AppendGmInstruction { text: String },
 }

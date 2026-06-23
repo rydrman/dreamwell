@@ -1,24 +1,24 @@
 use axum::{
     extract::{Multipart, Path, State},
+    http::{header, HeaderMap, HeaderValue},
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use dreamwell_types::{
-    scenario_create_from_iw_json, ImportScenarioResponse, OkResponse, Scenario, ScenarioCreate,
-    ScenarioUpdate,
+    ImportScenarioResponse, OkResponse, Scenario, ScenarioCreate, ScenarioExport, ScenarioUpdate,
 };
 
-use crate::character_import::parse_character_import;
 use crate::error::{AppError, AppResult};
 use crate::routes::AppState;
 use crate::scenario_db;
-use crate::scenario_import::scenario_create_from_character;
+use crate::scenario_import::{import_source_label, scenario_create_from_import};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_scenarios).post(create_scenario))
         .route("/import", post(import_scenario))
-        .route("/import-iw", post(import_iw_scenario))
+        .route("/:id/export", get(export_scenario))
         .route(
             "/:id",
             get(get_scenario)
@@ -65,6 +65,45 @@ async fn delete_scenario(
     Ok(Json(OkResponse { ok: true }))
 }
 
+async fn export_scenario(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<impl IntoResponse> {
+    let scenario = scenario_db::get_scenario(&state.pool, id).await?;
+    let export = ScenarioExport::from_scenario(&scenario);
+    let filename = export_filename(&scenario.title);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+            .map_err(|e| AppError::internal(e.to_string()))?,
+    );
+    Ok((headers, Json(export)))
+}
+
+fn export_filename(title: &str) -> String {
+    let slug: String = title
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "scenario.json".to_string()
+    } else {
+        format!("{slug}.json")
+    }
+}
+
 async fn import_scenario(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -87,48 +126,25 @@ async fn import_scenario(
                 .to_vec();
         }
     }
-    let card = parse_character_import(&filename, &content)?;
-    let payload = scenario_create_from_character(card);
+    if content.is_empty() {
+        return Err(AppError::bad_request("No file uploaded"));
+    }
+    let source = import_source_label(&filename, &content)?;
+    let payload = scenario_create_from_import(&filename, &content)?;
     let scenario = scenario_db::create_scenario(&state.pool, payload).await?;
-    let source = if filename.to_lowercase().ends_with(".png") {
-        "png"
-    } else {
-        "json"
-    };
     Ok(Json(ImportScenarioResponse {
         scenario,
         source: source.to_string(),
     }))
 }
 
-async fn import_iw_scenario(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> AppResult<Json<ImportScenarioResponse>> {
-    let mut content = Vec::new();
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::bad_request(e.to_string()))?
-    {
-        if field.name() == Some("file") {
-            content = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::bad_request(e.to_string()))?
-                .to_vec();
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_filename_slugifies_title() {
+        assert_eq!(export_filename("Crystal Quest"), "crystal-quest.json");
+        assert_eq!(export_filename("   "), "scenario.json");
     }
-    if content.is_empty() {
-        return Err(AppError::bad_request("No file uploaded"));
-    }
-    let json = std::str::from_utf8(&content)
-        .map_err(|e| AppError::bad_request(format!("Invalid UTF-8 in upload: {e}")))?;
-    let payload = scenario_create_from_iw_json(json)
-        .map_err(|e| AppError::bad_request(format!("Invalid IW export JSON: {e}")))?;
-    let scenario = scenario_db::create_scenario(&state.pool, payload).await?;
-    Ok(Json(ImportScenarioResponse {
-        scenario,
-        source: "iw".to_string(),
-    }))
 }

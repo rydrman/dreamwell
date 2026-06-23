@@ -23,7 +23,7 @@ pub fn scenarios_page(props: &ScenariosPageProps) -> Html {
             <header class="header">
                 <button class="btn secondary" onclick={props.on_back.reform(|_| ())}>{"← Back"}</button>
                 <h1 class="header-title">{"Scenarios"}</h1>
-                <p class="header-subtitle muted">{"Create, edit, and import world or scenario cards, then play them as games."}</p>
+                <p class="header-subtitle muted">{"Create, edit, import, and export scenarios, then play them as games."}</p>
             </header>
             <div class="scenarios-page-body">
                 <ScenarioPanel
@@ -53,7 +53,6 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
     let draft = use_state(ScenarioDraft::default);
     let editing_id = use_state(|| None::<i64>);
     let file_input = use_node_ref();
-    let iw_file_input = use_node_ref();
 
     {
         let scenarios = scenarios.clone();
@@ -102,39 +101,21 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                         }
                     })
                 }}>{"Import JSON/PNG"}</button>
-                <button class="btn secondary" onclick={{
-                    let iw_file_input = iw_file_input.clone();
-                    Callback::from(move |_| {
-                        if let Some(input) = iw_file_input.cast::<HtmlInputElement>() {
-                            input.click();
-                        }
-                    })
-                }}>{"Import IW JSON"}</button>
-                <input type="file" accept=".json" ref={iw_file_input} style="display:none;" onchange={{
-                    let scenarios = scenarios.clone();
-                    let draft = draft.clone();
-                    let editing_id = editing_id.clone();
-                    let on_scenarios_changed = props.on_scenarios_changed.clone();
-                    Callback::from(move |e: Event| {
-                        let input: HtmlInputElement = e.target_unchecked_into();
-                        if let Some(file) = input.files().and_then(|f| f.get(0)) {
-                            let scenarios = scenarios.clone();
-                            let draft = draft.clone();
-                            let editing_id = editing_id.clone();
-                            let on_scenarios_changed = on_scenarios_changed.clone();
+                if let Some(id) = *editing_id {
+                    <button class="btn secondary" onclick={{
+                        Callback::from(move |_| {
                             wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(scenario) = api::import_iw_scenario(&file).await {
-                                    if let Ok(list) = api::list_scenarios().await {
-                                        scenarios.set(list);
+                                if let Err(err) = download_scenario_export(id).await {
+                                    if let Some(window) = web_sys::window() {
+                                        let _ = window.alert_with_message(&format!(
+                                            "Could not export scenario: {err}"
+                                        ));
                                     }
-                                    on_scenarios_changed.emit(());
-                                    editing_id.set(Some(scenario.id));
-                                    draft.set(ScenarioDraft::from(&scenario));
                                 }
                             });
-                        }
-                    })
-                }} />
+                        })
+                    }}>{"Export JSON"}</button>
+                }
                 <input type="file" accept=".json,.png" ref={file_input} style="display:none;" onchange={{
                     let scenarios = scenarios.clone();
                     let draft = draft.clone();
@@ -233,7 +214,7 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                 }) }
             </div>
             { scenario_fields(&draft) }
-            { scenario_iw_sections(&draft) }
+            { scenario_extra_sections(&draft) }
             { scenario_traits_editor(&draft) }
             <button class="btn" style="margin-top:0.5rem;" onclick={{
                 let draft = draft.clone();
@@ -436,14 +417,14 @@ impl ScenarioDraft {
     }
 }
 
-fn scenario_iw_sections(draft: &UseStateHandle<ScenarioDraft>) -> Html {
+fn scenario_extra_sections(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     if draft.rules_blocks.is_empty() && draft.cast.is_empty() && draft.trait_defs.is_empty() {
         return html! {};
     }
     html! {
-        <div class="scenario-iw-sections">
+        <div class="scenario-extra-sections">
             if !draft.trait_defs.is_empty() {
-                <details class="scenario-iw-panel" open=true>
+                <details class="scenario-extra-panel" open=true>
                     <summary>{"Scenario traits"}</summary>
                     <ul>
                         { for draft.trait_defs.iter().map(|t| html! { <li>{ &t.name }</li> }) }
@@ -451,7 +432,7 @@ fn scenario_iw_sections(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                 </details>
             }
             if !draft.cast.is_empty() {
-                <details class="scenario-iw-panel">
+                <details class="scenario-extra-panel">
                     <summary>{ format!("Cast ({})", draft.cast.len()) }</summary>
                     <ul>
                         { for draft.cast.iter().map(|npc| html! {
@@ -461,7 +442,7 @@ fn scenario_iw_sections(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                 </details>
             }
             if !draft.rules_blocks.is_empty() {
-                <details class="scenario-iw-panel">
+                <details class="scenario-extra-panel">
                     <summary>{ format!("Rules blocks ({})", draft.rules_blocks.len()) }</summary>
                     { for draft.rules_blocks.iter().map(|block| html! {
                         <details class="rules-block-item" key={block.name.clone()}>
@@ -670,11 +651,8 @@ pub fn default_game_title(scenario_title: &str, scenario_id: i64, games: &[Game]
     }
 }
 
-pub fn scenario_is_infinite_worlds(scenario: &Scenario) -> bool {
-    scenario
-        .source_meta
-        .as_ref()
-        .is_some_and(|meta| meta.platform == "infinite_worlds")
+pub fn scenario_opening_as_player_action(scenario: &Scenario) -> bool {
+    !scenario.opening_message.trim().is_empty() && !scenario.pc_options.is_empty()
 }
 
 pub fn sorted_trait_rows(traits: &HashMap<String, i64>) -> Vec<(String, i64)> {
@@ -696,8 +674,7 @@ pub fn traits_from_rows(rows: &[(String, i64)]) -> HashMap<String, i64> {
 }
 
 pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCreate {
-    let opening_as_player_action =
-        scenario_is_infinite_worlds(scenario) && !scenario.opening_message.trim().is_empty();
+    let opening_as_player_action = scenario_opening_as_player_action(scenario);
     GameCreate {
         title,
         premise: scenario.premise.clone(),
@@ -717,5 +694,51 @@ pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCrea
         game_elements: scenario.game_elements.clone(),
         opening_as_player_action,
         ..Default::default()
+    }
+}
+
+async fn download_scenario_export(id: i64) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url};
+
+    let export = api::export_scenario(id).await?;
+    let json = serde_json::to_string_pretty(&export).map_err(|e| e.to_string())?;
+    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
+    let document = window.document().ok_or_else(|| "no document".to_string())?;
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(&json));
+    let bag = BlobPropertyBag::new();
+    bag.set_type("application/json");
+    let blob = Blob::new_with_str_sequence_and_options(&parts, &bag)
+        .map_err(|_| "blob failed".to_string())?;
+    let url = Url::create_object_url_with_blob(&blob).map_err(|_| "url failed".to_string())?;
+    let anchor = document
+        .create_element("a")
+        .map_err(|_| "anchor failed".to_string())?
+        .dyn_into::<HtmlAnchorElement>()
+        .map_err(|_| "anchor cast failed".to_string())?;
+    anchor.set_href(&url);
+    anchor.set_download(&export_filename(&export.scenario.title));
+    anchor.click();
+    let _ = Url::revoke_object_url(&url);
+    Ok(())
+}
+
+fn export_filename(title: &str) -> String {
+    let slug: String = title
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "scenario.json".to_string()
+    } else {
+        format!("{slug}.json")
     }
 }

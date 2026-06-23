@@ -1,0 +1,86 @@
+{
+  "format": "dreamwell.scenario.v1",
+  "title": "Crystal Quest",
+  "premise": "Background:\nYou discovered an antique board game at a neighborhood market.\n\nObjective:\nReach space 80 before anyone else.",
+  "setting": "",
+  "gm_style": "Clear, concise narration in second person.",
+  "opening_message": "The doorbell rings. Your three invited friends arrive for game night.\n",
+  "objective": "Complete the board game by reaching space 80.",
+  "setup_text": "Choose which friends to invite before the game begins.",
+  "rules_blocks": [
+    {
+      "name": "Game Mechanics",
+      "content": "The board has 80 spaces. Players roll 1d6 and move forward in fixed turn order."
+    },
+    {
+      "name": "Cards and probabilities",
+      "content": "Event Cards:\nCard 1: Boost - Move forward 2 extra spaces.\nCard 2: Redirect - Send another player back 3 spaces."
+    }
+  ],
+  "trait_defs": [
+    { "name": "Boldness", "description": "" },
+    { "name": "Curiosity", "description": "" }
+  ],
+  "cast": [
+    {
+      "name": "Alex",
+      "content": "An adventurous explorer who enjoys strategy games.",
+      "keywords": ["Alex"]
+    }
+  ],
+  "pc_options": [
+    {
+      "name": "Jordan",
+      "description": "A curious friend who loves puzzles.",
+      "traits": { "Boldness": 3, "Curiosity": 3 },
+      "setup_vars": []
+    }
+  ],
+  "state_schema": [
+    {
+      "key": "Leader_Position",
+      "kind": "resource",
+      "description": "Position of the leading game piece.",
+      "initial_value": "",
+      "visibility": "ai_only_boring",
+      "update_hints": "Update when a player moves."
+    }
+  ],
+  "content_flags": {
+    "mature": false,
+ 
+    "warnings": []
+  },
+  "game_elements": {
+    "boards": [
+      {
+        "id": "main",
+        "spaces": 80,
+        "move_dice": "1d6",
+        "tag_rules": [{ "tag": "truth", "spaces": [8, 11, 14] }],
+        "default_tag": "event"
+      }
+    ],
+    "decks": [
+      {
+        "id": "events",
+        "consume_on_draw": true,
+        "cards": [
+          {
+            "id": "event:1",
+            "name": "Boost",
+            "text": "Move forward 2 extra spaces.",
+            "requires_roll": false
+          },
+          {
+            "id": "event:2",
+            "name": "Redirect",
+            "text": "Send another player back 3 spaces.",
+            "requires_roll": false
+          }
+        ]
+      }
+    ],
+    "turn_mechanicals": []
+  }
+}

@@ -63,7 +63,7 @@ dev: run-docker
 run-docker:
 	chmod +x scripts/dev-run.sh
 	@status=0; \
-	$(COMPOSE_DEV) up --build --watch --abort-on-container-exit --exit-code-from dreamwell dreamwell \
+	$(COMPOSE_DEV) up --build --watch --exit-code-from dreamwell dreamwell \
 		|| status=$$?; \
 	$(COMPOSE_DEV) down --remove-orphans; \
 	exit $$status

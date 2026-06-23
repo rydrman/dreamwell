@@ -4,15 +4,13 @@ use serde::{Deserialize, Serialize};
 mod game_elements;
 mod game_import;
 mod game_presets;
-mod iw_import;
-mod iw_types;
 mod macros;
+mod scenario_export;
 mod scenario_iw;
 mod serde_helpers;
 
 pub use game_elements::{
-    build_game_elements_from_iw, default_board_game_mechanicals, normalize_game_elements,
-    parse_cards_from_rules_block, parse_truth_spaces, prose_check_marker, prose_mech_marker,
+    default_board_game_mechanicals, normalize_game_elements, prose_check_marker, prose_mech_marker,
     prose_state_marker, BoardDef, BoardTagRule, CardDef, DeckDef, DeckFrom, DeckInstance,
     ElementInstances, EngineMode, GameElementsConfig, MechanicalData, MechanicalKind,
     MechanicalResult, MechanicalStep, MechanicalWhen, TurnObservability, PROSE_CHECK_MARKER_OPEN,
@@ -24,8 +22,11 @@ pub use game_import::{
     scenario_create_from_character_record, GameCharacterImportMode,
 };
 pub use game_presets::{game_tone_preset_by_id, GameTonePreset, GAME_TONE_PRESETS};
-pub use iw_import::{iw_world_to_scenario, scenario_create_from_iw_json};
 pub use macros::{empty_setup_vars, substitute_macros, MacroContext};
+pub use scenario_export::{
+    is_scenario_export_value, parse_scenario_export_json, scenario_create_from_scenario,
+    ScenarioExport, SCENARIO_EXPORT_FORMAT,
+};
 pub use scenario_iw::{
     ContentFlags, GameTurnSystemRoll, PcOption, RulesBlock, ScenarioNpc, ScenarioTrigger,
     SetupVarChoice, SourceMeta, SystemRollRequest, TrackedVarDef, TraitDef, TriggerCondition,

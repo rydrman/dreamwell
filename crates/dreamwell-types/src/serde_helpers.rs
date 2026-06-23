@@ -17,27 +17,6 @@ where
     })
 }
 
-/// Accepts either a comma-separated string or a JSON array of strings.
-pub fn deserialize_string_or_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(match value {
-        serde_json::Value::String(s) => s
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(str::to_string)
-            .collect(),
-        serde_json::Value::Array(items) => items
-            .into_iter()
-            .filter_map(|item| item.as_str().map(str::to_string))
-            .collect(),
-        _ => Vec::new(),
-    })
-}
-
 pub fn serialize_optional_literal_string<S>(
     value: &Option<String>,
     serializer: S,
