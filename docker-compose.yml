@@ -14,12 +14,14 @@ services:
       - .:/app
       - dreamwell-cargo-registry:/usr/local/cargo/registry
       - dreamwell-cargo-git:/usr/local/cargo/git
+      - dreamwell-rustup:/usr/local/rustup
       - dreamwell-target:/app/target
       - dreamwell-data:/app/data
       - dreamwell-frontend-dist:/app/.frontend-dist
       - dreamwell-trunk-cache:/root/.cache/trunk
     environment:
       CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
       DREAMWELL_STATIC_DIR: .frontend-dist
       DREAMWELL_DATABASE_URL: sqlite:/app/data/dreamwell.db
     entrypoint: ["/app/scripts/dev-run.sh"]
@@ -35,6 +37,7 @@ services:
 volumes:
   dreamwell-cargo-registry:
   dreamwell-cargo-git:
+  dreamwell-rustup:
   dreamwell-target:
   dreamwell-data:
   dreamwell-frontend-dist:
