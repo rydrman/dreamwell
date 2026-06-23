@@ -534,26 +534,15 @@ pub async fn delete_scenario(id: i64) -> Result<(), String> {
     send_empty(api_request("DELETE", &format!("/api/scenarios/{id}"))).await
 }
 
+pub async fn export_scenario(id: i64) -> Result<ScenarioExport, String> {
+    json(api_request("GET", &format!("/api/scenarios/{id}/export"))).await
+}
+
 pub async fn import_scenario(file: &web_sys::File) -> Result<Scenario, String> {
     let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
     form.append_with_blob("file", file)
         .map_err(|_| "append failed".to_string())?;
     let response = gloo_net::http::Request::post("/api/scenarios/import")
-        .body(form)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let response = ensure_ok_response(response).await?;
-    let result: ImportScenarioResponse = response.json().await.map_err(|e| e.to_string())?;
-    Ok(result.scenario)
-}
-
-pub async fn import_iw_scenario(file: &web_sys::File) -> Result<Scenario, String> {
-    let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
-    form.append_with_blob("file", file)
-        .map_err(|_| "append failed".to_string())?;
-    let response = gloo_net::http::Request::post("/api/scenarios/import-iw")
         .body(form)
         .map_err(|e| e.to_string())?
         .send()

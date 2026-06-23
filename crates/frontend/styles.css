@@ -3040,14 +3040,14 @@ details.plan-beats-list {
   font-size: 0.85em;
 }
 
-.scenario-iw-sections {
+.scenario-extra-sections {
   margin: 1rem 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
 
-.scenario-iw-panel {
+.scenario-extra-panel {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.5rem 0.75rem;

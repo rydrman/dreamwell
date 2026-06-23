@@ -48,10 +48,11 @@ Per turn (see `TurnObservability`):
 - `mechanical_results` summary
 - Phase timings when logged
 
-## IW import
+## Scenario import/export
 
-- Cards parsed from `instructionBlocks["Cards and probabilities"]`
-- Board from Game Mechanics + `Truth_Spaces` tracked item
+- Native format: `dreamwell.scenario.v1` JSON documents with a top-level `format` field and scenario fields.
+- `/api/scenarios/import` accepts native scenario JSON, SillyTavern-style character JSON, or PNG cards.
+- `/api/scenarios/:id/export` downloads a native scenario JSON document.
 - Instances seeded at game create (shuffled decks, positions at 0)
 
 ## Notes

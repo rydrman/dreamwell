@@ -300,9 +300,7 @@ mod tests {
         .await
         .expect("game");
 
-        delete_scenario(&pool, created.id)
-            .await
-            .expect("delete");
+        delete_scenario(&pool, created.id).await.expect("delete");
 
         let scenario_id: Option<i64> =
             sqlx::query_scalar("SELECT scenario_id FROM games WHERE title = 'g'")
