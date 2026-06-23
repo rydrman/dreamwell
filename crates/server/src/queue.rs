@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dreamwell_types::{Job, JobStatus, JobType};
+use dreamwell_types::{structured_output_tokens, Job, JobStatus, JobType};
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -899,14 +899,6 @@ async fn run_chat_typed_generation_attempt(
     .await?;
 
     Ok(ChatGenerationOutcome::Success)
-}
-
-fn structured_output_tokens(settings: &dreamwell_types::Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        (settings.context_tokens / 8).clamp(256, 768)
-    } else {
-        512
-    }
 }
 
 async fn run_chat_legacy_generation_attempt(

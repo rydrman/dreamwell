@@ -721,6 +721,20 @@ pub fn suggested_response_tokens(context_tokens: i64) -> i64 {
     (context_tokens / 8).clamp(256, 4096)
 }
 
+/// Tokens for schema-constrained JSON completions (plan, checks, resolve).
+///
+/// Uses the configured `max_tokens`, reserving at least one third of `context_tokens`
+/// for the prompt when context size is known.
+pub fn structured_output_tokens(settings: &Settings) -> i64 {
+    const FLOOR: i64 = 512;
+    let requested = settings.max_tokens.max(FLOOR);
+    if settings.context_tokens > 0 {
+        requested.min(settings.context_tokens / 3)
+    } else {
+        requested
+    }
+}
+
 /// Tokens available for the prompt after reserving response length.
 pub fn prompt_token_budget(context_tokens: i64, response_tokens: i64) -> i64 {
     if context_tokens <= 0 {
@@ -736,7 +750,33 @@ pub fn estimate_token_count(text: &str) -> i64 {
 
 #[cfg(test)]
 mod context_budget_tests {
-    use super::{prompt_token_budget, suggested_response_tokens};
+    use super::{prompt_token_budget, structured_output_tokens, suggested_response_tokens, Settings};
+
+    fn sample_settings(max_tokens: i64, context_tokens: i64) -> Settings {
+        Settings {
+            inference_url: String::new(),
+            active_connection_id: None,
+            connections: Vec::new(),
+            model: String::new(),
+            temperature: 0.7,
+            top_p: 1.0,
+            max_tokens,
+            system_prompt_prefix: String::new(),
+            system_prompt_suffix: String::new(),
+            user_name: String::new(),
+            persona_description: String::new(),
+            summarize_enabled: false,
+            summarize_adaptive: false,
+            summarize_after_messages: 12,
+            summarize_keep_recent: 4,
+            variables_enabled: false,
+            thought_blocks_enabled: false,
+            max_context_messages: 0,
+            context_tokens,
+            auto_context_on_model_change: false,
+            max_concurrent_jobs: 1,
+        }
+    }
 
     #[test]
     fn suggested_response_scales_with_context() {
@@ -747,6 +787,24 @@ mod context_budget_tests {
     #[test]
     fn prompt_budget_subtracts_response() {
         assert_eq!(prompt_token_budget(8192, 1024), 7168);
+    }
+
+    #[test]
+    fn structured_output_uses_max_tokens_not_hard_cap() {
+        let s = sample_settings(4096, 32768);
+        assert_eq!(structured_output_tokens(&s), 4096);
+    }
+
+    #[test]
+    fn structured_output_respects_context_budget() {
+        let s = sample_settings(4096, 8192);
+        assert_eq!(structured_output_tokens(&s), 2730);
+    }
+
+    #[test]
+    fn structured_output_floor_when_max_tokens_low() {
+        let s = sample_settings(128, 8192);
+        assert_eq!(structured_output_tokens(&s), 512);
     }
 }
 
