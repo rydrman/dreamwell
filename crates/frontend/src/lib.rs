@@ -3870,6 +3870,33 @@ impl SettingsSaveContext {
         self.phase.set(SettingsSavePhase::Synced);
     }
 
+    /// Switch the active inference profile and persist immediately (no debounce).
+    fn switch_active_connection(&self, id: i64) {
+        let Some(mut current) = self.draft_ref.borrow().clone() else {
+            return;
+        };
+        current.active_connection_id = Some(id);
+        if let Some(conn) = current.connections.iter().find(|c| c.id == id) {
+            current.inference_url = conn.inference_url.clone();
+        }
+        *self.draft_ref.borrow_mut() = Some(current.clone());
+        self.draft.set(Some(current));
+        self.cancel_debounce();
+        self.phase.set(SettingsSavePhase::Saving);
+
+        let ctx = self.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let payload = SettingsUpdate {
+                active_connection_id: Some(id),
+                ..Default::default()
+            };
+            match api::update_settings(&payload).await {
+                Ok(saved) => ctx.mark_saved(saved),
+                Err(err) => ctx.phase.set(SettingsSavePhase::Failed(err)),
+            }
+        });
+    }
+
     fn schedule_save(&self) {
         if !self.is_dirty() {
             self.cancel_debounce();
@@ -4078,12 +4105,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                                 let save_ctx = save_ctx.clone();
                                 let models = models.clone();
                                 let model_error = model_error.clone();
-                                save_ctx.update_field(|current| {
-                                    current.active_connection_id = Some(id);
-                                    if let Some(conn) = current.connections.iter().find(|c| c.id == id) {
-                                        current.inference_url = conn.inference_url.clone();
-                                    }
-                                });
+                                save_ctx.switch_active_connection(id);
                                 wasm_bindgen_futures::spawn_local(async move {
                                     match api::list_models().await {
                                         Ok(list) => {

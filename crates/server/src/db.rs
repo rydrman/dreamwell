@@ -1431,6 +1431,19 @@ async fn sync_active_connection_url(pool: &SqlitePool) -> AppResult<()> {
 pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppResult<Settings> {
     let mut current = get_settings(pool).await?;
     let inference_url_updated = payload.inference_url.is_some();
+
+    // Apply connection switch before inference_url so URL edits target the selected profile,
+    // not the previously active one (autosave sends both fields together).
+    if let Some(v) = payload.active_connection_id {
+        set_active_inference_connection(pool, v).await?;
+        current.active_connection_id = Some(v);
+        if !inference_url_updated {
+            if let Some(active) = current.connections.iter().find(|c| c.id == v) {
+                current.inference_url = active.inference_url.clone();
+            }
+        }
+    }
+
     if let Some(v) = payload.inference_url {
         current.inference_url = v.clone();
         if let Some(active_id) = current.active_connection_id {
@@ -1445,17 +1458,6 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
             .await?;
             if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
                 *conn = updated;
-            }
-        }
-    }
-    if let Some(v) = payload.active_connection_id {
-        set_active_inference_connection(pool, v).await?;
-        current.active_connection_id = Some(v);
-        // When inference_url was also patched, keep the new URL instead of a stale
-        // connection snapshot from the start of this request.
-        if !inference_url_updated {
-            if let Some(active) = current.connections.iter().find(|c| c.id == v) {
-                current.inference_url = active.inference_url.clone();
             }
         }
     }
@@ -2334,6 +2336,48 @@ mod settings_update_tests {
             .await
             .expect("connection");
         assert_eq!(conn.inference_url, custom_url);
+    }
+
+    #[tokio::test]
+    async fn update_settings_switching_connection_does_not_corrupt_other_profiles() {
+        let (pool, first_id) = test_pool_with_connection().await;
+        let second = create_inference_connection(
+            &pool,
+            InferenceConnectionCreate {
+                name: "Hosted".into(),
+                inference_url: "https://api.featherlight.ai/v1".into(),
+                api_key: None,
+            },
+        )
+        .await
+        .expect("second connection");
+
+        let first_url = "http://localhost:11434/v1";
+        let second_url = "https://api.featherlight.ai/v1";
+
+        // Simulate autosave payload when switching from first → second in the UI.
+        let updated = update_settings(
+            &pool,
+            SettingsUpdate {
+                inference_url: Some(second_url.into()),
+                active_connection_id: Some(second.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("switch");
+
+        assert_eq!(updated.active_connection_id, Some(second.id));
+        assert_eq!(updated.inference_url, second_url);
+
+        let first = get_inference_connection(&pool, first_id)
+            .await
+            .expect("first");
+        let second_saved = get_inference_connection(&pool, second.id)
+            .await
+            .expect("second");
+        assert_eq!(first.inference_url, first_url);
+        assert_eq!(second_saved.inference_url, second_url);
     }
 }
 

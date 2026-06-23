@@ -399,7 +399,9 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                     <div key={turn_id} class={classes!("game-turn-pair", is_opening.then_some("game-opening"))}>
                                         if !is_opening && !turn.player_action.trim().is_empty() {
                                             <div class="message user">
-                                                { &turn.player_action }
+                                                <div class="game-prose markdown-body">
+                                                    { render_message_content(&turn.player_action) }
+                                                </div>
                                             </div>
                                         }
                                         <div class="message assistant">

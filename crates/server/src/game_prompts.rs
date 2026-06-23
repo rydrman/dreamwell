@@ -64,6 +64,7 @@ const RESOLVE_SYSTEM: &str = r#"You are a tabletop RPG GM assistant for one spec
 
 Rules:
 - Scene beats must match the scenario's genre, scale, and tone — do not default to peril, combat, or action-movie escalation
+- Scene beats must implement the turn plan only — do not add rolls, targets, or mechanical steps beyond what the plan specifies
 - Scene beats must honor the roll tiers (fail cannot be clean success)
 - State changes should reflect scenario-appropriate consequences; avoid health/stress harm or new threats unless warranted
 - Output ONLY valid JSON matching the schema"#;
@@ -78,14 +79,15 @@ const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase)
 const PROSE_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose rendering the scene beats.
 
 Rules:
-- Cover every scene beat in order — each beat should be clearly reflected, usually in one short paragraph or a few sentences
-- Prefer plain action and dialogue over lyrical description, mood padding, and stacked metaphors
-- Do not expand beats with extra atmosphere, internal monologue, or sensory detail unless GM style explicitly calls for it
-- Avoid clichéd emotional flourishes (glinting eyes, charged tension, electric shivers, breathy whispers) unless a beat requires them
+- Cover every scene beat in order — each beat should be clearly reflected in the narration
+- Follow GM style and scenario rules for pacing, length, and level of physical detail
+- Prefer plain action and dialogue over lyrical description, mood padding, and stacked metaphors unless GM style calls for richer prose
+- Avoid clichéd emotional flourishes (glinting eyes, charged tension, electric shivers, breathy whispers) unless a beat or GM style requires them
 - Voice, pacing, mood, intimacy, and tension come from GM style and setting/tone — not from generic adventure defaults
 - Do not inject peril, cliffhangers, or unexplained threats unless the scenario defines that genre or the beats require it
 - Honor resolved roll tiers — a fail must not read as unqualified success
-- Do not contradict established state, scenario parameters, or scene beats
+- When scenario rules or the turn plan name a card, effect, or mechanical outcome, reflect its actual text — do not substitute a generic summary
+- Do not contradict established state, scenario parameters, scene beats, or the turn plan
 - NEVER narrate the PC making choices or taking actions beyond what the player action and scene beats specify
 - No JSON, no meta commentary — prose only"#;
 
@@ -207,55 +209,25 @@ fn append_characters_section(body: &mut String, actors: &[GameActor]) {
     }
 }
 
-pub fn build_declare_checks_messages(
-    game: &Game,
-    detail: &GameDetail,
-    turn: &GameTurn,
-    guidance: &str,
-    settings: &Settings,
-) -> Vec<serde_json::Value> {
-    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let state_block = build_state_block(&detail.state, &detail.actors);
-    let context = build_turn_context_tiers(&detail.turns, &detail.scenes, turn.id, settings, &ctx);
-    let mut body = format!(
-        "Current state:\n{state_block}\n\n{}\n\nPlayer action: {}",
-        format_turn_context_sections(&context),
-        turn.player_action
-    );
-    append_characters_section(&mut body, &detail.actors);
-    if !guidance.trim().is_empty() {
-        body.push_str(&format!("\n\nGM guidance: {guidance}"));
-    }
-    let user = user_message_with_scenario(game, &body, &ctx);
-    vec![
-        json!({ "role": "system", "content": game_system_prompt(DECLARE_CHECKS_SYSTEM) }),
-        json!({ "role": "user", "content": user }),
-    ]
+/// Turn pipeline phase — each later phase includes all context from earlier phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnPromptPhase {
+    Plan,
+    DeclareChecks,
+    Resolve,
+    Prose,
 }
 
-pub fn build_resolve_messages(
-    game: &Game,
-    detail: &GameDetail,
-    turn: &GameTurn,
-    checks: &[GameTurnCheck],
-    guidance: &str,
-    settings: &Settings,
-) -> Vec<serde_json::Value> {
-    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let state_block = build_state_block(&detail.state, &detail.actors);
-    let budget = turn_context_budget(settings);
-    let context = build_turn_context_tiers_with_budget(
-        &detail.turns,
-        &detail.scenes,
-        turn.id,
-        TurnContextBudget {
-            prose_chars: budget.prose_chars / 2,
-            beats_chars: budget.beats_chars,
-        },
-        0,
-        &ctx,
-    );
-    let checks_text = if checks.is_empty() {
+fn format_rules_blocks(game: &Game) -> String {
+    relevant_rules_blocks(game)
+        .iter()
+        .map(|b| format!("## {}\n{}", b.name, b.content))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn format_resolved_checks(checks: &[GameTurnCheck]) -> String {
+    if checks.is_empty() {
         "No checks — pure narration.".to_string()
     } else {
         checks
@@ -272,23 +244,142 @@ pub fn build_resolve_messages(
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+fn history_context_for_phase(
+    detail: &GameDetail,
+    turn: &GameTurn,
+    phase: TurnPromptPhase,
+    settings: &Settings,
+    ctx: &MacroContext<'_>,
+) -> String {
+    let budget = turn_context_budget(settings);
+    let (budget, min_recent_prose) = match phase {
+        TurnPromptPhase::Resolve => (
+            TurnContextBudget {
+                prose_chars: budget.prose_chars / 2,
+                beats_chars: budget.beats_chars,
+            },
+            0,
+        ),
+        TurnPromptPhase::Prose => (budget, 1),
+        TurnPromptPhase::Plan | TurnPromptPhase::DeclareChecks => (budget, 0),
     };
-    let context_block = format_turn_context_sections(&context);
+    let tiers = build_turn_context_tiers_with_budget(
+        &detail.turns,
+        &detail.scenes,
+        turn.id,
+        budget,
+        min_recent_prose,
+        ctx,
+    );
+    format_turn_context_sections(&tiers)
+}
+
+/// Shared cumulative user-message body for turn pipeline prompts.
+fn build_cumulative_turn_body(
+    phase: TurnPromptPhase,
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    checks: &[GameTurnCheck],
+    guidance: &str,
+    settings: &Settings,
+    ctx: &MacroContext<'_>,
+) -> String {
+    let state_block = build_state_block(&detail.state, &detail.actors);
     let mut body = format!(
-        "Player action: {}\n\nResolved checks:\n{checks_text}\n\nCurrent state:\n{state_block}",
+        "Player action: {}\n\nCurrent state:\n{state_block}",
         turn.player_action
     );
-    let plan_block = format_plan_and_system_rolls(turn);
-    if !plan_block.is_empty() {
-        body.push_str(&format!("\n\n{plan_block}"));
+
+    let rules_text = format_rules_blocks(game);
+    if !rules_text.is_empty() {
+        body.push_str(&format!("\n\nScenario rules:\n{rules_text}"));
     }
+
+    let history = history_context_for_phase(detail, turn, phase, settings, ctx);
+    if !history.is_empty() {
+        body.push_str(&format!("\n\n{history}"));
+    }
+
     append_characters_section(&mut body, &detail.actors);
-    if !context_block.is_empty() {
-        body.push_str(&format!("\n\n{context_block}"));
+
+    if phase != TurnPromptPhase::Plan {
+        let plan_block = format_plan_and_system_rolls(turn);
+        if !plan_block.is_empty() {
+            body.push_str(&format!("\n\n{plan_block}"));
+        }
     }
+
+    if matches!(phase, TurnPromptPhase::Resolve | TurnPromptPhase::Prose) {
+        let checks_text = format_resolved_checks(checks);
+        body.push_str(&format!("\n\nResolved checks:\n{checks_text}"));
+    }
+
+    if phase == TurnPromptPhase::Prose && !turn.scene_beats.is_empty() {
+        let beats = turn.scene_beats.join("\n- ");
+        body.push_str(&format!("\n\nScene beats:\n- {beats}"));
+    }
+
     if !guidance.trim().is_empty() {
         body.push_str(&format!("\n\nGM guidance: {guidance}"));
     }
+
+    if phase == TurnPromptPhase::Prose {
+        body.push_str(
+            "\n\nWrite prose covering each scene beat in order. Follow GM style and scenario rules for pacing, length, and detail.",
+        );
+    }
+
+    body
+}
+
+pub fn build_declare_checks_messages(
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    guidance: &str,
+    settings: &Settings,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
+    let body = build_cumulative_turn_body(
+        TurnPromptPhase::DeclareChecks,
+        game,
+        detail,
+        turn,
+        &[],
+        guidance,
+        settings,
+        &ctx,
+    );
+    let user = user_message_with_scenario(game, &body, &ctx);
+    vec![
+        json!({ "role": "system", "content": game_system_prompt(DECLARE_CHECKS_SYSTEM) }),
+        json!({ "role": "user", "content": user }),
+    ]
+}
+
+pub fn build_resolve_messages(
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    checks: &[GameTurnCheck],
+    guidance: &str,
+    settings: &Settings,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
+    let body = build_cumulative_turn_body(
+        TurnPromptPhase::Resolve,
+        game,
+        detail,
+        turn,
+        checks,
+        guidance,
+        settings,
+        &ctx,
+    );
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({
@@ -311,35 +402,15 @@ pub fn build_prose_messages(
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
     let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let state_block = build_state_block(&detail.state, &detail.actors);
-    let beats = turn.scene_beats.join("\n- ");
-    let context = build_turn_context_tiers_with_budget(
-        &detail.turns,
-        &detail.scenes,
-        turn.id,
-        turn_context_budget(settings),
-        1,
+    let body = build_cumulative_turn_body(
+        TurnPromptPhase::Prose,
+        game,
+        detail,
+        turn,
+        checks,
+        guidance,
+        settings,
         &ctx,
-    );
-    let tiers = checks
-        .iter()
-        .filter_map(|c| c.tier.map(|t| format!("{:?}", t)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let context_block = format_turn_context_sections(&context);
-    let mut body = format!(
-        "Scene beats:\n- {beats}\n\nRoll outcomes: {tiers}\n\nCurrent state:\n{state_block}\n\nPlayer action: {}",
-        turn.player_action
-    );
-    append_characters_section(&mut body, &detail.actors);
-    if !context_block.is_empty() {
-        body.push_str(&format!("\n\n{context_block}"));
-    }
-    if !guidance.trim().is_empty() {
-        body.push_str(&format!("\n\nGM guidance: {guidance}"));
-    }
-    body.push_str(
-        "\n\nWrite concise prose covering each scene beat in order. Do not pad with atmosphere or emotional flourish beyond what the beats and GM style require.",
     );
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
@@ -564,28 +635,17 @@ const PLAN_SYSTEM: &str = r#"You are a tabletop RPG GM planning assistant for a 
 
 Given the player action and current state, produce a turn plan JSON:
 - Identify who acts and which scenario mechanics apply from the rules
-- List each system dice roll needed by the rules with label, dice_expr (e.g. "1d6"), and purpose
+- Treat the scenario rules as authoritative: plan only mechanical steps the rules define for this player action
+- Follow the rules' turn/phase/action sequence exactly — do not repeat phases, add bonus actions, or stack effects unless the rules explicitly allow it
+- List each system dice roll the rules require for this action with label, dice_expr (e.g. "1d6"), and purpose
+- Populate optional plan fields (round, active_player, board_positions, card_drawn) only when the scenario rules use them; otherwise leave null or empty
 - Summarize NPC decision logic in npc_decision_summary when relevant (NPCs only — never the PC)
-- Add 2-5 summary_beats describing what will happen mechanically this turn
+- Add 2-5 summary_beats describing what will happen mechanically — one complete rules-defined action cycle, then stop
 - When the PC owes a decision the player did not specify, plan only through steps the player action authorized; omit rolls and beats that depend on an unstated PC choice; end summary_beats noting what remains undecided
 - Output ONLY valid JSON matching the schema"#;
 
 pub fn relevant_rules_blocks(game: &Game) -> Vec<&dreamwell_types::RulesBlock> {
-    const PRIORITY: &[&str] = &[
-        "Game Mechanics",
-        "Gameplay",
-        "Cards and probabilities",
-        "Size Rules",
-    ];
-    let mut blocks: Vec<_> = game
-        .rules_blocks
-        .iter()
-        .filter(|b| PRIORITY.contains(&b.name.as_str()))
-        .collect();
-    if blocks.is_empty() {
-        blocks = game.rules_blocks.iter().collect();
-    }
-    blocks
+    game.rules_blocks.iter().collect()
 }
 
 pub fn build_plan_messages(
@@ -596,20 +656,16 @@ pub fn build_plan_messages(
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
     let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let state_block = build_state_block(&detail.state, &detail.actors);
-    let rules_text = relevant_rules_blocks(game)
-        .iter()
-        .map(|b| format!("## {}\n{}", b.name, b.content))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let mut body = format!(
-        "Player action: {}\n\nCurrent state:\n{}\n\nScenario rules:\n{}",
-        turn.player_action, state_block, rules_text
+    let body = build_cumulative_turn_body(
+        TurnPromptPhase::Plan,
+        game,
+        detail,
+        turn,
+        &[],
+        guidance,
+        settings,
+        &ctx,
     );
-    append_characters_section(&mut body, &detail.actors);
-    if !guidance.trim().is_empty() {
-        body.push_str(&format!("\n\nGM guidance: {guidance}"));
-    }
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": game_system_prompt(PLAN_SYSTEM) }),
@@ -1181,7 +1237,7 @@ mod tests {
     fn prose_and_scene_beat_prompts_discourage_flourish() {
         assert!(GAME_SCENE_BEAT_RULES.contains("NEVER full narration"));
         assert!(PROSE_SYSTEM.contains("Avoid clichéd emotional flourishes"));
-        assert!(PROSE_SYSTEM.contains("Do not expand beats"));
+        assert!(PROSE_SYSTEM.contains("Follow GM style and scenario rules for pacing"));
     }
 
     #[test]
@@ -1189,6 +1245,32 @@ mod tests {
         assert!(DECLARE_CHECKS_SYSTEM.contains("cozy, intimate"));
         assert!(DECLARE_CHECKS_SYSTEM.contains("social, emotional"));
         assert!(!DECLARE_CHECKS_SYSTEM.contains("Prefer no check for low-stakes"));
+    }
+
+    #[test]
+    fn plan_prompt_enforces_mechanical_fidelity() {
+        assert!(PLAN_SYSTEM.contains("Treat the scenario rules as authoritative"));
+        assert!(PLAN_SYSTEM.contains("do not repeat phases"));
+        assert!(RESOLVE_SYSTEM.contains("implement the turn plan only"));
+    }
+
+    #[test]
+    fn relevant_rules_blocks_includes_all_scenario_blocks() {
+        let mut game = sample_game();
+        game.rules_blocks = vec![
+            dreamwell_types::RulesBlock {
+                name: "Gameplay".into(),
+                content: "One action per turn.".into(),
+            },
+            dreamwell_types::RulesBlock {
+                name: "Writing Style".into(),
+                content: "Be concise.".into(),
+            },
+        ];
+        let blocks = relevant_rules_blocks(&game);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].name, "Gameplay");
+        assert_eq!(blocks[1].name, "Writing Style");
     }
 
     #[test]
@@ -1209,8 +1291,83 @@ mod tests {
                 "expected PC agency rules in system prompt"
             );
             assert!(system.contains("Do not invent new choices"));
-            assert!(!system.contains("card draw"));
             assert!(!system.contains("body part"));
         }
+    }
+
+    #[test]
+    fn cumulative_context_includes_rules_in_all_turn_phases() {
+        let mut game = sample_game();
+        game.rules_blocks = vec![dreamwell_types::RulesBlock {
+            name: "Cards and probabilities".into(),
+            content: "Card 1: Grow - Choose a player and a body part.".into(),
+        }];
+        let detail = sample_detail(game.clone());
+        let settings = test_settings();
+        let mut turn = sample_turn();
+        turn.scene_beats = vec!["Chris draws Card 1: Grow.".into()];
+        turn.plan = Some(dreamwell_types::TurnPlan {
+            card_drawn: Some("Card 1: Grow".into()),
+            summary_beats: vec!["Draw transformation card.".into()],
+            ..Default::default()
+        });
+
+        for messages in [
+            build_plan_messages(&game, &detail, &turn, "", &settings),
+            build_declare_checks_messages(&game, &detail, &turn, "", &settings),
+            build_resolve_messages(&game, &detail, &turn, &[], "", &settings),
+            build_prose_messages(&game, &detail, &turn, &[], "", &settings),
+        ] {
+            let user = messages[1]["content"].as_str().unwrap();
+            assert!(
+                user.contains("Scenario rules:"),
+                "expected rules in cumulative context"
+            );
+            assert!(user.contains("Card 1: Grow - Choose a player"));
+        }
+    }
+
+    #[test]
+    fn prose_includes_plan_checks_and_scene_beats() {
+        let mut game = sample_game();
+        game.rules_blocks = vec![dreamwell_types::RulesBlock {
+            name: "Gameplay".into(),
+            content: "One action per turn.".into(),
+        }];
+        let detail = sample_detail(game.clone());
+        let settings = test_settings();
+        let mut turn = sample_turn();
+        turn.scene_beats = vec!["The guest smiles.".into()];
+        turn.plan = Some(dreamwell_types::TurnPlan {
+            card_drawn: Some("Card 1: Grow".into()),
+            summary_beats: vec!["Draw card.".into()],
+            ..Default::default()
+        });
+
+        let messages = build_prose_messages(&game, &detail, &turn, &[], "", &settings);
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("Turn plan:"));
+        assert!(user.contains("Card drawn: Card 1: Grow"));
+        assert!(user.contains("Resolved checks:"));
+        assert!(user.contains("Scene beats:"));
+        assert!(user.contains("The guest smiles."));
+        assert!(!user.contains("Write concise prose"));
+    }
+
+    #[test]
+    fn declare_checks_includes_plan_when_present() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let settings = test_settings();
+        let mut turn = sample_turn();
+        turn.plan = Some(dreamwell_types::TurnPlan {
+            card_drawn: Some("Card 2: Shrink".into()),
+            summary_beats: vec!["NPC rolls and draws.".into()],
+            ..Default::default()
+        });
+
+        let messages = build_declare_checks_messages(&game, &detail, &turn, "", &settings);
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("Card drawn: Card 2: Shrink"));
     }
 }
