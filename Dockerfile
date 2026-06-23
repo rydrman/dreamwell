@@ -7,9 +7,7 @@ ARG TRUNK_BASE_URL=https://github.com/trunk-rs/trunk/releases/download
 FROM rust:${RUST_VERSION}-bookworm AS rust-base
 ARG TRUNK_VERSION
 ARG TRUNK_BASE_URL
-RUN rustup component add rustfmt clippy \
-    && rustup target add wasm32-unknown-unknown \
-    && curl -fsSL "${TRUNK_BASE_URL}/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+RUN curl -fsSL "${TRUNK_BASE_URL}/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
     | tar -xz -C /usr/local/cargo/bin trunk
 
 FROM rust-base AS dev-base
@@ -28,12 +26,14 @@ ENV DREAMWELL_GIT_SHA=${GIT_SHA}
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/rustup \
     --mount=type=cache,target=/app/target \
     cd crates/frontend && trunk build --release \
     && cp -r ../../.frontend-dist /app/frontend-dist
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/local/rustup \
     --mount=type=cache,target=/app/target \
     cargo build --release -p dreamwell-server \
     && cp /app/target/release/dreamwell-server /app/dreamwell-server

@@ -6,6 +6,12 @@ cd "$(dirname "$0")/.."
 # Bind-mounted repo is owned by the host user; the dev container runs as root.
 git config --global --add safe.directory "$(pwd)"
 
+# Install the toolchain declared in rust-toolchain.toml into the persisted RUSTUP_HOME.
+if ! rustc --version >/dev/null 2>&1; then
+  echo "Installing Rust toolchain from rust-toolchain.toml..."
+  rustc --version
+fi
+
 TRUNK="${CARGO_HOME:-/usr/local/cargo}/bin/trunk"
 
 trunk_pid=
