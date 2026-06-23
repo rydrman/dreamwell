@@ -137,13 +137,22 @@ pub async fn update_scenario(
 }
 
 pub async fn delete_scenario(pool: &SqlitePool, id: i64) -> AppResult<()> {
-    let result = sqlx::query("DELETE FROM scenarios WHERE id = ?1")
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM scenarios WHERE id = ?1)")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    if !exists {
+        return Err(AppError::not_found("Scenario not found"));
+    }
+    // Games snapshot scenario text at creation; drop the link so deletion succeeds.
+    sqlx::query("UPDATE games SET scenario_id = NULL WHERE scenario_id = ?1")
         .bind(id)
         .execute(pool)
         .await?;
-    if result.rows_affected() == 0 {
-        return Err(AppError::not_found("Scenario not found"));
-    }
+    sqlx::query("DELETE FROM scenarios WHERE id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -273,6 +282,34 @@ mod tests {
             .await
             .expect("migrate");
         pool
+    }
+
+    #[tokio::test]
+    async fn delete_scenario_clears_game_reference() {
+        let pool = test_pool().await;
+        let created = create_scenario(&pool, ScenarioCreate::default())
+            .await
+            .expect("create");
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO games (title, premise, setting, gm_style, opening_message, scenario_id, created_at, updated_at) VALUES ('g','','','','',?1,?2,?2)",
+        )
+        .bind(created.id)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("game");
+
+        delete_scenario(&pool, created.id)
+            .await
+            .expect("delete");
+
+        let scenario_id: Option<i64> =
+            sqlx::query_scalar("SELECT scenario_id FROM games WHERE title = 'g'")
+                .fetch_one(&pool)
+                .await
+                .expect("game row");
+        assert!(scenario_id.is_none());
     }
 
     #[tokio::test]
