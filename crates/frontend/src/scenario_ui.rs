@@ -301,6 +301,7 @@ struct ScenarioDraft {
     win_condition: Option<WinCondition>,
     scenario_triggers: Vec<ScenarioTrigger>,
     source_meta: Option<SourceMeta>,
+    game_elements: GameElementsConfig,
 }
 
 impl Default for ScenarioDraft {
@@ -325,6 +326,7 @@ impl Default for ScenarioDraft {
             win_condition: None,
             scenario_triggers: Vec::new(),
             source_meta: None,
+            game_elements: GameElementsConfig::default(),
         }
     }
 }
@@ -365,6 +367,7 @@ impl ScenarioDraft {
             win_condition: scenario.win_condition.clone(),
             scenario_triggers: scenario.scenario_triggers.clone(),
             source_meta: scenario.source_meta.clone(),
+            game_elements: scenario.game_elements.clone(),
         }
     }
 
@@ -402,6 +405,7 @@ impl ScenarioDraft {
             content_flags: self.content_flags.clone(),
             source_meta: self.source_meta.clone(),
             scenario_triggers: self.scenario_triggers.clone(),
+            game_elements: self.game_elements.clone(),
         }
     }
 
@@ -427,6 +431,7 @@ impl ScenarioDraft {
             content_flags: Some(self.content_flags.clone()),
             source_meta: Some(self.source_meta.clone()),
             scenario_triggers: Some(self.scenario_triggers.clone()),
+            game_elements: Some(self.game_elements.clone()),
         }
     }
 }
@@ -709,6 +714,7 @@ pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCrea
         win_condition: scenario.win_condition.clone(),
         scenario_triggers: scenario.scenario_triggers.clone(),
         trait_defs: scenario.trait_defs.clone(),
+        game_elements: scenario.game_elements.clone(),
         opening_as_player_action,
         ..Default::default()
     }

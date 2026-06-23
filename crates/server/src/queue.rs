@@ -488,6 +488,7 @@ async fn run_job(
         JobType::GameTurnCheck
         | JobType::GameTurnResolve
         | JobType::GameTurnScenePlan
+        | JobType::GameTurnStructuredAgent
         | JobType::GameTurnProse
         | JobType::GameSceneSummarize
         | JobType::GameProseRecheck
@@ -552,6 +553,7 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
         | JobType::GameTurnCheck
         | JobType::GameTurnResolve
         | JobType::GameTurnScenePlan
+        | JobType::GameTurnStructuredAgent
         | JobType::GameTurnProse
         | JobType::GameSceneSummarize => {}
     }
@@ -600,6 +602,7 @@ async fn fail_job(
         | JobType::GameTurnCheck
         | JobType::GameTurnResolve
         | JobType::GameTurnScenePlan
+        | JobType::GameTurnStructuredAgent
         | JobType::GameTurnProse => {
             if let Some(turn_id) = job.turn_id {
                 let _ = db::update_turn_phase(pool, turn_id, "failed").await;

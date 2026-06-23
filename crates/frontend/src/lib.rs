@@ -1879,6 +1879,17 @@ fn app() -> Html {
                         on_navigate={navigate.clone()}
                         settings={(*settings).clone()}
                         games={(*games).clone()}
+                        on_games_refresh={Callback::from({
+                            let games = games.clone();
+                            move |_| {
+                                let games = games.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(list) = api::list_games().await {
+                                        games.set(list);
+                                    }
+                                });
+                            }
+                        })}
                         on_select_game={Callback::from({
                             let navigate = navigate.clone();
                             move |id| {
@@ -3837,6 +3848,7 @@ impl SettingsSaveContext {
         current.active_connection_id = Some(id);
         if let Some(conn) = current.connections.iter().find(|c| c.id == id) {
             current.inference_url = conn.inference_url.clone();
+            current.model = conn.model.clone();
         }
         *self.draft_ref.borrow_mut() = Some(current.clone());
         self.draft.set(Some(current));
@@ -4269,7 +4281,15 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                                 let save_ctx = save_ctx.clone();
                                 Callback::from(move |e: InputEvent| {
                                     let input: HtmlInputElement = e.target_unchecked_into();
-                                    save_ctx.update_field(|current| current.model = input.value());
+                                    let model = input.value();
+                                    save_ctx.update_field(|current| {
+                                        current.model = model.clone();
+                                        if let Some(active_id) = current.active_connection_id {
+                                            if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                                                conn.model = model;
+                                            }
+                                        }
+                                    });
                                 })
                             }}
                             onchange={{

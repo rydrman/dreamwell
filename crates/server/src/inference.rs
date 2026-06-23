@@ -388,6 +388,178 @@ pub async fn chat_completion_with_format(
         .to_string())
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ChatCompletionWithToolsResult {
+    pub content: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolLoopConfig {
+    pub max_iterations: u32,
+    pub max_tokens_per_call: i64,
+}
+
+impl Default for ToolLoopConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 8,
+            max_tokens_per_call: 4096,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn chat_completion_with_tools(
+    config: &InferenceConfig,
+    model: &str,
+    messages: &[serde_json::Value],
+    tools: &[serde_json::Value],
+    tool_choice: &serde_json::Value,
+    temperature: f64,
+    top_p: f64,
+    max_tokens: i64,
+) -> AppResult<ChatCompletionWithToolsResult> {
+    let url = format!("{}/chat/completions", config.url().trim_end_matches('/'));
+    let payload = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_tokens": max_tokens,
+        "stream": false,
+    });
+    let response = config
+        .with_auth(http_client().post(url))
+        .json(&payload)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::inference(body));
+    }
+    let data: Value = response.json().await?;
+    let choice = &data["choices"][0];
+    let message = &choice["message"];
+    let finish_reason = choice["finish_reason"].as_str().map(str::to_string);
+    let content = message["content"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let mut tool_calls = Vec::new();
+    if let Some(calls) = message["tool_calls"].as_array() {
+        for call in calls {
+            let id = call["id"].as_str().unwrap_or("call").to_string();
+            let name = call["function"]["name"].as_str().unwrap_or("").to_string();
+            let arguments = call["function"]["arguments"]
+                .as_str()
+                .unwrap_or("{}")
+                .to_string();
+            if !name.is_empty() {
+                tool_calls.push(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+    }
+    Ok(ChatCompletionWithToolsResult {
+        content,
+        tool_calls,
+        finish_reason,
+    })
+}
+
+#[allow(clippy::too_many_arguments, dead_code)]
+pub async fn run_tool_loop<F, Fut>(
+    config: &InferenceConfig,
+    model: &str,
+    mut messages: Vec<serde_json::Value>,
+    tools: &[serde_json::Value],
+    loop_config: &ToolLoopConfig,
+    temperature: f64,
+    top_p: f64,
+    mut on_tool_call: F,
+) -> AppResult<(Vec<serde_json::Value>, u32, u32)>
+where
+    F: FnMut(&ToolCall) -> Fut,
+    Fut: std::future::Future<Output = AppResult<serde_json::Value>>,
+{
+    let mut iterations = 0u32;
+    let mut tool_call_count = 0u32;
+    for _ in 0..loop_config.max_iterations {
+        let result = chat_completion_with_tools(
+            config,
+            model,
+            &messages,
+            tools,
+            &serde_json::json!("auto"),
+            temperature,
+            top_p,
+            loop_config.max_tokens_per_call,
+        )
+        .await?;
+        iterations += 1;
+
+        if result.tool_calls.is_empty() {
+            if let Some(content) = result.content {
+                messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": content
+                }));
+            }
+            break;
+        }
+
+        let assistant_tool_calls: Vec<serde_json::Value> = result
+            .tool_calls
+            .iter()
+            .map(|tc| {
+                serde_json::json!({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.arguments
+                    }
+                })
+            })
+            .collect();
+        messages.push(serde_json::json!({
+            "role": "assistant",
+            "content": result.content,
+            "tool_calls": assistant_tool_calls
+        }));
+
+        for tc in &result.tool_calls {
+            tool_call_count += 1;
+            let tool_result = on_tool_call(tc).await?;
+            messages.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": serde_json::to_string(&tool_result).unwrap_or_else(|_| "{}".to_string())
+            }));
+        }
+
+        if result.finish_reason.as_deref() == Some("stop") {
+            break;
+        }
+    }
+    Ok((messages, iterations, tool_call_count))
+}
+
 fn json_schema_response_format(schema: &Value) -> Value {
     serde_json::json!({
         "type": "json_schema",

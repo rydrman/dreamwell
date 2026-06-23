@@ -360,6 +360,10 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
 
     if phase != TurnPromptPhase::Plan {
         push_section(&mut body, &format_plan_and_system_rolls(turn));
+        let mechanics = format_mechanical_results(turn);
+        if !mechanics.is_empty() {
+            push_section(&mut body, &mechanics);
+        }
     }
 
     if matches!(phase, TurnPromptPhase::Resolve | TurnPromptPhase::Prose) {
@@ -793,6 +797,100 @@ pub fn format_plan_and_system_rolls(turn: &GameTurn) -> String {
     parts.join("\n\n")
 }
 
+pub fn format_mechanical_results(turn: &GameTurn) -> String {
+    if turn.mechanical_results.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = turn
+        .mechanical_results
+        .iter()
+        .map(format_mechanical_result_line)
+        .collect();
+    format!("Mechanical results (canonical):\n{}", lines.join("\n"))
+}
+
+fn format_mechanical_result_line(result: &dreamwell_types::MechanicalResult) -> String {
+    use dreamwell_types::{MechanicalData, MechanicalKind};
+    match (&result.kind, &result.data) {
+        (
+            MechanicalKind::BoardMove,
+            MechanicalData::BoardMove {
+                actor,
+                roll,
+                from_space,
+                to_space,
+                space_tags,
+                ..
+            },
+        ) => {
+            format!(
+                "- Board move: {actor} rolled {roll}, moved {from_space} → {to_space} (tags: {})",
+                space_tags.join(", ")
+            )
+        }
+        (
+            MechanicalKind::CardDraw,
+            MechanicalData::CardDraw {
+                name,
+                text,
+                deck_id,
+                ..
+            },
+        ) => {
+            format!("- Card draw ({deck_id}): {name} — {text}")
+        }
+        (
+            MechanicalKind::DiceRoll,
+            MechanicalData::DiceRoll {
+                dice_expr,
+                rolls,
+                total,
+                ..
+            },
+        ) => {
+            format!("- {} ({}): {:?} = {total}", result.label, dice_expr, rolls)
+        }
+        _ => format!("- {}", result.label),
+    }
+}
+
+pub fn build_structured_agent_messages(
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    guidance: &str,
+    settings: &Settings,
+    full_structured: bool,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
+    let inputs = TurnPromptInputs {
+        game,
+        detail,
+        turn,
+        checks: &turn.checks,
+        guidance,
+        settings,
+        ctx: &ctx,
+    };
+    let mut body = build_cumulative_turn_body(TurnPromptPhase::DeclareChecks, &inputs);
+    if full_structured {
+        body.push_str("\n\nUse tools to run mechanics, declare and roll checks, apply state changes, and set scene beats. Call complete_structured_phase when finished.");
+    } else {
+        body.push_str(
+            "\n\nUse only mechanical tools (board_move, draw_card, roll_dice) for this phase.",
+        );
+    }
+    let user = user_message_with_scenario(game, &body, &ctx);
+    vec![
+        serde_json::json!({ "role": "system", "content": STRUCTURED_AGENT_SYSTEM }),
+        serde_json::json!({ "role": "user", "content": user }),
+    ]
+}
+
+const STRUCTURED_AGENT_SYSTEM: &str = r#"You are a tabletop RPG engine assistant executing structured turn steps via tools.
+Use the provided tools instead of inventing mechanical outcomes. Follow scenario rules exactly.
+When a card is drawn, use the canonical card text returned by the tool in later narration context."#;
+
 pub fn declare_checks_schema() -> serde_json::Value {
     json!({
         "type": "object",
@@ -839,6 +937,9 @@ mod tests {
             modifier_max: 3,
             merge_resolve_scene: true,
             step_mode: false,
+            engine_mode: dreamwell_types::EngineMode::Pipeline,
+            game_elements: dreamwell_types::GameElementsConfig::default(),
+            element_instances: dreamwell_types::ElementInstances::default(),
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),
@@ -868,6 +969,8 @@ mod tests {
             checks: vec![],
             system_rolls: vec![],
             plan: None,
+            mechanical_results: vec![],
+            observability: Default::default(),
             is_opening: true,
             generation_error: None,
             created_at: Utc::now(),
@@ -908,6 +1011,8 @@ mod tests {
             checks: vec![],
             system_rolls: vec![],
             plan: None,
+            mechanical_results: vec![],
+            observability: Default::default(),
             is_opening: false,
             generation_error: None,
             created_at: Utc::now(),
@@ -1298,6 +1403,29 @@ mod tests {
         assert!(DECLARE_CHECKS_SYSTEM.contains("cozy, intimate"));
         assert!(DECLARE_CHECKS_SYSTEM.contains("social, emotional"));
         assert!(!DECLARE_CHECKS_SYSTEM.contains("Prefer no check for low-stakes"));
+    }
+
+    #[test]
+    fn format_mechanical_results_includes_card_text() {
+        use dreamwell_types::{MechanicalData, MechanicalKind, MechanicalResult};
+        let turn = GameTurn {
+            mechanical_results: vec![MechanicalResult {
+                kind: MechanicalKind::CardDraw,
+                label: "draw".into(),
+                data: MechanicalData::CardDraw {
+                    deck_id: "transformation".into(),
+                    card_id: "transformation:1".into(),
+                    name: "Grow".into(),
+                    text: "Choose a body part to enlarge.".into(),
+                    consumed: true,
+                },
+                sort_order: 0,
+            }],
+            ..sample_turn()
+        };
+        let formatted = format_mechanical_results(&turn);
+        assert!(formatted.contains("Grow"));
+        assert!(formatted.contains("Choose a body part"));
     }
 
     #[test]

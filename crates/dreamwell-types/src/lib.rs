@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+mod game_elements;
 mod game_import;
 mod game_presets;
 mod iw_import;
@@ -9,6 +10,12 @@ mod macros;
 mod scenario_iw;
 mod serde_helpers;
 
+pub use game_elements::{
+    build_game_elements_from_iw, default_board_game_mechanicals, parse_cards_from_rules_block,
+    parse_truth_spaces, BoardDef, BoardTagRule, CardDef, DeckDef, DeckFrom, DeckInstance,
+    ElementInstances, EngineMode, GameElementsConfig, MechanicalData, MechanicalKind,
+    MechanicalResult, MechanicalStep, MechanicalWhen, TurnObservability,
+};
 pub use game_import::{
     game_create_from_character, scenario_create_from_character,
     scenario_create_from_character_record, GameCharacterImportMode,
@@ -55,6 +62,7 @@ pub enum JobType {
     GameSceneSummarize,
     GameProseRecheck,
     GameStateRecheck,
+    GameTurnStructuredAgent,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -622,6 +630,8 @@ pub struct InferenceConnection {
     pub inference_url: String,
     pub api_key_set: bool,
     #[serde(default)]
+    pub model: String,
+    #[serde(default)]
     pub json_format_strategy: JsonFormatStrategy,
 }
 
@@ -639,6 +649,7 @@ pub struct InferenceConnectionUpdate {
     pub inference_url: Option<String>,
     /// Omitted keeps the existing key; an empty string clears it.
     pub api_key: Option<String>,
+    pub model: Option<String>,
     pub json_format_strategy: Option<JsonFormatStrategy>,
 }
 
@@ -750,7 +761,9 @@ pub fn estimate_token_count(text: &str) -> i64 {
 
 #[cfg(test)]
 mod context_budget_tests {
-    use super::{prompt_token_budget, structured_output_tokens, suggested_response_tokens, Settings};
+    use super::{
+        prompt_token_budget, structured_output_tokens, suggested_response_tokens, Settings,
+    };
 
     fn sample_settings(max_tokens: i64, context_tokens: i64) -> Settings {
         Settings {
@@ -893,6 +906,8 @@ pub struct Scenario {
     pub source_meta: Option<SourceMeta>,
     #[serde(default)]
     pub scenario_triggers: Vec<ScenarioTrigger>,
+    #[serde(default)]
+    pub game_elements: GameElementsConfig,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -939,6 +954,8 @@ pub struct ScenarioCreate {
     pub source_meta: Option<SourceMeta>,
     #[serde(default)]
     pub scenario_triggers: Vec<ScenarioTrigger>,
+    #[serde(default)]
+    pub game_elements: GameElementsConfig,
 }
 
 fn default_scenario_title() -> String {
@@ -990,6 +1007,7 @@ pub struct ScenarioUpdate {
     pub content_flags: Option<ContentFlags>,
     pub source_meta: Option<Option<SourceMeta>>,
     pub scenario_triggers: Option<Vec<ScenarioTrigger>>,
+    pub game_elements: Option<GameElementsConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1022,6 +1040,12 @@ pub struct Game {
     pub modifier_max: i64,
     pub merge_resolve_scene: bool,
     pub step_mode: bool,
+    #[serde(default)]
+    pub engine_mode: EngineMode,
+    #[serde(default)]
+    pub game_elements: GameElementsConfig,
+    #[serde(default)]
+    pub element_instances: ElementInstances,
     #[serde(default)]
     pub model_checks: String,
     #[serde(default)]
@@ -1130,6 +1154,10 @@ pub struct GameTurn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<TurnPlan>,
     #[serde(default)]
+    pub mechanical_results: Vec<MechanicalResult>,
+    #[serde(default)]
+    pub observability: TurnObservability,
+    #[serde(default)]
     pub is_opening: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_error: Option<String>,
@@ -1203,6 +1231,12 @@ pub struct GameCreate {
     /// seeding a static narrator opening bubble (Infinite Worlds `firstInput`).
     #[serde(default)]
     pub opening_as_player_action: bool,
+    #[serde(default)]
+    pub engine_mode: EngineMode,
+    #[serde(default)]
+    pub game_elements: GameElementsConfig,
+    #[serde(default)]
+    pub element_instances: ElementInstances,
 }
 
 fn default_game_title() -> String {
@@ -1220,6 +1254,7 @@ pub struct GameUpdate {
     pub modifier_max: Option<i64>,
     pub merge_resolve_scene: Option<bool>,
     pub step_mode: Option<bool>,
+    pub engine_mode: Option<EngineMode>,
     pub resolution_system: Option<ResolutionSystem>,
     pub model_checks: Option<String>,
     pub model_resolve: Option<String>,

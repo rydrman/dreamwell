@@ -55,14 +55,29 @@ test.describe("game turn tab visibility resume", () => {
     request,
   }) => {
     const seed = await seedRunningGame(request);
+    await expect
+      .poll(async () => {
+        const response = await request.get(`/api/games/${seed.game_id}`);
+        if (!response.ok()) return null;
+        const body = (await response.json()) as {
+          game: { active_job?: { status: string } | null };
+        };
+        return body.game.active_job?.status ?? null;
+      })
+      .toBe("running");
+
     await page.goto(`/games/${seed.game_id}`);
-    await expect(page.getByText("Still writing — more coming…")).toBeVisible();
+    await expect(page.getByText("I pick the lock.")).toBeVisible();
+    await expect(
+      page.locator("aside, main").getByText("writing prose…").first(),
+    ).toBeVisible();
 
     await setTabHidden(page, true);
     await completeGameJob(request, seed.game_id);
     await setTabHidden(page, false);
 
-    await expect(page.getByText(seed.expected_content)).toBeVisible();
-    await expect(page.getByText("Still writing — more coming…")).toHaveCount(0);
+    const main = page.locator("main");
+    await expect(main.getByText(seed.expected_content)).toBeVisible();
+    await expect(main.getByText("writing prose…")).toHaveCount(0);
   });
 });
