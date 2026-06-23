@@ -35,7 +35,9 @@ pub fn game_list_with_detail(games: &[Game], detail: &GameDetail) -> Vec<Game> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use dreamwell_types::{JobStatus, JobType, ResolutionSystem};
+    use dreamwell_types::{
+        ElementInstances, EngineMode, GameElementsConfig, JobStatus, JobType, ResolutionSystem,
+    };
 
     fn sample_job() -> Job {
         Job {
@@ -73,6 +75,9 @@ mod tests {
             modifier_max: 3,
             merge_resolve_scene: true,
             step_mode: false,
+            engine_mode: EngineMode::Pipeline,
+            game_elements: GameElementsConfig::default(),
+            element_instances: ElementInstances::default(),
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),

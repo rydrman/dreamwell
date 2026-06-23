@@ -1,6 +1,6 @@
 use dreamwell_types::{
-    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, GameTurnCheck,
-    GameTurnSystemRoll, Job, JobType, Settings, TurnPlan,
+    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, EngineMode, GameTurnCheck,
+    GameTurnSystemRoll, Job, JobType, Settings, TurnObservability, TurnPlan,
 };
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
@@ -73,6 +73,24 @@ pub async fn run_game_job(
         JobType::GameTurnScenePlan => run_turn_plan(pool, job_id, job, settings, &token).await,
         JobType::GameTurnResolve => run_turn_resolve(pool, job_id, job, settings, &token).await,
         JobType::GameTurnProse => run_turn_prose(pool, job_id, job, settings, &token).await,
+        JobType::GameTurnStructuredAgent => {
+            let game_id = job
+                .game_id
+                .ok_or_else(|| AppError::internal("game job missing game_id"))?;
+            let turn_id = job
+                .turn_id
+                .ok_or_else(|| AppError::internal("turn job missing turn_id"))?;
+            crate::game_turn_agent::run_tools_structured_phase(
+                pool,
+                job_id,
+                game_id,
+                turn_id,
+                &job.guidance_notes,
+                settings,
+                &token,
+            )
+            .await
+        }
         JobType::GameSceneSummarize => {
             crate::game_summarize::run_game_scene_summarize_job(
                 pool,
@@ -138,6 +156,10 @@ async fn run_turn_from_checks(
     if !detail.game.rules_blocks.is_empty() && turn.plan.is_none() {
         return run_turn_plan(pool, job_id, job, settings, token).await;
     }
+    if !detail.game.game_elements.turn_mechanicals.is_empty() && turn.mechanical_results.is_empty()
+    {
+        run_turn_mechanicals(pool, job_id, &detail.game, game_id, turn_id, token).await?;
+    }
     run_turn_checks_phase(pool, job_id, job, settings, token, game_id, turn_id).await
 }
 
@@ -182,25 +204,8 @@ async fn run_turn_plan(
     .await?;
 
     db::update_turn_plan(pool, turn_id, &plan).await?;
-    db::clear_system_rolls(pool, turn_id).await?;
 
-    for (i, request) in plan.system_rolls_needed.iter().enumerate() {
-        let roll = roll_system_dice(&request.dice_expr)
-            .unwrap_or_else(|| roll_system_dice("1d6").expect("default 1d6 roll"));
-        let summary = format!("Rolled {:?}", roll.rolls);
-        let system_roll = GameTurnSystemRoll {
-            id: 0,
-            turn_id,
-            label: request.label.clone(),
-            dice_expr: request.dice_expr.clone(),
-            rolls: roll.rolls,
-            outcome_key: request.purpose.clone(),
-            outcome_summary: summary,
-            sort_order: i as i64,
-            created_at: chrono::Utc::now(),
-        };
-        db::insert_system_roll(pool, turn_id, &system_roll).await?;
-    }
+    run_turn_mechanicals(pool, job_id, &game, game_id, turn_id, token).await?;
 
     if game.step_mode {
         db::update_turn_phase(pool, turn_id, "plan_pause").await?;
@@ -210,6 +215,66 @@ async fn run_turn_plan(
     }
 
     run_turn_checks_phase(pool, job_id, job, settings, token, game_id, turn_id).await
+}
+
+async fn run_turn_mechanicals(
+    pool: &SqlitePool,
+    _job_id: i64,
+    game: &dreamwell_types::Game,
+    game_id: i64,
+    turn_id: i64,
+    token: &CancellationToken,
+) -> AppResult<()> {
+    let plan_started = std::time::Instant::now();
+    if game.game_elements.turn_mechanicals.is_empty() {
+        let turn = db::get_turn(pool, game_id, turn_id).await?;
+        let plan = turn.plan.as_ref();
+        db::clear_system_rolls(pool, turn_id).await?;
+        if let Some(plan) = plan {
+            for (i, request) in plan.system_rolls_needed.iter().enumerate() {
+                let roll = roll_system_dice(&request.dice_expr)
+                    .unwrap_or_else(|| roll_system_dice("1d6").expect("default 1d6 roll"));
+                let summary = format!("Rolled {:?}", roll.rolls);
+                let system_roll = GameTurnSystemRoll {
+                    id: 0,
+                    turn_id,
+                    label: request.label.clone(),
+                    dice_expr: request.dice_expr.clone(),
+                    rolls: roll.rolls,
+                    outcome_key: request.purpose.clone(),
+                    outcome_summary: summary,
+                    sort_order: i as i64,
+                    created_at: chrono::Utc::now(),
+                };
+                db::insert_system_roll(pool, turn_id, &system_roll).await?;
+            }
+        }
+        return Ok(());
+    }
+
+    match game.engine_mode {
+        EngineMode::ToolsMechanics => {
+            let settings = db::get_settings(pool).await?;
+            crate::game_turn_agent::run_tools_mechanics_phase(
+                pool, game_id, turn_id, &settings, token,
+            )
+            .await?;
+        }
+        _ => {
+            crate::game_turn_agent::run_bulk_mechanicals(pool, game_id, turn_id, game).await?;
+            let obs = TurnObservability {
+                engine_mode: game.engine_mode,
+                phase_timings_ms: [(
+                    "mechanics".to_string(),
+                    plan_started.elapsed().as_millis() as u64,
+                )]
+                .into(),
+                ..Default::default()
+            };
+            db::merge_turn_observability(pool, turn_id, obs).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn run_turn_checks_phase(
@@ -464,7 +529,7 @@ async fn stream_turn_prose(
     Ok(())
 }
 
-fn validate_declared_check(
+pub fn validate_declared_check(
     check: &DeclaredCheck,
     pc: &dreamwell_types::GameActor,
     game: &dreamwell_types::Game,
@@ -512,6 +577,9 @@ mod tests {
             modifier_max: 3,
             merge_resolve_scene: true,
             step_mode: false,
+            engine_mode: dreamwell_types::EngineMode::Pipeline,
+            game_elements: dreamwell_types::GameElementsConfig::default(),
+            element_instances: dreamwell_types::ElementInstances::default(),
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),

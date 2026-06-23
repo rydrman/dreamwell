@@ -32,6 +32,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::GameTurnCheck => "declaring checks",
         JobType::GameTurnResolve => "resolving turn",
         JobType::GameTurnScenePlan => "planning scene",
+        JobType::GameTurnStructuredAgent => "structured agent",
         JobType::GameTurnProse => "writing prose",
         JobType::GameSceneSummarize => "summarizing scene",
         JobType::GameProseRecheck => "aligning prose",

@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use crate::iw_types::IwWorld;
 use crate::{
-    default_game_traits, ContentFlags, PcOption, RulesBlock, ScenarioCreate, ScenarioNpc,
-    ScenarioTrigger, SetupVarChoice, SourceMeta, StateKind, TrackedVarDef, TraitDef,
-    TriggerCondition, TriggerEffect, WinCondition,
+    build_game_elements_from_iw, default_game_traits, ContentFlags, PcOption, RulesBlock,
+    ScenarioCreate, ScenarioNpc, ScenarioTrigger, SetupVarChoice, SourceMeta, StateKind,
+    TrackedVarDef, TraitDef, TriggerCondition, TriggerEffect, WinCondition,
 };
 
 fn join_nonempty_sections(sections: &[(&str, &str)]) -> String {
@@ -158,6 +158,14 @@ pub fn iw_world_to_scenario(world: IwWorld) -> ScenarioCreate {
         ),
     ]);
 
+    let truth_spaces = world
+        .tracked_items
+        .iter()
+        .find(|t| t.name == "Truth_Spaces")
+        .map(|t| t.initial_value.as_str());
+
+    let game_elements = build_game_elements_from_iw(&rules_blocks, truth_spaces);
+
     ScenarioCreate {
         title: world.title,
         premise,
@@ -183,6 +191,7 @@ pub fn iw_world_to_scenario(world: IwWorld) -> ScenarioCreate {
             original_version: world.version,
         }),
         scenario_triggers,
+        game_elements,
         ..Default::default()
     }
 }
@@ -357,5 +366,9 @@ mod tests {
             Some("4.2")
         );
         assert!(scenario.opening_message.contains("<<character1>>"));
+        assert!(!scenario.game_elements.boards.is_empty());
+        assert_eq!(scenario.game_elements.boards[0].id, "main");
+        assert_eq!(scenario.game_elements.decks.len(), 2);
+        assert!(!scenario.game_elements.turn_mechanicals.is_empty());
     }
 }

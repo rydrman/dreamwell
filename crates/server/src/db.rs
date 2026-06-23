@@ -141,6 +141,7 @@ pub(crate) fn parse_job_type(s: &str) -> JobType {
         "game_turn_resolve" => JobType::GameTurnResolve,
         "game_turn_scene_plan" => JobType::GameTurnScenePlan,
         "game_turn_prose" => JobType::GameTurnProse,
+        "game_turn_structured_agent" => JobType::GameTurnStructuredAgent,
         "game_scene_summarize" => JobType::GameSceneSummarize,
         "game_prose_recheck" => JobType::GameProseRecheck,
         "game_state_recheck" => JobType::GameStateRecheck,
@@ -167,6 +168,7 @@ pub(crate) fn job_type_str(job_type: JobType) -> &'static str {
         JobType::GameTurnResolve => "game_turn_resolve",
         JobType::GameTurnScenePlan => "game_turn_scene_plan",
         JobType::GameTurnProse => "game_turn_prose",
+        JobType::GameTurnStructuredAgent => "game_turn_structured_agent",
         JobType::GameSceneSummarize => "game_scene_summarize",
         JobType::GameProseRecheck => "game_prose_recheck",
         JobType::GameStateRecheck => "game_state_recheck",
@@ -1189,6 +1191,7 @@ pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     if let Some(active_id) = settings.active_connection_id {
         if let Some(active) = connections.iter().find(|c| c.id == active_id) {
             settings.inference_url = active.inference_url.clone();
+            settings.model = active.model.clone();
         }
     }
     Ok(settings)
@@ -1291,7 +1294,7 @@ fn parse_json_format_strategy(raw: &str) -> JsonFormatStrategy {
 
 pub async fn list_inference_connections(pool: &SqlitePool) -> AppResult<Vec<InferenceConnection>> {
     let rows = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, json_format_strategy FROM inference_connections ORDER BY id",
+        "SELECT id, name, inference_url, api_key, model, json_format_strategy FROM inference_connections ORDER BY id",
     )
     .fetch_all(pool)
     .await?;
@@ -1322,7 +1325,7 @@ pub async fn get_inference_connection(
     id: i64,
 ) -> AppResult<InferenceConnection> {
     let row = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, json_format_strategy FROM inference_connections WHERE id = ?1",
+        "SELECT id, name, inference_url, api_key, model, json_format_strategy FROM inference_connections WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1337,7 +1340,7 @@ pub async fn update_inference_connection(
     payload: InferenceConnectionUpdate,
 ) -> AppResult<InferenceConnection> {
     let current = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, json_format_strategy FROM inference_connections WHERE id = ?1",
+        "SELECT id, name, inference_url, api_key, model, json_format_strategy FROM inference_connections WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1354,19 +1357,21 @@ pub async fn update_inference_connection(
         .json_format_strategy
         .map(json_format_strategy_to_db)
         .unwrap_or(current.json_format_strategy.as_str());
+    let model = payload.model.unwrap_or(current.model);
 
     sqlx::query(
-        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, json_format_strategy = ?4 WHERE id = ?5",
+        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, model = ?4, json_format_strategy = ?5 WHERE id = ?6",
     )
     .bind(name.trim())
     .bind(inference_url.trim())
     .bind(api_key)
+    .bind(model)
     .bind(json_format_strategy)
     .bind(id)
     .execute(pool)
     .await?;
 
-    sync_active_connection_url(pool).await?;
+    sync_active_connection_snapshot(pool).await?;
     get_inference_connection(pool, id).await
 }
 
@@ -1404,24 +1409,26 @@ pub async fn delete_inference_connection(pool: &SqlitePool, id: i64) -> AppResul
 async fn set_active_inference_connection(pool: &SqlitePool, id: i64) -> AppResult<()> {
     let connection = get_inference_connection(pool, id).await?;
     sqlx::query(
-        "UPDATE app_settings SET active_inference_connection_id = ?1, inference_url = ?2 WHERE id = 1",
+        "UPDATE app_settings SET active_inference_connection_id = ?1, inference_url = ?2, model = ?3 WHERE id = 1",
     )
     .bind(id)
     .bind(&connection.inference_url)
+    .bind(&connection.model)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-async fn sync_active_connection_url(pool: &SqlitePool) -> AppResult<()> {
+async fn sync_active_connection_snapshot(pool: &SqlitePool) -> AppResult<()> {
     let active_id: Option<i64> =
         sqlx::query_scalar("SELECT active_inference_connection_id FROM app_settings WHERE id = 1")
             .fetch_one(pool)
             .await?;
     if let Some(id) = active_id {
         let connection = get_inference_connection(pool, id).await?;
-        sqlx::query("UPDATE app_settings SET inference_url = ?1 WHERE id = 1")
+        sqlx::query("UPDATE app_settings SET inference_url = ?1, model = ?2 WHERE id = 1")
             .bind(&connection.inference_url)
+            .bind(&connection.model)
             .execute(pool)
             .await?;
     }
@@ -1431,16 +1438,22 @@ async fn sync_active_connection_url(pool: &SqlitePool) -> AppResult<()> {
 pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppResult<Settings> {
     let mut current = get_settings(pool).await?;
     let inference_url_updated = payload.inference_url.is_some();
+    let model_updated = payload.model.is_some();
 
-    // Apply connection switch before inference_url so URL edits target the selected profile,
-    // not the previously active one (autosave sends both fields together).
+    // Apply connection switch before per-connection fields so autosave cannot write
+    // URL/model from the previous profile onto the newly selected one.
     if let Some(v) = payload.active_connection_id {
         set_active_inference_connection(pool, v).await?;
         current.active_connection_id = Some(v);
+        let fresh = get_inference_connection(pool, v).await?;
+        if let Some(conn) = current.connections.iter_mut().find(|c| c.id == v) {
+            *conn = fresh.clone();
+        }
         if !inference_url_updated {
-            if let Some(active) = current.connections.iter().find(|c| c.id == v) {
-                current.inference_url = active.inference_url.clone();
-            }
+            current.inference_url = fresh.inference_url;
+        }
+        if !model_updated {
+            current.model = fresh.model;
         }
     }
 
@@ -1462,7 +1475,21 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
         }
     }
     if let Some(v) = payload.model {
-        current.model = v;
+        current.model = v.clone();
+        if let Some(active_id) = current.active_connection_id {
+            let updated = update_inference_connection(
+                pool,
+                active_id,
+                InferenceConnectionUpdate {
+                    model: Some(v),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+                *conn = updated;
+            }
+        }
     }
     if let Some(v) = payload.temperature {
         current.temperature = v;
@@ -2109,6 +2136,7 @@ struct InferenceConnectionRow {
     name: String,
     inference_url: String,
     api_key: String,
+    model: String,
     json_format_strategy: String,
 }
 
@@ -2119,6 +2147,7 @@ impl InferenceConnectionRow {
             name: self.name,
             inference_url: self.inference_url,
             api_key_set: !self.api_key.is_empty(),
+            model: self.model,
             json_format_strategy: parse_json_format_strategy(&self.json_format_strategy),
         }
     }
@@ -2378,6 +2407,127 @@ mod settings_update_tests {
             .expect("second");
         assert_eq!(first.inference_url, first_url);
         assert_eq!(second_saved.inference_url, second_url);
+    }
+
+    #[tokio::test]
+    async fn update_settings_switching_connection_preserves_per_profile_models() {
+        let (pool, first_id) = test_pool_with_connection().await;
+        update_inference_connection(
+            &pool,
+            first_id,
+            InferenceConnectionUpdate {
+                model: Some("local-model".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("first model");
+
+        let second = create_inference_connection(
+            &pool,
+            InferenceConnectionCreate {
+                name: "Hosted".into(),
+                inference_url: "https://api.featherlight.ai/v1".into(),
+                api_key: None,
+            },
+        )
+        .await
+        .expect("second connection");
+        update_inference_connection(
+            &pool,
+            second.id,
+            InferenceConnectionUpdate {
+                model: Some("hosted-model".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("second model");
+
+        let on_second = update_settings(
+            &pool,
+            SettingsUpdate {
+                active_connection_id: Some(second.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("switch to second");
+        assert_eq!(on_second.model, "hosted-model");
+
+        let on_first = update_settings(
+            &pool,
+            SettingsUpdate {
+                active_connection_id: Some(first_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("switch to first");
+        assert_eq!(on_first.model, "local-model");
+
+        let first = get_inference_connection(&pool, first_id)
+            .await
+            .expect("first");
+        let second_saved = get_inference_connection(&pool, second.id)
+            .await
+            .expect("second");
+        assert_eq!(first.model, "local-model");
+        assert_eq!(second_saved.model, "hosted-model");
+    }
+
+    #[tokio::test]
+    async fn update_settings_switching_connection_does_not_corrupt_other_profile_model() {
+        let (pool, first_id) = test_pool_with_connection().await;
+        update_inference_connection(
+            &pool,
+            first_id,
+            InferenceConnectionUpdate {
+                model: Some("local-model".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("first model");
+
+        let second = create_inference_connection(
+            &pool,
+            InferenceConnectionCreate {
+                name: "Hosted".into(),
+                inference_url: "https://api.featherlight.ai/v1".into(),
+                api_key: None,
+            },
+        )
+        .await
+        .expect("second connection");
+        update_inference_connection(
+            &pool,
+            second.id,
+            InferenceConnectionUpdate {
+                model: Some("hosted-model".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("second model");
+
+        let updated = update_settings(
+            &pool,
+            SettingsUpdate {
+                model: Some("hosted-model".into()),
+                active_connection_id: Some(second.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("switch with model");
+
+        assert_eq!(updated.model, "hosted-model");
+
+        let first = get_inference_connection(&pool, first_id)
+            .await
+            .expect("first");
+        assert_eq!(first.model, "local-model");
     }
 }
 

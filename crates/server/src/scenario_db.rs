@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 
 pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
     let rows = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
+        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, game_elements_json, created_at, updated_at FROM scenarios ORDER BY updated_at DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -16,7 +16,7 @@ pub async fn list_scenarios(pool: &SqlitePool) -> AppResult<Vec<Scenario>> {
 
 pub async fn get_scenario(pool: &SqlitePool, id: i64) -> AppResult<Scenario> {
     let row = sqlx::query_as::<_, ScenarioRow>(
-        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, created_at, updated_at FROM scenarios WHERE id = ?1",
+        "SELECT id, title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, game_elements_json, created_at, updated_at FROM scenarios WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -29,7 +29,7 @@ pub async fn create_scenario(pool: &SqlitePool, payload: ScenarioCreate) -> AppR
     let now = Utc::now().to_rfc3339();
     let jsons = scenario_json_fields(&payload)?;
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO scenarios (title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?21) RETURNING id",
+        "INSERT INTO scenarios (title, premise, setting, gm_style, opening_message, pc_name, pc_description, traits, character_id, rules_blocks, objective, setup_text, trait_defs, cast_json, pc_options_json, state_schema_json, win_condition_json, content_flags_json, source_meta_json, scenario_triggers_json, game_elements_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?22) RETURNING id",
     )
     .bind(&payload.title)
     .bind(&payload.premise)
@@ -51,6 +51,7 @@ pub async fn create_scenario(pool: &SqlitePool, payload: ScenarioCreate) -> AppR
     .bind(&jsons.content_flags)
     .bind(&jsons.source_meta)
     .bind(&jsons.scenario_triggers)
+    .bind(&jsons.game_elements)
     .bind(&now)
     .fetch_one(pool)
     .await?;
@@ -89,6 +90,7 @@ pub async fn update_scenario(
         scenario_triggers: payload
             .scenario_triggers
             .unwrap_or(existing.scenario_triggers),
+        game_elements: payload.game_elements.unwrap_or(existing.game_elements),
         updated_at: Utc::now(),
         ..existing
     };
@@ -102,8 +104,9 @@ pub async fn update_scenario(
     let content_flags = json_string(&updated.content_flags);
     let source_meta = optional_json_string(&updated.source_meta);
     let scenario_triggers = json_string(&updated.scenario_triggers);
+    let game_elements = json_string(&updated.game_elements);
     sqlx::query(
-        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, pc_name=?6, pc_description=?7, traits=?8, character_id=?9, rules_blocks=?10, objective=?11, setup_text=?12, trait_defs=?13, cast_json=?14, pc_options_json=?15, state_schema_json=?16, win_condition_json=?17, content_flags_json=?18, source_meta_json=?19, scenario_triggers_json=?20, updated_at=?21 WHERE id=?22",
+        "UPDATE scenarios SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, pc_name=?6, pc_description=?7, traits=?8, character_id=?9, rules_blocks=?10, objective=?11, setup_text=?12, trait_defs=?13, cast_json=?14, pc_options_json=?15, state_schema_json=?16, win_condition_json=?17, content_flags_json=?18, source_meta_json=?19, scenario_triggers_json=?20, game_elements_json=?21, updated_at=?22 WHERE id=?23",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
@@ -125,6 +128,7 @@ pub async fn update_scenario(
     .bind(&content_flags)
     .bind(&source_meta)
     .bind(&scenario_triggers)
+    .bind(&game_elements)
     .bind(updated.updated_at.to_rfc3339())
     .bind(id)
     .execute(pool)
@@ -154,6 +158,7 @@ struct ScenarioJsonFields {
     content_flags: String,
     source_meta: Option<String>,
     scenario_triggers: String,
+    game_elements: String,
 }
 
 fn scenario_json_fields(payload: &ScenarioCreate) -> AppResult<ScenarioJsonFields> {
@@ -169,6 +174,7 @@ fn scenario_json_fields(payload: &ScenarioCreate) -> AppResult<ScenarioJsonField
         content_flags: json_string(&payload.content_flags),
         source_meta: optional_json_string(&payload.source_meta),
         scenario_triggers: json_string(&payload.scenario_triggers),
+        game_elements: json_string(&payload.game_elements),
     })
 }
 
@@ -210,6 +216,7 @@ fn scenario_from_row(row: ScenarioRow) -> AppResult<Scenario> {
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok()),
         scenario_triggers: parse_json(&row.scenario_triggers_json),
+        game_elements: parse_json(&row.game_elements_json),
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
     })
@@ -246,6 +253,7 @@ struct ScenarioRow {
     content_flags_json: String,
     source_meta_json: Option<String>,
     scenario_triggers_json: String,
+    game_elements_json: String,
     created_at: String,
     updated_at: String,
 }

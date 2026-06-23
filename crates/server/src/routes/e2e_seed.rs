@@ -146,5 +146,6 @@ async fn complete_game_job(
         .await?;
     }
     db::complete_job(&state.pool, job.id, JobStatus::Completed, None).await?;
+    db::touch_game(&state.pool, game_id).await?;
     Ok(Json(OkResponse { ok: true }))
 }

@@ -186,6 +186,7 @@ pub fn job_type_label(job_type: JobType) -> &'static str {
         JobType::GameTurnCheck => "Declare checks",
         JobType::GameTurnResolve => "Resolve turn",
         JobType::GameTurnScenePlan => "Scene plan",
+        JobType::GameTurnStructuredAgent => "Structured agent",
         JobType::GameTurnProse => "Turn prose",
         JobType::GameSceneSummarize => "Scene summarize",
         JobType::GameProseRecheck => "Prose align",

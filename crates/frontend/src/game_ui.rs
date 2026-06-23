@@ -31,6 +31,7 @@ pub struct GameShellProps {
     pub games: Vec<Game>,
     pub on_select_game: Callback<i64>,
     pub on_new_game: Callback<()>,
+    pub on_games_refresh: Callback<()>,
 }
 
 fn game_id_from_route(route: &AppRoute) -> Option<i64> {
@@ -216,6 +217,37 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         })
     };
 
+    let on_fork = {
+        let on_navigate = props.on_navigate.clone();
+        let on_games_refresh = props.on_games_refresh.clone();
+        Callback::from(move |turn_id: i64| {
+            let Some(game_id) = game_id else { return };
+            let on_navigate = on_navigate.clone();
+            let on_games_refresh = on_games_refresh.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::fork_turn(game_id, turn_id).await {
+                    Ok(detail) => {
+                        on_games_refresh.emit(());
+                        on_navigate.emit((
+                            AppRoute::Games {
+                                game_id: Some(detail.game.id),
+                                overlay: Some(Overlay::State),
+                                sidebar: false,
+                            },
+                            true,
+                        ));
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ =
+                                window.alert_with_message(&format!("Could not fork game: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
     let on_recheck_prose = {
         let detail = detail.clone();
         let guidance_input = guidance_input.clone();
@@ -366,9 +398,11 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                     && !turn.prose.is_empty()
                                     && !turn.scene_beats.is_empty();
                                 let show_recheck_state = turn.phase == "done" && !turn.prose.is_empty();
+                                let show_fork = turn.phase == "done";
                                 let can_menu = !is_opening && (show_continue
                                     || show_regenerate
                                     || show_retry
+                                    || show_fork
                                     || show_align_prose
                                     || show_recheck_state);
                                 let display_prose = if turn.prose.is_empty() {
@@ -428,6 +462,15 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     onclick={on_regenerate.reform(move |_| turn_id)}
                                                                 >
                                                                     {"Regenerate"}
+                                                                </button>
+                                                            }
+                                                            if show_fork {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_fork.reform(move |_| turn_id)}
+                                                                >
+                                                                    {"Fork game here"}
                                                                 </button>
                                                             }
                                                             if show_retry {
@@ -494,6 +537,30 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                         label={"Plan".to_string()}
                                                         inline={true}
                                                     />
+                                                </PhaseSection>
+                                            }
+
+                                            if !turn.mechanical_results.is_empty() {
+                                                <PhaseSection
+                                                    label={"Mechanics".to_string()}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "mechanics".to_string())))}
+                                                    on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "mechanics".to_string())))}
+                                                >
+                                                    { for turn.mechanical_results.iter().map(|r| html! {
+                                                        <div class="mechanical-result-item muted small" key={format!("{}-{}", turn_id, r.sort_order)}>
+                                                            { mechanical_result_summary(r) }
+                                                        </div>
+                                                    }) }
+                                                    if turn.observability.llm_call_count > 0 || turn.observability.tool_call_count > 0 {
+                                                        <div class="muted small observability-summary">
+                                                            { format!(
+                                                                "Observability: {} LLM calls, {} tool calls ({:?})",
+                                                                turn.observability.llm_call_count,
+                                                                turn.observability.tool_call_count,
+                                                                turn.observability.engine_mode
+                                                            ) }
+                                                        </div>
+                                                    }
                                                 </PhaseSection>
                                             }
 
@@ -878,6 +945,43 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                     />
                     {" Step mode (pause between phases)"}
                 </label>
+                <label class="engine-mode-select">
+                    <span class="muted">{"Engine mode (experimental)"}</span>
+                    <select
+                        class="input input-compact"
+                        onchange={{
+                            let detail_state = detail_state.clone();
+                            Callback::from(move |e: Event| {
+                                let select: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                                let mode = match select.value().as_str() {
+                                    "tools_mechanics" => EngineMode::ToolsMechanics,
+                                    "tools_structured" => EngineMode::ToolsStructured,
+                                    _ => EngineMode::Pipeline,
+                                };
+                                let detail_state = detail_state.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let payload = GameUpdate {
+                                        engine_mode: Some(mode),
+                                        ..Default::default()
+                                    };
+                                    if let Ok(d) = api::update_game(game_id, &payload).await {
+                                        detail_state.emit(d);
+                                    }
+                                });
+                            })
+                        }}
+                    >
+                        <option value="pipeline" selected={game_detail.game.engine_mode == EngineMode::Pipeline}>
+                            {"Pipeline (bulk mechanicals)"}
+                        </option>
+                        <option value="tools_mechanics" selected={game_detail.game.engine_mode == EngineMode::ToolsMechanics}>
+                            {"Tools: mechanics only"}
+                        </option>
+                        <option value="tools_structured" selected={game_detail.game.engine_mode == EngineMode::ToolsStructured}>
+                            {"Tools: full structured"}
+                        </option>
+                    </select>
+                </label>
                 <details class="game-settings-panel">
                     <summary>{"Game settings"}</summary>
                     <div class="game-settings-fields">
@@ -1031,6 +1135,51 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                 </details>
             </div>
         </div>
+    }
+}
+
+fn mechanical_result_summary(result: &MechanicalResult) -> String {
+    match (&result.kind, &result.data) {
+        (
+            MechanicalKind::BoardMove,
+            MechanicalData::BoardMove {
+                actor,
+                roll,
+                from_space,
+                to_space,
+                space_tags,
+                ..
+            },
+        ) => {
+            format!(
+                "{actor} rolled {roll}: space {from_space} → {to_space} ({})",
+                space_tags.join(", ")
+            )
+        }
+        (
+            MechanicalKind::CardDraw,
+            MechanicalData::CardDraw {
+                name,
+                text,
+                deck_id,
+                ..
+            },
+        ) => {
+            let snippet: String = text.chars().take(120).collect();
+            format!("Card ({deck_id}): {name} — {snippet}")
+        }
+        (
+            MechanicalKind::DiceRoll,
+            MechanicalData::DiceRoll {
+                dice_expr,
+                rolls,
+                total,
+                ..
+            },
+        ) => {
+            format!("{} {dice_expr}: {rolls:?} = {total}", result.label)
+        }
+        _ => result.label.clone(),
     }
 }
 
