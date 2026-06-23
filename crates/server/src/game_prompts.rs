@@ -218,12 +218,62 @@ enum TurnPromptPhase {
     Prose,
 }
 
-fn format_rules_blocks(game: &Game) -> String {
-    relevant_rules_blocks(game)
-        .iter()
-        .map(|b| format!("## {}\n{}", b.name, b.content))
-        .collect::<Vec<_>>()
-        .join("\n\n")
+/// Inputs shared by every turn-pipeline prompt builder.
+struct TurnPromptInputs<'a> {
+    game: &'a Game,
+    detail: &'a GameDetail,
+    turn: &'a GameTurn,
+    checks: &'a [GameTurnCheck],
+    guidance: &'a str,
+    settings: &'a Settings,
+    ctx: &'a MacroContext<'a>,
+}
+
+/// Generous guardrail for total scenario-rules size. History has its own
+/// independent budget, so this only protects against a pathologically large
+/// rule set blowing the model context; it is set high enough that normal
+/// scenarios (including dense IW imports) are never truncated.
+fn rules_budget_chars(settings: &Settings) -> usize {
+    if settings.context_tokens > 0 {
+        (settings.context_tokens as usize)
+            .saturating_mul(4)
+            .max(32_768)
+    } else {
+        usize::MAX
+    }
+}
+
+fn format_rules_blocks(game: &Game, settings: &Settings) -> String {
+    let budget = rules_budget_chars(settings);
+    let mut blocks = Vec::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+    for b in relevant_rules_blocks(game) {
+        let block = format!("## {}\n{}", b.name, b.content);
+        // Drop whole trailing blocks rather than cutting a block mid-text, so
+        // rules like card tables are never partially shown.
+        if used + block.len() > budget && !blocks.is_empty() {
+            truncated = true;
+            break;
+        }
+        used += block.len();
+        blocks.push(block);
+    }
+    let mut text = blocks.join("\n\n");
+    if truncated {
+        text.push_str("\n\n[…additional scenario rules omitted to fit context…]");
+    }
+    text
+}
+
+fn push_section(body: &mut String, section: &str) {
+    if section.is_empty() {
+        return;
+    }
+    if !body.is_empty() {
+        body.push_str("\n\n");
+    }
+    body.push_str(section);
 }
 
 fn format_resolved_checks(checks: &[GameTurnCheck]) -> String {
@@ -278,58 +328,60 @@ fn history_context_for_phase(
 }
 
 /// Shared cumulative user-message body for turn pipeline prompts.
-fn build_cumulative_turn_body(
-    phase: TurnPromptPhase,
-    game: &Game,
-    detail: &GameDetail,
-    turn: &GameTurn,
-    checks: &[GameTurnCheck],
-    guidance: &str,
-    settings: &Settings,
-    ctx: &MacroContext<'_>,
-) -> String {
-    let state_block = build_state_block(&detail.state, &detail.actors);
-    let mut body = format!(
-        "Player action: {}\n\nCurrent state:\n{state_block}",
-        turn.player_action
-    );
+fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<'_>) -> String {
+    let TurnPromptInputs {
+        game,
+        detail,
+        turn,
+        checks,
+        guidance,
+        settings,
+        ctx,
+    } = inputs;
 
-    let rules_text = format_rules_blocks(game);
+    // Ordered stable → volatile so the leading scenario rules + characters form
+    // a byte-identical prefix across phases and turns, maximizing KV/prefix
+    // cache reuse on the inference backend. Per-turn content (state, plan,
+    // checks, beats, player action) trails so it never breaks that prefix.
+    let mut body = String::new();
+
+    let rules_text = format_rules_blocks(game, settings);
     if !rules_text.is_empty() {
-        body.push_str(&format!("\n\nScenario rules:\n{rules_text}"));
+        push_section(&mut body, &format!("Scenario rules:\n{rules_text}"));
     }
+
+    push_section(&mut body, &build_characters_block(&detail.actors));
+
+    let state_block = build_state_block(&detail.state, &detail.actors);
+    push_section(&mut body, &format!("Current state:\n{state_block}"));
 
     let history = history_context_for_phase(detail, turn, phase, settings, ctx);
-    if !history.is_empty() {
-        body.push_str(&format!("\n\n{history}"));
-    }
-
-    append_characters_section(&mut body, &detail.actors);
+    push_section(&mut body, &history);
 
     if phase != TurnPromptPhase::Plan {
-        let plan_block = format_plan_and_system_rolls(turn);
-        if !plan_block.is_empty() {
-            body.push_str(&format!("\n\n{plan_block}"));
-        }
+        push_section(&mut body, &format_plan_and_system_rolls(turn));
     }
 
     if matches!(phase, TurnPromptPhase::Resolve | TurnPromptPhase::Prose) {
         let checks_text = format_resolved_checks(checks);
-        body.push_str(&format!("\n\nResolved checks:\n{checks_text}"));
+        push_section(&mut body, &format!("Resolved checks:\n{checks_text}"));
     }
 
     if phase == TurnPromptPhase::Prose && !turn.scene_beats.is_empty() {
         let beats = turn.scene_beats.join("\n- ");
-        body.push_str(&format!("\n\nScene beats:\n- {beats}"));
+        push_section(&mut body, &format!("Scene beats:\n- {beats}"));
     }
 
     if !guidance.trim().is_empty() {
-        body.push_str(&format!("\n\nGM guidance: {guidance}"));
+        push_section(&mut body, &format!("GM guidance: {guidance}"));
     }
 
+    push_section(&mut body, &format!("Player action: {}", turn.player_action));
+
     if phase == TurnPromptPhase::Prose {
-        body.push_str(
-            "\n\nWrite prose covering each scene beat in order. Follow GM style and scenario rules for pacing, length, and detail.",
+        push_section(
+            &mut body,
+            "Write prose covering each scene beat in order. Follow GM style and scenario rules for pacing, length, and detail.",
         );
     }
 
@@ -344,16 +396,16 @@ pub fn build_declare_checks_messages(
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
     let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let body = build_cumulative_turn_body(
-        TurnPromptPhase::DeclareChecks,
+    let inputs = TurnPromptInputs {
         game,
         detail,
         turn,
-        &[],
+        checks: &[],
         guidance,
         settings,
-        &ctx,
-    );
+        ctx: &ctx,
+    };
+    let body = build_cumulative_turn_body(TurnPromptPhase::DeclareChecks, &inputs);
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": game_system_prompt(DECLARE_CHECKS_SYSTEM) }),
@@ -370,16 +422,16 @@ pub fn build_resolve_messages(
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
     let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let body = build_cumulative_turn_body(
-        TurnPromptPhase::Resolve,
+    let inputs = TurnPromptInputs {
         game,
         detail,
         turn,
         checks,
         guidance,
         settings,
-        &ctx,
-    );
+        ctx: &ctx,
+    };
+    let body = build_cumulative_turn_body(TurnPromptPhase::Resolve, &inputs);
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({
@@ -402,16 +454,16 @@ pub fn build_prose_messages(
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
     let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let body = build_cumulative_turn_body(
-        TurnPromptPhase::Prose,
+    let inputs = TurnPromptInputs {
         game,
         detail,
         turn,
         checks,
         guidance,
         settings,
-        &ctx,
-    );
+        ctx: &ctx,
+    };
+    let body = build_cumulative_turn_body(TurnPromptPhase::Prose, &inputs);
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": game_system_prompt(PROSE_SYSTEM) }),
@@ -456,7 +508,8 @@ fn long_term_memory_context(scenes: &[GameScene]) -> String {
         .join("\n\n")
 }
 
-pub(crate) fn build_turn_context_tiers(
+#[cfg(test)]
+fn build_turn_context_tiers(
     turns: &[GameTurn],
     scenes: &[GameScene],
     before_id: i64,
@@ -656,16 +709,16 @@ pub fn build_plan_messages(
     settings: &Settings,
 ) -> Vec<serde_json::Value> {
     let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let body = build_cumulative_turn_body(
-        TurnPromptPhase::Plan,
+    let inputs = TurnPromptInputs {
         game,
         detail,
         turn,
-        &[],
+        checks: &[],
         guidance,
         settings,
-        &ctx,
-    );
+        ctx: &ctx,
+    };
+    let body = build_cumulative_turn_body(TurnPromptPhase::Plan, &inputs);
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": game_system_prompt(PLAN_SYSTEM) }),
@@ -1369,5 +1422,74 @@ mod tests {
         let messages = build_declare_checks_messages(&game, &detail, &turn, "", &settings);
         let user = messages[1]["content"].as_str().unwrap();
         assert!(user.contains("Card drawn: Card 2: Shrink"));
+    }
+
+    #[test]
+    fn cumulative_body_orders_stable_prefix_before_volatile_content() {
+        let mut game = sample_game();
+        game.rules_blocks = vec![dreamwell_types::RulesBlock {
+            name: "Gameplay".into(),
+            content: "One action per turn.".into(),
+        }];
+        let detail = sample_detail(game.clone());
+        let settings = test_settings();
+        let turn = sample_turn();
+
+        let messages = build_resolve_messages(&game, &detail, &turn, &[], "", &settings);
+        let user = messages[1]["content"].as_str().unwrap();
+
+        let rules_pos = user.find("Scenario rules:").unwrap();
+        let characters_pos = user.find("Characters:").unwrap();
+        let state_pos = user.find("Current state:").unwrap();
+        let action_pos = user.find("Player action:").unwrap();
+
+        // Stable scenario rules + characters lead; volatile per-turn content trails.
+        assert!(rules_pos < characters_pos);
+        assert!(characters_pos < state_pos);
+        assert!(state_pos < action_pos);
+    }
+
+    #[test]
+    fn rules_blocks_truncate_at_block_boundary_when_over_budget() {
+        let mut game = sample_game();
+        let big = "x".repeat(40_000);
+        game.rules_blocks = vec![
+            dreamwell_types::RulesBlock {
+                name: "First".into(),
+                content: big.clone(),
+            },
+            dreamwell_types::RulesBlock {
+                name: "Second".into(),
+                content: "Should be dropped.".into(),
+            },
+        ];
+        let mut settings = test_settings();
+        settings.context_tokens = 4000; // budget ~= max(16k, 32k) = 32_768 chars
+
+        let rules = format_rules_blocks(&game, &settings);
+        assert!(rules.contains("## First"));
+        assert!(!rules.contains("Should be dropped."));
+        assert!(rules.contains("additional scenario rules omitted"));
+    }
+
+    #[test]
+    fn rules_blocks_unbounded_when_no_context_budget() {
+        let mut game = sample_game();
+        game.rules_blocks = vec![
+            dreamwell_types::RulesBlock {
+                name: "First".into(),
+                content: "x".repeat(40_000),
+            },
+            dreamwell_types::RulesBlock {
+                name: "Second".into(),
+                content: "Kept.".into(),
+            },
+        ];
+        let settings = test_settings(); // context_tokens = 0 → unbounded
+
+        let rules = format_rules_blocks(&game, &settings);
+        assert!(rules.contains("## Second"));
+        assert!(rules.contains("Kept."));
+        assert!(!rules.contains("additional scenario rules omitted"));
     }
 }
