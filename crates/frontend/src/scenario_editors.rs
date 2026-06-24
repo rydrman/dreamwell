@@ -4,14 +4,14 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::scenario_state_ui::{
-    editable_character_state_to_saved, editable_tracked_var_to_saved, EditableCharacterStateDef,
-    EditableTrackedVarDef, ScenarioStateDefEditor, ScenarioStateFieldUpdate, text_input,
-    textarea_input,
+    editable_character_state_to_saved, editable_tracked_var_to_saved, text_input, textarea_input,
+    EditableCharacterStateDef, EditableTrackedVarDef, ScenarioStateDefEditor,
+    ScenarioStateFieldUpdate,
 };
 use crate::scenario_ui::{
-    DraftPcOption, DraftScenarioNpc,
     add_trait_column, remove_trait_column, rename_trait_column, synced_trait_values_row,
-    trait_column_names, traits_for_columns, ScenarioDraft, TraitRowOwner,
+    trait_column_names, traits_for_columns, DraftPcOption, DraftScenarioNpc, ScenarioDraft,
+    TraitRowOwner,
 };
 
 fn mutate_draft(draft: &UseStateHandle<ScenarioDraft>, f: impl FnOnce(&mut ScenarioDraft)) {
@@ -135,9 +135,7 @@ fn build_generate_character_state_request(
             .cast
             .iter()
             .enumerate()
-            .filter_map(|(index, npc)| {
-                npc.to_saved(&format!("Cast entry {}", index + 1)).ok()
-            })
+            .filter_map(|(index, npc)| npc.to_saved(&format!("Cast entry {}", index + 1)).ok())
             .collect(),
         character: GenerateCharacterStateTarget {
             role,

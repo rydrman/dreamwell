@@ -1344,6 +1344,38 @@ pub async fn create_inference_connection(
     get_inference_connection(pool, id).await
 }
 
+pub async fn clone_inference_connection(
+    pool: &SqlitePool,
+    id: i64,
+) -> AppResult<InferenceConnection> {
+    let query = format!("{INFERENCE_CONNECTION_SELECT} WHERE id = ?1");
+    let source = sqlx::query_as::<_, InferenceConnectionRow>(&query)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
+
+    let name = format!("{} (copy)", source.name.trim());
+    let new_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO inference_connections (name, inference_url, api_key, model, json_format_strategy, tool_call_parser, temperature, top_p, max_tokens, context_tokens, max_context_messages, auto_context_on_model_change) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) RETURNING id",
+    )
+    .bind(name)
+    .bind(source.inference_url.trim())
+    .bind(source.api_key)
+    .bind(source.model)
+    .bind(source.json_format_strategy)
+    .bind(source.tool_call_parser)
+    .bind(source.temperature)
+    .bind(source.top_p)
+    .bind(source.max_tokens)
+    .bind(source.context_tokens)
+    .bind(source.max_context_messages)
+    .bind(source.auto_context_on_model_change)
+    .fetch_one(pool)
+    .await?;
+    get_inference_connection(pool, new_id).await
+}
+
 pub async fn get_inference_connection(
     pool: &SqlitePool,
     id: i64,
@@ -2449,7 +2481,7 @@ mod generation_failure_tests {
 #[cfg(test)]
 mod settings_update_tests {
     use super::*;
-    use dreamwell_types::{InferenceConnectionCreate, SettingsUpdate};
+    use dreamwell_types::{InferenceConnectionCreate, JsonFormatStrategy, SettingsUpdate};
     use sqlx::SqlitePool;
 
     async fn test_pool() -> SqlitePool {
@@ -2524,7 +2556,7 @@ mod settings_update_tests {
             &pool,
             InferenceConnectionCreate {
                 name: "Hosted".into(),
-                inference_url: "https://api.featherlight.ai/v1".into(),
+                inference_url: "https://api.featherless.ai/v1".into(),
                 api_key: None,
             },
         )
@@ -2532,7 +2564,7 @@ mod settings_update_tests {
         .expect("second connection");
 
         let first_url = "http://localhost:11434/v1";
-        let second_url = "https://api.featherlight.ai/v1";
+        let second_url = "https://api.featherless.ai/v1";
 
         // Simulate autosave payload when switching from first → second in the UI.
         let updated = update_settings(
@@ -2577,7 +2609,7 @@ mod settings_update_tests {
             &pool,
             InferenceConnectionCreate {
                 name: "Hosted".into(),
-                inference_url: "https://api.featherlight.ai/v1".into(),
+                inference_url: "https://api.featherless.ai/v1".into(),
                 api_key: None,
             },
         )
@@ -2627,6 +2659,48 @@ mod settings_update_tests {
     }
 
     #[tokio::test]
+    async fn clone_inference_connection_copies_saved_profile_and_api_key() {
+        let (pool, first_id) = test_pool_with_connection().await;
+        update_inference_connection(
+            &pool,
+            first_id,
+            InferenceConnectionUpdate {
+                name: Some("Primary".into()),
+                inference_url: Some("https://example.com/v1".into()),
+                api_key: Some("secret-key".into()),
+                model: Some("demo-model".into()),
+                json_format_strategy: Some(JsonFormatStrategy::GuidedJson),
+                tool_call_parser: Some("hermes".into()),
+                temperature: Some(0.25),
+                top_p: Some(0.8),
+                max_tokens: Some(2048),
+                context_tokens: Some(16384),
+                max_context_messages: Some(24),
+                auto_context_on_model_change: Some(false),
+            },
+        )
+        .await
+        .expect("configure source");
+
+        let cloned = clone_inference_connection(&pool, first_id)
+            .await
+            .expect("clone");
+        assert_ne!(cloned.id, first_id);
+        assert_eq!(cloned.name, "Primary (copy)");
+        assert_eq!(cloned.inference_url, "https://example.com/v1");
+        assert!(cloned.api_key_set);
+        assert_eq!(cloned.model, "demo-model");
+        assert_eq!(cloned.json_format_strategy, JsonFormatStrategy::GuidedJson);
+        assert_eq!(cloned.tool_call_parser, "hermes");
+        assert_eq!(cloned.temperature, 0.25);
+        assert_eq!(cloned.top_p, 0.8);
+        assert_eq!(cloned.max_tokens, 2048);
+        assert_eq!(cloned.context_tokens, 16384);
+        assert_eq!(cloned.max_context_messages, 24);
+        assert!(!cloned.auto_context_on_model_change);
+    }
+
+    #[tokio::test]
     async fn update_settings_switching_connection_preserves_per_profile_generation_defaults() {
         let (pool, first_id) = test_pool_with_connection().await;
         update_inference_connection(
@@ -2647,7 +2721,7 @@ mod settings_update_tests {
             &pool,
             InferenceConnectionCreate {
                 name: "Hosted".into(),
-                inference_url: "https://api.featherlight.ai/v1".into(),
+                inference_url: "https://api.featherless.ai/v1".into(),
                 api_key: None,
             },
         )
@@ -2714,7 +2788,7 @@ mod settings_update_tests {
             &pool,
             InferenceConnectionCreate {
                 name: "Hosted".into(),
-                inference_url: "https://api.featherlight.ai/v1".into(),
+                inference_url: "https://api.featherless.ai/v1".into(),
                 api_key: None,
             },
         )

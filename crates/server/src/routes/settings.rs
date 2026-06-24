@@ -26,6 +26,10 @@ pub fn router() -> Router<AppState> {
             get(list_connections).post(create_connection),
         )
         .route(
+            "/connections/:id/clone",
+            axum::routing::post(clone_connection),
+        )
+        .route(
             "/connections/:id",
             get(get_connection)
                 .patch(update_connection)
@@ -107,4 +111,11 @@ async fn update_connection(
 
 async fn delete_connection(State(state): State<AppState>, Path(id): Path<i64>) -> AppResult<()> {
     db::delete_inference_connection(&state.pool, id).await
+}
+
+async fn clone_connection(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> AppResult<Json<InferenceConnection>> {
+    Ok(Json(db::clone_inference_connection(&state.pool, id).await?))
 }

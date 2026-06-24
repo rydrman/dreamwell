@@ -193,10 +193,23 @@ fn auth_failure_from_response(response: &gloo_net::http::Response) -> Option<Str
 }
 
 async fn response_error_text(response: gloo_net::http::Response) -> String {
-    response
+    let status = response.status();
+    let text = response
         .text()
         .await
-        .unwrap_or_else(|_| response.status_text())
+        .unwrap_or_else(|_| response.status_text());
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(detail) = json.get("detail").and_then(|v| v.as_str()) {
+            if !detail.is_empty() {
+                return detail.to_string();
+            }
+        }
+    }
+    if text.trim().is_empty() {
+        format!("HTTP {status}")
+    } else {
+        text
+    }
 }
 
 async fn ensure_ok_response(
@@ -484,6 +497,15 @@ pub async fn delete_inference_connection(id: i64) -> Result<(), String> {
         &format!("/api/settings/connections/{id}"),
     ))
     .await
+}
+
+pub async fn clone_inference_connection(id: i64) -> Result<InferenceConnection, String> {
+    let response = api_request("POST", &format!("/api/settings/connections/{id}/clone"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let response = ensure_ok_response(response).await?;
+    response.json().await.map_err(|e| e.to_string())
 }
 
 pub async fn list_models() -> Result<Vec<ModelInfo>, String> {

@@ -2,7 +2,11 @@ use dreamwell_types::{CharacterStateDef, StateKind, StateScope, TrackedVarDef};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
-pub fn optional_i64_input(label: &str, value: Option<i64>, on_change: Callback<Option<i64>>) -> Html {
+pub fn optional_i64_input(
+    label: &str,
+    value: Option<i64>,
+    on_change: Callback<Option<i64>>,
+) -> Html {
     let display = value.map(|v| v.to_string()).unwrap_or_default();
     html! {
         <label class="field field-inline">
@@ -406,11 +410,15 @@ fn numeric_fields(
     };
     let on_num = {
         let on_update = on_update.clone();
-        Callback::from(move |value: Option<i64>| on_update.emit(ScenarioStateFieldUpdate::InitialNum(value)))
+        Callback::from(move |value: Option<i64>| {
+            on_update.emit(ScenarioStateFieldUpdate::InitialNum(value))
+        })
     };
     let on_max = {
         let on_update = on_update.clone();
-        Callback::from(move |value: Option<i64>| on_update.emit(ScenarioStateFieldUpdate::InitialMax(value)))
+        Callback::from(move |value: Option<i64>| {
+            on_update.emit(ScenarioStateFieldUpdate::InitialMax(value))
+        })
     };
     html! {
         <div class="scenario-state-def-fields">
@@ -423,7 +431,9 @@ fn numeric_fields(
 fn text_value_fields(initial_value: &str, on_update: Callback<ScenarioStateFieldUpdate>) -> Html {
     text_input("Starting value", initial_value, {
         let on_update = on_update.clone();
-        Callback::from(move |value: String| on_update.emit(ScenarioStateFieldUpdate::InitialValue(value)))
+        Callback::from(move |value: String| {
+            on_update.emit(ScenarioStateFieldUpdate::InitialValue(value))
+        })
     })
 }
 

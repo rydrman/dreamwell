@@ -58,7 +58,10 @@ use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use scenario_ui::{default_game_title, game_create_from_scenario, ScenariosPage};
 use sidebar::AppSidebar;
-use state_ui::{PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow, StateScopeActor};
+use state_ui::{
+    PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow,
+    StateScopeActor,
+};
 use stories_ui::StoriesShell;
 use story_save::{AutoSaveField, AutoSavePhase};
 use story_sync::{FetchGeneration, AUTOSAVE_DEBOUNCE_MS};
@@ -3796,13 +3799,8 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
                     }
                     if let Ok(detail) = api::get_chat_detail(chat_id).await {
                         chat_state.set(detail.state);
-                        chat_state_actors.set(
-                            detail
-                                .actors
-                                .iter()
-                                .map(StateScopeActor::from)
-                                .collect(),
-                        );
+                        chat_state_actors
+                            .set(detail.actors.iter().map(StateScopeActor::from).collect());
                     }
                 });
             } else {
@@ -4235,7 +4233,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                                     + 1;
                                 let payload = InferenceConnectionCreate {
                                     name: format!("Connection {next_index}"),
-                                    inference_url: "https://api.featherlight.ai/v1".into(),
+                                    inference_url: String::new(),
                                     api_key: None,
                                 };
                                 match api::create_inference_connection(&payload).await {
@@ -4251,6 +4249,26 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                             });
                         })
                     }}>{"Add"}</button>
+                    <button class="btn secondary" type="button" disabled={s.active_connection_id.is_none()} onclick={{
+                        let save_ctx = save_ctx.clone();
+                        let active_id = s.active_connection_id;
+                        Callback::from(move |_| {
+                            let Some(id) = active_id else { return };
+                            let save_ctx = save_ctx.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                match api::clone_inference_connection(id).await {
+                                    Ok(conn) => {
+                                        save_ctx.update_field(|current| {
+                                            current.connections.push(conn.clone());
+                                            current.active_connection_id = Some(conn.id);
+                                            apply_connection_to_settings(current, &conn);
+                                        });
+                                    }
+                                    Err(err) => save_ctx.phase.set(SettingsSavePhase::Failed(err)),
+                                }
+                            });
+                        })
+                    }}>{"Clone"}</button>
                     <button class="btn secondary" type="button" disabled={s.connections.len() <= 1} onclick={{
                         let save_ctx = save_ctx.clone();
                         let active_id = s.active_connection_id;
@@ -4300,7 +4318,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 <label class="field">
                 <span class="muted">{"API base URL"}</span>
                 <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
-                    <input value={s.inference_url.clone()} placeholder="https://api.featherlight.ai/v1" oninput={{
+                    <input value={s.inference_url.clone()} placeholder="" oninput={{
                         let save_ctx = save_ctx.clone();
                         Callback::from(move |e: InputEvent| {
                             let input: HtmlInputElement = e.target_unchecked_into();

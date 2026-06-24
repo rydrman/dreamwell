@@ -89,7 +89,7 @@ fn format_state_change_value(sc: &AppliedStateChange) -> String {
                 .value
                 .as_deref()
                 .and_then(|v| v.parse::<i64>().ok())
-                .or_else(|| match sc.op {
+                .or(match sc.op {
                     StateOp::Remove => Some(0),
                     _ => None,
                 });
@@ -319,13 +319,12 @@ fn format_entry_value(entry: &StateEntryRow) -> (String, bool, Option<f64>) {
     }
 }
 
+#[allow(dead_code)]
 pub fn sort_state_rows(mut rows: Vec<StateEntryRow>) -> Vec<StateEntryRow> {
     rows.sort_by(|left, right| {
         left.actor_id
             .cmp(&right.actor_id)
-            .then_with(|| {
-                state_kind_order(left.kind).cmp(&state_kind_order(right.kind))
-            })
+            .then_with(|| state_kind_order(left.kind).cmp(&state_kind_order(right.kind)))
             .then_with(|| left.key.cmp(&right.key))
     });
     rows
@@ -341,17 +340,13 @@ fn group_entries_by_scope<'a>(
             actor_ids.push(row.actor_id);
         }
     }
-    actor_ids.sort_by(|left, right| {
-        scope_sort_key(*left, actors).cmp(&scope_sort_key(*right, actors))
-    });
+    actor_ids.sort_by_key(|left| scope_sort_key(*left, actors));
 
     actor_ids
         .into_iter()
         .filter_map(|actor_id| {
-            let mut entries: Vec<&StateEntryRow> = rows
-                .iter()
-                .filter(|row| row.actor_id == actor_id)
-                .collect();
+            let mut entries: Vec<&StateEntryRow> =
+                rows.iter().filter(|row| row.actor_id == actor_id).collect();
             if entries.is_empty() {
                 return None;
             }

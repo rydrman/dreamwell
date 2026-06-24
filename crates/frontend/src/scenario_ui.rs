@@ -421,7 +421,11 @@ impl ScenarioDraft {
         for pc in &mut pc_options {
             ensure_trait_keys(&mut pc.traits, &columns);
         }
-        let mut cast: Vec<DraftScenarioNpc> = scenario.cast.iter().map(DraftScenarioNpc::from_saved).collect();
+        let mut cast: Vec<DraftScenarioNpc> = scenario
+            .cast
+            .iter()
+            .map(DraftScenarioNpc::from_saved)
+            .collect();
         for npc in &mut cast {
             ensure_trait_keys(&mut npc.traits, &columns);
         }

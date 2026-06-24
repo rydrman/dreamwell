@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -5,7 +6,7 @@ use std::time::Duration;
 use dreamwell_types::{JsonFormatStrategy, ModelCapabilities, ModelInfo};
 use futures_util::Stream;
 use futures_util::StreamExt as FuturesStreamExt;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde_json::Value;
 use tokio_stream::StreamExt as TokioStreamExt;
 
@@ -78,6 +79,82 @@ fn probe_client() -> &'static Client {
     })
 }
 
+fn format_inference_http_error(status: StatusCode, body: &str) -> String {
+    let trimmed = body.trim();
+    if let Ok(json) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(message) = json.pointer("/error/message").and_then(|v| v.as_str()) {
+            let code = json.pointer("/error/code").and_then(|v| v.as_str());
+            return match code.filter(|code| !code.is_empty()) {
+                Some(code) => {
+                    format!("Inference server returned HTTP {status} ({code}): {message}")
+                }
+                None => format!("Inference server returned HTTP {status}: {message}"),
+            };
+        }
+        if let Some(message) = json.get("error").and_then(|v| v.as_str()) {
+            return format!("Inference server returned HTTP {status}: {message}");
+        }
+        if let Some(message) = json.get("detail").and_then(|v| v.as_str()) {
+            return format!("Inference server returned HTTP {status}: {message}");
+        }
+        if let Some(message) = json.get("message").and_then(|v| v.as_str()) {
+            return format!("Inference server returned HTTP {status}: {message}");
+        }
+    }
+    if trimmed.is_empty() {
+        format!("Inference server returned HTTP {status} (empty response body)")
+    } else {
+        format!("Inference server returned HTTP {status}: {trimmed}")
+    }
+}
+
+fn format_reqwest_inference_error(err: &reqwest::Error, url: &str) -> String {
+    let mut parts = vec![format!("Inference request failed for {url}")];
+    if let Some(status) = err.status() {
+        parts.push(format!("HTTP {status}"));
+    }
+    if err.is_connect() {
+        parts.push(
+            "connection error (check inference URL, DNS, TLS certificate, and network)".to_string(),
+        );
+    } else if err.is_timeout() {
+        parts.push("request timed out".to_string());
+    }
+    let base = err.to_string();
+    if !base.is_empty() {
+        parts.push(base);
+    }
+    if let Some(source) = err.source() {
+        parts.push(source.to_string());
+    }
+    parts.join(": ")
+}
+
+fn inference_reqwest(err: reqwest::Error, url: &str) -> AppError {
+    AppError::inference(format_reqwest_inference_error(&err, url))
+}
+
+fn inference_http_error(status: StatusCode, body: &str) -> AppError {
+    AppError::inference(format_inference_http_error(status, body))
+}
+
+fn inference_stream_error(data: &str) -> AppError {
+    if data.trim().is_empty() {
+        return AppError::inference("Inference stream returned an empty error event".to_string());
+    }
+    if let Ok(json) = serde_json::from_str::<Value>(data) {
+        let code = json
+            .get("code")
+            .or_else(|| json.pointer("/error/code"))
+            .and_then(|v| v.as_i64())
+            .map(|code| StatusCode::from_u16(code as u16).unwrap_or(StatusCode::BAD_REQUEST))
+            .unwrap_or(StatusCode::BAD_REQUEST);
+        AppError::inference(format_inference_http_error(code, data))
+    } else {
+        AppError::inference(format!("Inference stream error: {data}"))
+    }
+}
+
 fn streaming_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -134,13 +211,15 @@ pub fn context_from_llama_props(data: &Value) -> Option<i64> {
 
 pub async fn list_models(config: &InferenceConfig) -> AppResult<Vec<ModelInfo>> {
     let url = format!("{}/models", config.url().trim_end_matches('/'));
-    let response = config.with_auth(http_client().get(&url)).send().await?;
+    let response = config
+        .with_auth(http_client().get(&url))
+        .send()
+        .await
+        .map_err(|err| inference_reqwest(err, &url))?;
     if !response.status().is_success() {
+        let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::inference(format!(
-            "Failed to list models: {}",
-            body
-        )));
+        return Err(inference_http_error(status, &body));
     }
     let data: Value = response.json().await?;
     let models_value = data.get("data").cloned().unwrap_or_else(|| data.clone());
@@ -270,21 +349,21 @@ pub async fn stream_chat_completion(
         "stream": true,
     });
     let response = config
-        .with_auth(streaming_client().post(url))
+        .with_auth(streaming_client().post(&url))
         .json(&payload)
         .send()
-        .await?;
+        .await
+        .map_err(|err| inference_reqwest(err, &url))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::inference(format!(
-            "Inference server returned {status}: {body}"
-        )));
+        return Err(inference_http_error(status, &body));
     }
 
+    let stream_url = url.clone();
     let stream = TokioStreamExt::timeout(
-        FuturesStreamExt::map(response.bytes_stream(), |chunk| {
-            chunk.map_err(AppError::from)
+        FuturesStreamExt::map(response.bytes_stream(), move |chunk| {
+            chunk.map_err(|err| inference_reqwest(err, &stream_url))
         }),
         STREAM_IDLE_TIMEOUT,
     );
@@ -302,6 +381,10 @@ pub async fn stream_chat_completion(
         let mut tokens = Vec::new();
         for line in text.lines() {
             let line = line.trim();
+            if line.starts_with("error: ") {
+                let data = line.trim_start_matches("error: ").trim();
+                return Err(inference_stream_error(data));
+            }
             if !line.starts_with("data: ") {
                 continue;
             }
@@ -368,21 +451,21 @@ pub async fn stream_chat_completion_with_tools(
         "stream": true,
     });
     let response = config
-        .with_auth(streaming_client().post(url))
+        .with_auth(streaming_client().post(&url))
         .json(&payload)
         .send()
-        .await?;
+        .await
+        .map_err(|err| inference_reqwest(err, &url))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::inference(format!(
-            "Inference server returned {status}: {body}"
-        )));
+        return Err(inference_http_error(status, &body));
     }
 
+    let byte_stream_url = url.clone();
     let byte_stream = TokioStreamExt::timeout(
-        FuturesStreamExt::map(response.bytes_stream(), |chunk| {
-            chunk.map_err(AppError::from)
+        FuturesStreamExt::map(response.bytes_stream(), move |chunk| {
+            chunk.map_err(|err| inference_reqwest(err, &byte_stream_url))
         }),
         STREAM_IDLE_TIMEOUT,
     );
@@ -405,6 +488,10 @@ pub async fn stream_chat_completion_with_tools(
             let mut saw_done = false;
             for line in text.lines() {
                 let line = line.trim();
+                if line.starts_with("error: ") {
+                    let data = line.trim_start_matches("error: ").trim();
+                    Err(inference_stream_error(data))?;
+                }
                 if !line.starts_with("data: ") {
                     continue;
                 }
@@ -520,13 +607,15 @@ pub async fn chat_completion_with_format(
         payload["guided_json"] = schema.clone();
     }
     let response = config
-        .with_auth(http_client().post(url))
+        .with_auth(http_client().post(&url))
         .json(&payload)
         .send()
-        .await?;
+        .await
+        .map_err(|err| inference_reqwest(err, &url))?;
     if !response.status().is_success() {
+        let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::inference(body));
+        return Err(inference_http_error(status, &body));
     }
     let data: Value = response.json().await?;
     Ok(data["choices"][0]["message"]["content"]
@@ -588,13 +677,15 @@ pub async fn chat_completion_with_tools(
         "stream": false,
     });
     let response = config
-        .with_auth(http_client().post(url))
+        .with_auth(http_client().post(&url))
         .json(&payload)
         .send()
-        .await?;
+        .await
+        .map_err(|err| inference_reqwest(err, &url))?;
     if !response.status().is_success() {
+        let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::inference(body));
+        return Err(inference_http_error(status, &body));
     }
     let data: Value = response.json().await?;
     let choice = &data["choices"][0];
@@ -1055,5 +1146,42 @@ mod tests {
         let raw = "x".repeat(5_000);
         let msg = format_json_parse_failure("invalid", &raw, 1, 768);
         assert!(msg.contains("[truncated for display, 5000 bytes total]"));
+    }
+
+    #[test]
+    fn format_inference_http_error_parses_openai_style_json() {
+        let body = r#"{"error":{"message":"model not ready","type":"invalid_request_error","code":"model_pending_deploy"}}"#;
+        let msg = format_inference_http_error(StatusCode::BAD_REQUEST, body);
+        assert!(msg.contains("HTTP 400 Bad Request"));
+        assert!(msg.contains("model_pending_deploy"));
+        assert!(msg.contains("model not ready"));
+    }
+
+    #[test]
+    fn format_inference_http_error_includes_status_for_empty_body() {
+        let msg = format_inference_http_error(StatusCode::INTERNAL_SERVER_ERROR, "");
+        assert!(msg.contains("HTTP 500 Internal Server Error"));
+        assert!(msg.contains("empty response body"));
+    }
+
+    #[test]
+    fn format_inference_http_error_parses_string_error_field() {
+        let body = r#"{"error":"Insufficient balance"}"#;
+        let msg = format_inference_http_error(StatusCode::PAYMENT_REQUIRED, body);
+        assert!(msg.contains("Insufficient balance"));
+    }
+
+    #[test]
+    fn inference_stream_error_parses_llama_cpp_event() {
+        let data =
+            r#"{"code":400,"message":"context size exceeded","type":"invalid_request_error"}"#;
+        let err = inference_stream_error(data);
+        match err {
+            AppError::Inference(msg) => {
+                assert!(msg.contains("context size exceeded"));
+                assert!(msg.contains("HTTP 400"));
+            }
+            other => panic!("expected inference error, got {other:?}"),
+        }
     }
 }
