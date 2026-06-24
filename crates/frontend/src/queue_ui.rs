@@ -131,6 +131,7 @@ pub struct QueuePageProps {
     pub on_back: Callback<()>,
     pub on_open_chat: Callback<i64>,
     pub on_open_story: Callback<i64>,
+    pub on_open_game: Callback<i64>,
     pub on_queue_change: Callback<QueueStatus>,
 }
 
@@ -152,7 +153,7 @@ pub fn queue_page(props: &QueuePageProps) -> Html {
                     move |_| on_back.emit(())
                 })}>{"← Back"}</button>
                 <h1 class="header-title">{"Generation queue"}</h1>
-                <p class="header-subtitle muted">{"Running and waiting jobs across chats and stories."}</p>
+                <p class="header-subtitle muted">{"Running and waiting jobs across chats, stories, and games."}</p>
             </header>
 
             if jobs.as_ref().is_none_or(|j| j.is_empty()) {
@@ -167,6 +168,7 @@ pub fn queue_page(props: &QueuePageProps) -> Html {
                         let on_queue_change = props.on_queue_change.clone();
                         let on_open_chat = props.on_open_chat.clone();
                         let on_open_story = props.on_open_story.clone();
+                        let on_open_game = props.on_open_game.clone();
                         let is_cancelling = *cancelling == Some(job.id);
                         let target = job_target(&job);
                         let created = job.created_at.format("%Y-%m-%d %H:%M").to_string();
@@ -186,6 +188,11 @@ pub fn queue_page(props: &QueuePageProps) -> Html {
                                         <button type="button" class="btn link" onclick={{
                                             let on_open_story = on_open_story.clone();
                                             Callback::from(move |_| on_open_story.emit(story_id))
+                                        }}>{ target.clone() }</button>
+                                    } else if let Some(game_id) = job.game_id {
+                                        <button type="button" class="btn link" onclick={{
+                                            let on_open_game = on_open_game.clone();
+                                            Callback::from(move |_| on_open_game.emit(game_id))
                                         }}>{ target.clone() }</button>
                                     } else {
                                         <span>{ target.clone() }</span>
