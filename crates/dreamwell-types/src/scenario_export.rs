@@ -79,7 +79,6 @@ mod tests {
             }],
             content_flags: ContentFlags {
                 mature: false,
- 
                 warnings: vec![],
             },
             ..Default::default()

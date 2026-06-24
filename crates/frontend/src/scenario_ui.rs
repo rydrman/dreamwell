@@ -160,7 +160,7 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                             }}>
                             <span class="list-row-name">
                                 { &scenario.title }
-                                if  scenario.content_flags.mature {
+                                if scenario.content_flags.mature {
                                     <span class="content-warning-badge" title="Mature content">{" ⚠"}</span>
                                 }
                             </span>

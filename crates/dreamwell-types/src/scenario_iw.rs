@@ -71,8 +71,6 @@ pub struct ContentFlags {
     #[serde(default)]
     pub mature: bool,
     #[serde(default)]
- 
-    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
