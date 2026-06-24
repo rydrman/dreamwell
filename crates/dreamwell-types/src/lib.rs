@@ -10,10 +10,9 @@ mod scenario_iw;
 mod serde_helpers;
 
 pub use game_elements::{
-    default_board_game_mechanicals, normalize_game_elements, prose_check_marker, prose_mech_marker,
-    prose_state_marker, BoardDef, BoardTagRule, CardDef, DeckDef, DeckFrom, DeckInstance,
-    ElementInstances, EngineMode, GameElementsConfig, MechanicalData, MechanicalKind,
-    MechanicalResult, MechanicalStep, MechanicalWhen, TurnObservability, PROSE_CHECK_MARKER_OPEN,
+    prose_check_marker, prose_mech_marker, prose_state_marker, BoardDef, BoardTagRule, CardDef,
+    DeckDef, DeckInstance, ElementInstances, EngineMode, GameElementsConfig, MechanicalData,
+    MechanicalKind, MechanicalResult, TurnObservability, PROSE_CHECK_MARKER_OPEN,
     PROSE_INLINE_MARKER_CLOSE, PROSE_MECH_MARKER_CLOSE, PROSE_MECH_MARKER_OPEN,
     PROSE_STATE_MARKER_OPEN,
 };
@@ -59,10 +58,6 @@ pub enum JobType {
     StoryBeatProseRecheck,
     StoryChapterSummarize,
     StoryBeatVariableRecheck,
-    GameTurnCheck,
-    GameTurnResolve,
-    GameTurnScenePlan,
-    GameTurnProse,
     GameSceneSummarize,
     GameProseRecheck,
     GameStateRecheck,
@@ -1318,15 +1313,6 @@ pub struct DeclaredCheck {
     pub modifier: i64,
     pub stakes: String,
     pub justification: String,
-}
-
-/// LLM output for Phase 2 — resolve + state delta (+ scene beats when merged).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResolveTurnResponse {
-    #[serde(default)]
-    pub scene_beats: Vec<String>,
-    #[serde(default)]
-    pub state_changes: Vec<StateChangeRequest>,
 }
 
 /// Shared plan-phase JSON for chat, story, and game modes.

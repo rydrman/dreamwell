@@ -7,9 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::game_mechanics::{
-    execute_mechanicals, flush_turn_mechanicals_streaming, persist_turn_mechanicals,
-};
+use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
 use crate::game_prompts::build_inline_prose_agent_messages;
 use crate::game_tools::{
     handle_mechanical_tool_call, inline_prose_tool_specs, parse_state_change_args, ToolSessionState,
@@ -135,7 +133,7 @@ pub async fn run_tools_structured_phase(
                 JailEvent::ToolCall(tc) => pending_tool_calls.push(tc),
             }
         }
-        let (salvaged, cleaned_prose) = salvage_bare_tool_calls(&prose);
+        let (salvaged, cleaned_prose) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
         if !salvaged.is_empty() {
             prose = cleaned_prose;
             for call in salvaged {
@@ -317,7 +315,7 @@ pub async fn run_tools_structured_phase(
         return Ok(());
     }
 
-    let (_, cleaned_prose) = salvage_bare_tool_calls(&prose);
+    let (_, cleaned_prose) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
     prose = cleaned_prose;
     db::update_turn_prose(pool, turn_id, &prose).await?;
 
@@ -383,23 +381,4 @@ async fn flush_prose_throttled(
     db::touch_game(pool, game_id).await?;
     *last_flush = Instant::now();
     Ok(())
-}
-
-pub async fn run_bulk_mechanicals(
-    pool: &SqlitePool,
-    game_id: i64,
-    turn_id: i64,
-    game: &dreamwell_types::Game,
-) -> AppResult<()> {
-    if game.game_elements.turn_mechanicals.is_empty() {
-        return Ok(());
-    }
-    let ctx = game.element_instances.clone();
-    let (results, instances) = execute_mechanicals(
-        &game.game_elements,
-        ctx,
-        &game.game_elements.turn_mechanicals,
-        "pc",
-    );
-    persist_turn_mechanicals(pool, game_id, turn_id, game, &results, &instances).await
 }

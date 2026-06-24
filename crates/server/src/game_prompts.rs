@@ -55,60 +55,12 @@ Rules:
 - Keep string fields concise so the JSON response stays complete
 - Output ONLY valid JSON matching the schema"#;
 
-const GAME_SCENE_BEAT_RULES: &str = r#"Scene beat rules:
-- Each beat is one concrete event, action, or line of dialogue
-- Plain, terse clauses with specific nouns and verbs
-- NEVER full narration or literary flourishes
-- Ground every beat in the player action and roll outcomes
-- Typically 3–8 beats per turn; fewer for simple actions
-- NEVER write prose, dialogue quotes, or sensory description in beats"#;
-
-const RESOLVE_SYSTEM: &str = r#"You are a tabletop RPG GM assistant for one specific scenario. Given resolved dice results, produce scene beats and typed state changes that honor the defined premise, setting/tone, and GM style.
-
-Rules:
-- Scene beats must match the scenario's genre, scale, and tone — do not default to peril, combat, or action-movie escalation
-- Scene beats must implement the turn plan only — do not add rolls, targets, or mechanical steps beyond what the plan specifies
-- Scene beats must honor the roll tiers (fail cannot be clean success)
-- State changes should reflect scenario-appropriate consequences; avoid health/stress harm or new threats unless warranted
-- Output ONLY valid JSON matching the schema"#;
-
-const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
-- The player action is the PC's intent when present. GM guidance is mandatory direction from the human running the game — not optional flavor.
-- When the player action is empty but GM guidance is present, the guidance IS the turn direction; honor it fully in checks, beats, and prose.
-- Only resolve outcomes for the PC that follow directly from what the player action and/or GM guidance explicitly states.
-- Do not invent new choices, targets, preferences, dialogue, or strategic decisions for the PC beyond what the player action or GM guidance authorizes.
-- When the PC must make a choice the player did not specify, stop at revealing what needs deciding — do not pick for them.
-- Partial or vague player actions authorize only what they explicitly request; do not extrapolate unstated follow-on choices for the PC.
-- NPC decisions are fair game: decide freely for NPCs per scenario rules; npc_decision_summary is for NPCs only, never the PC."#;
-
-const PROSE_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose rendering the scene beats.
-
-Rules:
-- Cover every scene beat in order — each beat should be clearly reflected in the narration
-- Follow GM style and scenario rules for pacing, length, and level of physical detail
-- Prefer plain action and dialogue over lyrical description, mood padding, and stacked metaphors unless GM style calls for richer prose
-- Avoid clichéd emotional flourishes (glinting eyes, charged tension, electric shivers, breathy whispers) unless a beat or GM style requires them
-- Voice, pacing, mood, intimacy, and tension come from GM style and setting/tone — not from generic adventure defaults
-- Do not inject peril, cliffhangers, or unexplained threats unless the scenario defines that genre or the beats require it
-- Honor resolved roll tiers — a fail must not read as unqualified success
-- When scenario rules or the turn plan name a card, effect, or mechanical outcome, reflect its actual text — do not substitute a generic summary
-- Do not contradict established state, scenario parameters, scene beats, or the turn plan
-- NEVER narrate the PC making choices or taking actions beyond what the player action and scene beats specify
-- No JSON, no meta commentary — prose only"#;
-
 const INLINE_PROSE_AGENT_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose that resolves the player's action and moves the scene forward, calling tools inline to fire any real game mechanic.
 
 POV (overrides GM style):
 - Always narrate the PC in second person: "you"/"your" — NEVER "I"/"my"/"me" for the PC, even if GM style says first person.
 - GM style first-person instructions apply to tone, pacing, and detail level only — not pronouns.
 - NPCs and their dialogue use third person or quoted speech as usual.
-
-Turn shape (decide this BEFORE you narrate or call any tool):
-- A turn is EITHER (A) resolving a card/effect left pending from a previous turn, OR (B) starting a fresh move. It is almost never both.
-- FIRST check for a pending card: did a previous turn draw a card that told the PC to Choose/Name a target or roll, and is the player's action this turn the answer to that? The "Card still in play" block (when present) and the most recent prose tell you. If so, you are in case (A).
-- Case (A) — RESOLVE the pending card: apply the player's stated choice, call roll_dice for any die the card specifies, call apply_state_changes for the resulting state changes, and narrate the effect IN FULL per the scenario's writing style. Do NOT call board_move and do NOT draw_card this turn — finishing the pending card IS the entire turn.
-- Case (B) — START a fresh move: call board_move ONCE to advance the piece, then draw_card for the space you land on. Then either resolve the card (if the player action already supplies its choices) or stop with ask_pc_decision.
-- Hard rules: at most ONE board_move per turn; never board_move or draw_card while a card's effect is unresolved; never skip resolving a drawn card by moving on.
 
 GM guidance (human player direction):
 - When the user message includes GM guidance, treat it as mandatory — the human player's explicit direction for this turn.
@@ -117,34 +69,39 @@ GM guidance (human player direction):
 
 How to narrate:
 - Narrate the world, NPCs, environment, and the consequences of the player's stated action and GM guidance — in second person ("you").
-- Follow GM style and scenario rules for pacing, length, and level of detail. When the scenario's writing style asks for a long, detailed sequence when an effect resolves, deliver it — do not compress a resolved card effect into a single sentence.
+- Follow GM style and scenario rules for pacing, length, and level of detail.
 - Prefer plain action and dialogue over lyrical description and stacked metaphors unless GM style calls for richer prose.
 - Honor any resolved check tiers already rolled for this turn — a fail must not read as unqualified success.
 
 Inline mechanics (use tools, never invent outcomes):
-- board_move rolls the board move die internally — call board_move alone for movement; NEVER call roll_dice for the move die first.
-- roll_dice is ONLY for a drawn card's effect roll (after the player has chosen its targets) or other scenario rules — not for board movement.
-- Whenever the scenario calls for a real mechanic — moving on a board, drawing a card, or rolling dice for a card — CALL THE MATCHING TOOL at that exact moment in the narration instead of describing the result yourself.
-- After a tool returns, its result is inserted into the narration as a visible block; continue narrating from the actual outcome the tool produced (e.g. use the canonical card text the tool returned, and the actual rolled numbers).
-- Do not fabricate dice numbers, card text, or board movement — always route those through the tools.
-- Do not run mandatory turn mechanics up front; only fire board_move, draw_card, and roll_dice when the narration reaches that moment.
+- board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
+- Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
+- draw_card requires an explicit deck_id — choose the deck per scenario rules (e.g. map space tags from board_move to the correct deck).
+- Call the matching tool at the moment in the narration when that mechanic happens — do not describe fabricated outcomes.
+- After a tool returns, its result is inserted into the narration as a visible block; continue from the actual outcome (canonical card text, rolled numbers, board position).
+- Do not fabricate dice numbers, card text, or board movement.
 
-Card choices (PC agency):
-- When a drawn card says "Choose" or "Name" a player, body part, or target and the player action did not specify those choices, call ask_pc_decision with a concrete question BEFORE roll_dice or apply_state_changes for the effect.
-- Do not pick card targets, body parts, or strategic options for the PC.
+PC agency:
+- When a card or scene requires a choice the player has not made, call ask_pc_decision with a concrete question BEFORE resolving the effect.
+- Do not pick targets, options, or strategic decisions for the PC.
 
 Tracked state (apply_state_changes tool):
-- When the scene establishes or changes durable tracked facts (location, mood, inventory, NPC attributes, clocks, resources) OR resolves a card or mechanic effect, call apply_state_changes with the changes array — do not only mention them in prose.
-- Use apply_state_changes for every state update the scenario or current state block implies; the tool is the source of truth, not the prose alone.
-- Do not apply transformation or card-effect state the player has not chosen yet.
+- When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call apply_state_changes — do not only mention them in prose.
+- The tool is the source of truth, not the prose alone.
 
 Ending the turn:
-- When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question for the player, then stop — do not narrate the PC's choice.
-- Do not end with menu-style options ("watch X's turn" / "roll and continue") unless the player action explicitly asked for that — use ask_pc_decision for a single clear question instead.
-- After fully resolving a pending card (case A), end the turn — do not roll into the next player's move unless the player action asked for it.
-- Otherwise narrate up to the next point where the player must decide what to do, then stop.
-- End the turn at that decision point; do not narrate the PC's next choice for them.
+- When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
+- Narrate up to the next decision point, then stop — do not narrate the PC's next choice for them.
 - Plain prose and tool calls only — no JSON, no meta commentary, no headers."#;
+
+const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
+- The player action is the PC's intent when present. GM guidance is mandatory direction from the human running the game — not optional flavor.
+- When the player action is empty but GM guidance is present, the guidance IS the turn direction; honor it fully in checks and prose.
+- Only resolve outcomes for the PC that follow directly from what the player action and/or GM guidance explicitly states.
+- Do not invent new choices, targets, preferences, dialogue, or strategic decisions for the PC beyond what the player action or GM guidance authorizes.
+- When the PC must make a choice the player did not specify, stop at revealing what needs deciding — do not pick for them.
+- Partial or vague player actions authorize only what they explicitly request; do not extrapolate unstated follow-on choices for the PC.
+- NPC decisions are fair game: decide freely for NPCs per scenario rules."#;
 
 fn game_system_prompt(base: &str) -> String {
     format!("{base}\n\n{PC_AGENCY_RULES}")
@@ -267,10 +224,7 @@ fn append_characters_section(body: &mut String, actors: &[GameActor]) {
 /// Turn pipeline phase — each later phase includes all context from earlier phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnPromptPhase {
-    Plan,
     DeclareChecks,
-    Resolve,
-    Prose,
     /// Single-pass narration that calls scenario mechanic tools inline (structured engine mode).
     ProseInline,
 }
@@ -394,15 +348,8 @@ fn history_context_for_phase(
 ) -> String {
     let budget = turn_context_budget(settings);
     let (budget, min_recent_prose) = match phase {
-        TurnPromptPhase::Resolve => (
-            TurnContextBudget {
-                prose_chars: budget.prose_chars / 2,
-                beats_chars: budget.beats_chars,
-            },
-            0,
-        ),
-        TurnPromptPhase::Prose | TurnPromptPhase::ProseInline => (budget, 1),
-        TurnPromptPhase::Plan | TurnPromptPhase::DeclareChecks => (budget, 0),
+        TurnPromptPhase::ProseInline => (budget, 1),
+        TurnPromptPhase::DeclareChecks => (budget, 0),
     };
     let tiers = build_turn_context_tiers_with_budget(
         &detail.turns,
@@ -448,54 +395,37 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         if !schema.is_empty() {
             push_section(&mut body, &schema);
         }
+        let elements = format_game_elements_context(game);
+        if !elements.is_empty() {
+            push_section(&mut body, &elements);
+        }
     }
 
     let history = history_context_for_phase(detail, turn, phase, settings, ctx);
     push_section(&mut body, &history);
 
-    if phase != TurnPromptPhase::Plan {
-        push_section(&mut body, &format_plan_and_system_rolls(turn));
-        let mechanics = format_mechanical_results(turn);
-        if !mechanics.is_empty() {
-            push_section(&mut body, &mechanics);
-        }
-    }
-
-    if matches!(
-        phase,
-        TurnPromptPhase::Resolve | TurnPromptPhase::Prose | TurnPromptPhase::ProseInline
-    ) {
-        let checks_text = format_resolved_checks(checks);
-        push_section(&mut body, &format!("Resolved checks:\n{checks_text}"));
+    push_section(&mut body, &format_plan_and_system_rolls(turn));
+    let mechanics = format_mechanical_results(turn);
+    if !mechanics.is_empty() {
+        push_section(&mut body, &mechanics);
     }
 
     if phase == TurnPromptPhase::ProseInline {
+        let checks_text = format_resolved_checks(checks);
+        push_section(&mut body, &format!("Resolved checks:\n{checks_text}"));
         if let Some(section) = card_in_play_section(detail, turn) {
             push_section(&mut body, &section);
         }
     }
 
-    if phase == TurnPromptPhase::Prose && !turn.scene_beats.is_empty() {
-        let beats = turn.scene_beats.join("\n- ");
-        push_section(&mut body, &format!("Scene beats:\n- {beats}"));
-    }
-
     append_turn_direction(&mut body, turn, guidance);
-
-    if phase == TurnPromptPhase::Prose {
-        push_section(
-            &mut body,
-            "Write prose covering each scene beat in order. Follow GM style and scenario rules for pacing, length, and detail.",
-        );
-    }
 
     if phase == TurnPromptPhase::ProseInline {
         let guidance_present = !effective_turn_guidance(turn, guidance).is_empty();
         let mut instruction = String::from(
             "Narrate this turn now in second person (\"you\"). \
-             FIRST: if a card is still in play from the previous turn and the player's action answers it, resolve that card (roll its die, apply the state changes, narrate the full effect) and do NOT call board_move or draw_card this turn. \
-             Only if no card is in play, start the turn with board_move only (it rolls the move die), then draw_card for the space you land on. \
-             After draw_card, if the card text says Choose/Name and the player did not specify, call ask_pc_decision before roll_dice or apply_state_changes. \
+             Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
+             If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
              Call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
         );
         if guidance_present {
@@ -510,9 +440,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
 }
 
 /// When the immediately previous turn ended on a freshly drawn card whose effect was
-/// never resolved (the last mechanical result is the card draw, with no resolving roll
-/// after it), surface that card so the inline-prose agent finishes resolving it this
-/// turn instead of advancing the piece and drawing again.
+/// never resolved, surface that card so the inline-prose agent finishes resolving it.
 fn card_in_play_section(detail: &GameDetail, current: &GameTurn) -> Option<String> {
     use dreamwell_types::MechanicalData;
     let prev = detail
@@ -525,11 +453,62 @@ fn card_in_play_section(detail: &GameDetail, current: &GameTurn) -> Option<Strin
         return None;
     };
     Some(format!(
-        "Card still in play (drawn last turn, effect not yet resolved):\n- {name}: {text}\n\
-         If the player's action this turn supplies the choice(s) this card needs, RESOLVE this card now — \
-         roll any die it specifies, apply the resulting state changes, and narrate the full effect — \
-         and do NOT call board_move or draw_card this turn.",
+        "Pending effect (from previous turn, not yet resolved):\n- {name}: {text}\n\
+         If the player's action this turn addresses this effect, resolve it before starting new mechanics.",
     ))
+}
+
+fn format_game_elements_context(game: &Game) -> String {
+    let elements = &game.game_elements;
+    if elements.boards.is_empty() && elements.decks.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec!["Game elements (runtime state):".to_string()];
+
+    for board in &elements.boards {
+        let mut board_line = format!(
+            "- Board \"{}\": {} spaces, move die {}, default tag \"{}\"",
+            board.id, board.spaces, board.move_dice, board.default_tag
+        );
+        if !board.tag_rules.is_empty() {
+            let rules: Vec<String> = board
+                .tag_rules
+                .iter()
+                .map(|rule| format!("{} → spaces {:?}", rule.tag, rule.spaces))
+                .collect();
+            board_line.push_str(&format!("; tag rules: {}", rules.join("; ")));
+        }
+        lines.push(board_line);
+        for (actor, pos) in &game.element_instances.board_positions {
+            lines.push(format!(
+                "  - {actor} position on \"{}\": space {pos}",
+                board.id
+            ));
+        }
+        if game.element_instances.board_positions.is_empty() {
+            lines.push(format!("  - No positions recorded yet on \"{}\"", board.id));
+        }
+    }
+
+    if !elements.decks.is_empty() {
+        let deck_ids: Vec<&str> = elements.decks.iter().map(|d| d.id.as_str()).collect();
+        lines.push(format!("- Available decks: {}", deck_ids.join(", ")));
+        for deck in &elements.decks {
+            let remaining = game
+                .element_instances
+                .deck_piles
+                .get(&deck.id)
+                .map(|pile| pile.draw_pile.len())
+                .unwrap_or(deck.cards.len());
+            lines.push(format!(
+                "  - \"{}\": {remaining} cards remaining in draw pile",
+                deck.id
+            ));
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn format_tracked_state_schema(schema: &[dreamwell_types::TrackedVarDef]) -> String {
@@ -576,64 +555,6 @@ pub fn build_declare_checks_messages(
     let user = user_message_with_scenario(game, &body, &ctx);
     vec![
         json!({ "role": "system", "content": game_system_prompt(DECLARE_CHECKS_SYSTEM) }),
-        json!({ "role": "user", "content": user }),
-    ]
-}
-
-pub fn build_resolve_messages(
-    game: &Game,
-    detail: &GameDetail,
-    turn: &GameTurn,
-    checks: &[GameTurnCheck],
-    guidance: &str,
-    settings: &Settings,
-) -> Vec<serde_json::Value> {
-    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let inputs = TurnPromptInputs {
-        game,
-        detail,
-        turn,
-        checks,
-        guidance,
-        settings,
-        ctx: &ctx,
-    };
-    let body = build_cumulative_turn_body(TurnPromptPhase::Resolve, &inputs);
-    let user = user_message_with_scenario(game, &body, &ctx);
-    vec![
-        json!({
-            "role": "system",
-            "content": format!(
-                "{}\n\n{GAME_SCENE_BEAT_RULES}\n\n{STATE_CHANGE_PROMPT}",
-                game_system_prompt(RESOLVE_SYSTEM)
-            ),
-        }),
-        json!({ "role": "user", "content": user }),
-    ]
-}
-
-pub fn build_prose_messages(
-    game: &Game,
-    detail: &GameDetail,
-    turn: &GameTurn,
-    checks: &[GameTurnCheck],
-    guidance: &str,
-    settings: &Settings,
-) -> Vec<serde_json::Value> {
-    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let inputs = TurnPromptInputs {
-        game,
-        detail,
-        turn,
-        checks,
-        guidance,
-        settings,
-        ctx: &ctx,
-    };
-    let body = build_cumulative_turn_body(TurnPromptPhase::Prose, &inputs);
-    let user = user_message_with_scenario(game, &body, &ctx);
-    vec![
-        json!({ "role": "system", "content": game_system_prompt(PROSE_SYSTEM) }),
         json!({ "role": "user", "content": user }),
     ]
 }
@@ -918,80 +839,8 @@ fn truncate_context_from_start(text: &str, max_chars: usize) -> String {
     )
 }
 
-pub fn resolve_schema() -> serde_json::Value {
-    dreamwell_state::resolve_schema()
-}
-
-const PLAN_SYSTEM: &str = r#"You are a tabletop RPG GM planning assistant for a scenario with structured mechanical rules.
-
-Given the player action and current state, produce a turn plan JSON:
-- Identify who acts and which scenario mechanics apply from the rules
-- Treat the scenario rules as authoritative: plan only mechanical steps the rules define for this player action
-- Follow the rules' turn/phase/action sequence exactly — do not repeat phases, add bonus actions, or stack effects unless the rules explicitly allow it
-- List each system dice roll the rules require for this action with label, dice_expr (e.g. "1d6"), and purpose
-- Populate optional plan fields (round, active_player, board_positions, card_drawn) only when the scenario rules use them; otherwise leave null or empty
-- Summarize NPC decision logic in npc_decision_summary when relevant (NPCs only — never the PC)
-- Add 2-5 summary_beats describing what will happen mechanically — one complete rules-defined action cycle, then stop
-- When the PC owes a decision the player did not specify, plan only through steps the player action authorized; omit rolls and beats that depend on an unstated PC choice; end summary_beats noting what remains undecided
-- Output ONLY valid JSON matching the schema"#;
-
 pub fn relevant_rules_blocks(game: &Game) -> Vec<&dreamwell_types::RulesBlock> {
     game.rules_blocks.iter().collect()
-}
-
-pub fn build_plan_messages(
-    game: &Game,
-    detail: &GameDetail,
-    turn: &GameTurn,
-    guidance: &str,
-    settings: &Settings,
-) -> Vec<serde_json::Value> {
-    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let inputs = TurnPromptInputs {
-        game,
-        detail,
-        turn,
-        checks: &[],
-        guidance,
-        settings,
-        ctx: &ctx,
-    };
-    let body = build_cumulative_turn_body(TurnPromptPhase::Plan, &inputs);
-    let user = user_message_with_scenario(game, &body, &ctx);
-    vec![
-        json!({ "role": "system", "content": game_system_prompt(PLAN_SYSTEM) }),
-        json!({ "role": "user", "content": user }),
-    ]
-}
-
-pub fn plan_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "round": { "type": ["integer", "null"] },
-            "active_player": { "type": ["string", "null"] },
-            "board_positions": {
-                "type": "object",
-                "additionalProperties": { "type": "integer" }
-            },
-            "card_drawn": { "type": ["string", "null"] },
-            "system_rolls_needed": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "label": { "type": "string" },
-                        "dice_expr": { "type": "string" },
-                        "purpose": { "type": "string" }
-                    },
-                    "required": ["label", "dice_expr", "purpose"]
-                }
-            },
-            "npc_decision_summary": { "type": ["string", "null"] },
-            "summary_beats": { "type": "array", "items": { "type": "string" } }
-        },
-        "required": ["system_rolls_needed", "summary_beats"]
-    })
 }
 
 pub fn format_plan_and_system_rolls(turn: &GameTurn) -> String {
@@ -1279,11 +1128,43 @@ mod tests {
     }
 
     #[test]
-    fn resolve_schema_requires_scene_beats_and_state_changes() {
-        let schema = resolve_schema();
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "scene_beats"));
-        assert!(required.iter().any(|v| v == "state_changes"));
+    fn inline_prose_system_describes_generic_primitives() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let msgs = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let system = msgs[0]["content"].as_str().unwrap();
+        assert!(system.contains(r#"second person ("you")"#));
+        assert!(system.contains("generic primitives"));
+        assert!(system.contains("deck_id"));
+        assert!(system.contains("ask_pc_decision"));
+        let user = msgs[1]["content"].as_str().unwrap();
+        assert!(user.contains("Follow the scenario rules"));
+    }
+
+    #[test]
+    fn inline_prose_includes_prior_prose_for_continuity() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let msgs = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let user = msgs[1]["content"].as_str().unwrap();
+        assert!(user.contains("Recent turns (prose"));
+        assert!(user.contains("Steam curls"));
+
+        let prior = GameTurn {
+            prose: "You slide the cup across the counter.".into(),
+            player_action: "I serve tea.".into(),
+            ..sample_turn_with_id(3)
+        };
+        let mut detail2 = sample_detail(game.clone());
+        detail2.turns = vec![sample_opening_turn(), prior];
+        let turn2 = sample_turn_with_id(4);
+        let msgs2 = build_inline_prose_agent_messages(&game, &detail2, &turn2, &[], "", &settings);
+        let user2 = msgs2[1]["content"].as_str().unwrap();
+        assert!(user2.contains("slide the cup"));
     }
 
     #[test]
@@ -1298,61 +1179,6 @@ mod tests {
         assert!(user.contains("Recent turns (prose"));
         assert!(user.contains("Opening:"));
         assert!(user.contains("Steam curls"));
-    }
-
-    #[test]
-    fn inline_prose_system_overrides_first_person_gm_style() {
-        let game = sample_game();
-        let detail = sample_detail(game.clone());
-        let turn = sample_turn();
-        let settings = test_settings();
-        let msgs = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
-        let system = msgs[0]["content"].as_str().unwrap();
-        assert!(system.contains(r#"second person ("you")"#));
-        assert!(system.contains(r#"NEVER "I"/"my"/"me""#));
-        assert!(system.contains("board_move rolls the board move die"));
-        assert!(system.contains("ask_pc_decision"));
-        let user = msgs[1]["content"].as_str().unwrap();
-        assert!(user.contains("board_move only"));
-    }
-
-    #[test]
-    fn resolve_omits_opening_from_scenario_but_includes_opening_turn() {
-        let game = sample_game();
-        let detail = sample_detail(game.clone());
-        let turn = sample_turn();
-        let settings = test_settings();
-        let resolve = build_resolve_messages(&game, &detail, &turn, &[], "", &settings);
-        let user = resolve[1]["content"].as_str().unwrap();
-        assert!(user.contains("Scenario parameters:"));
-        assert!(user.contains("Gentle pacing"));
-        assert!(user.contains("Opening:"));
-        assert!(user.contains("Steam curls"));
-    }
-
-    #[test]
-    fn prose_includes_at_least_one_prior_prose_for_continuity() {
-        let game = sample_game();
-        let detail = sample_detail(game.clone());
-        let turn = sample_turn();
-        let settings = test_settings();
-        let prose = build_prose_messages(&game, &detail, &turn, &[], "", &settings);
-        let user = prose[1]["content"].as_str().unwrap();
-        assert!(user.contains("Recent turns (prose"));
-        assert!(user.contains("Steam curls"));
-
-        let prior = GameTurn {
-            prose: "You slide the cup across the counter.".into(),
-            player_action: "I serve tea.".into(),
-            ..sample_turn_with_id(3)
-        };
-        let mut turn2 = sample_turn_with_id(4);
-        turn2.scene_beats = vec!["The guest smiles.".into()];
-        let mut detail2 = sample_detail(game.clone());
-        detail2.turns = vec![sample_opening_turn(), prior];
-        let prose2 = build_prose_messages(&game, &detail2, &turn2, &[], "", &settings);
-        let user2 = prose2[1]["content"].as_str().unwrap();
-        assert!(user2.contains("slide the cup"));
     }
 
     #[test]
@@ -1434,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prompt_includes_recent_beats_and_long_term_memory() {
+    fn inline_prose_prompt_includes_recent_beats_and_long_term_memory() {
         let game = sample_game();
         let prior = GameTurn {
             scene_beats: vec!["The bell chimes.".into()],
@@ -1446,34 +1272,13 @@ mod tests {
         let mut detail = sample_detail(game.clone());
         detail.turns = vec![sample_opening_turn(), prior];
         detail.scenes = vec![sample_scene("The shop has one regular.", true)];
-        let messages = build_resolve_messages(&game, &detail, &turn, &[], "", &test_settings());
+        let messages =
+            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &test_settings());
         let user = messages[1]["content"].as_str().unwrap();
         assert!(user.contains("Long-term memory"));
         assert!(user.contains("one regular"));
         assert!(user.contains("bell chimes"));
         assert!(user.contains("regular steps inside"));
-    }
-
-    #[test]
-    fn prose_prompt_uses_tiered_context_sections() {
-        let game = sample_game();
-        let prior = GameTurn {
-            scene_beats: vec!["Tea is served.".into()],
-            prose: "You slide the cup across the counter.".into(),
-            player_action: "I serve tea.".into(),
-            ..sample_turn_with_id(3)
-        };
-        let mut turn = sample_turn_with_id(4);
-        turn.scene_beats = vec!["The guest smiles.".into()];
-        let mut detail = sample_detail(game.clone());
-        detail.turns = vec![sample_opening_turn(), prior];
-        detail.scenes = vec![sample_scene("Afternoon service continues.", true)];
-        let messages = build_prose_messages(&game, &detail, &turn, &[], "", &test_settings());
-        let user = messages[1]["content"].as_str().unwrap();
-        assert!(user.contains("Long-term memory"));
-        assert!(user.contains("Tea is served"));
-        assert!(user.contains("slide the cup"));
-        assert!(!user.contains("Earlier scene summary:"));
     }
 
     #[test]
@@ -1561,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn all_turn_prompts_include_characters_block() {
+    fn turn_prompts_include_characters_block() {
         let game = sample_game();
         let mut detail = sample_detail(game.clone());
         detail.actors.push(GameActor {
@@ -1579,8 +1384,7 @@ mod tests {
         let settings = test_settings();
         for messages in [
             build_declare_checks_messages(&game, &detail, &turn, "", &settings),
-            build_resolve_messages(&game, &detail, &turn, &[], "", &settings),
-            build_prose_messages(&game, &detail, &turn, &[], "", &settings),
+            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings),
         ] {
             let user = messages[1]["content"].as_str().unwrap();
             assert!(user.contains("Characters:"));
@@ -1602,15 +1406,7 @@ mod tests {
     #[test]
     fn system_prompts_discourage_default_peril() {
         assert!(DECLARE_CHECKS_SYSTEM.contains("Do not invent danger"));
-        assert!(RESOLVE_SYSTEM.contains("do not default to peril"));
-        assert!(PROSE_SYSTEM.contains("not from generic adventure defaults"));
-    }
-
-    #[test]
-    fn prose_and_scene_beat_prompts_discourage_flourish() {
-        assert!(GAME_SCENE_BEAT_RULES.contains("NEVER full narration"));
-        assert!(PROSE_SYSTEM.contains("Avoid clichéd emotional flourishes"));
-        assert!(PROSE_SYSTEM.contains("Follow GM style and scenario rules for pacing"));
+        assert!(INLINE_PROSE_AGENT_SYSTEM.contains("Honor any resolved check tiers"));
     }
 
     #[test]
@@ -1644,10 +1440,37 @@ mod tests {
     }
 
     #[test]
-    fn plan_prompt_enforces_mechanical_fidelity() {
-        assert!(PLAN_SYSTEM.contains("Treat the scenario rules as authoritative"));
-        assert!(PLAN_SYSTEM.contains("do not repeat phases"));
-        assert!(RESOLVE_SYSTEM.contains("implement the turn plan only"));
+    fn format_game_elements_context_lists_boards_and_decks() {
+        let mut game = sample_game();
+        game.game_elements = dreamwell_types::GameElementsConfig {
+            boards: vec![dreamwell_types::BoardDef {
+                id: "main".into(),
+                spaces: 80,
+                move_dice: "1d6".into(),
+                tag_rules: vec![dreamwell_types::BoardTagRule {
+                    tag: "truth".into(),
+                    spaces: vec![8, 14],
+                }],
+                default_tag: "event".into(),
+            }],
+            decks: vec![dreamwell_types::DeckDef {
+                id: "events".into(),
+                consume_on_draw: true,
+                cards: vec![dreamwell_types::CardDef {
+                    id: "events:1".into(),
+                    name: "Boost".into(),
+                    text: "Move forward.".into(),
+                }],
+            }],
+        };
+        game.element_instances
+            .board_positions
+            .insert("pc".into(), 12);
+        let ctx = format_game_elements_context(&game);
+        assert!(ctx.contains("Board \"main\""));
+        assert!(ctx.contains("truth"));
+        assert!(ctx.contains("Available decks: events"));
+        assert!(ctx.contains("pc position"));
     }
 
     #[test]
@@ -1676,10 +1499,8 @@ mod tests {
         let turn = sample_turn();
         let settings = test_settings();
         for messages in [
-            build_plan_messages(&game, &detail, &turn, "", &settings),
             build_declare_checks_messages(&game, &detail, &turn, "", &settings),
-            build_resolve_messages(&game, &detail, &turn, &[], "", &settings),
-            build_prose_messages(&game, &detail, &turn, &[], "", &settings),
+            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings),
         ] {
             let system = messages[0]["content"].as_str().unwrap();
             assert!(
@@ -1687,12 +1508,11 @@ mod tests {
                 "expected PC agency rules in system prompt"
             );
             assert!(system.contains("Do not invent new choices"));
-            assert!(!system.contains("body part"));
         }
     }
 
     #[test]
-    fn cumulative_context_includes_rules_in_all_turn_phases() {
+    fn cumulative_context_includes_rules_in_turn_prompts() {
         let mut game = sample_game();
         game.rules_blocks = vec![dreamwell_types::RulesBlock {
             name: "Cards and probabilities".into(),
@@ -1700,54 +1520,16 @@ mod tests {
         }];
         let detail = sample_detail(game.clone());
         let settings = test_settings();
-        let mut turn = sample_turn();
-        turn.scene_beats = vec!["Chris draws Card 1: Grow.".into()];
-        turn.plan = Some(dreamwell_types::TurnPlan {
-            card_drawn: Some("Card 1: Grow".into()),
-            summary_beats: vec!["Draw transformation card.".into()],
-            ..Default::default()
-        });
+        let turn = sample_turn();
 
         for messages in [
-            build_plan_messages(&game, &detail, &turn, "", &settings),
             build_declare_checks_messages(&game, &detail, &turn, "", &settings),
-            build_resolve_messages(&game, &detail, &turn, &[], "", &settings),
-            build_prose_messages(&game, &detail, &turn, &[], "", &settings),
+            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings),
         ] {
             let user = messages[1]["content"].as_str().unwrap();
-            assert!(
-                user.contains("Scenario rules:"),
-                "expected rules in cumulative context"
-            );
+            assert!(user.contains("Scenario rules:"));
             assert!(user.contains("Card 1: Grow - Choose a player"));
         }
-    }
-
-    #[test]
-    fn prose_includes_plan_checks_and_scene_beats() {
-        let mut game = sample_game();
-        game.rules_blocks = vec![dreamwell_types::RulesBlock {
-            name: "Gameplay".into(),
-            content: "One action per turn.".into(),
-        }];
-        let detail = sample_detail(game.clone());
-        let settings = test_settings();
-        let mut turn = sample_turn();
-        turn.scene_beats = vec!["The guest smiles.".into()];
-        turn.plan = Some(dreamwell_types::TurnPlan {
-            card_drawn: Some("Card 1: Grow".into()),
-            summary_beats: vec!["Draw card.".into()],
-            ..Default::default()
-        });
-
-        let messages = build_prose_messages(&game, &detail, &turn, &[], "", &settings);
-        let user = messages[1]["content"].as_str().unwrap();
-        assert!(user.contains("Turn plan:"));
-        assert!(user.contains("Card drawn: Card 1: Grow"));
-        assert!(user.contains("Resolved checks:"));
-        assert!(user.contains("Scene beats:"));
-        assert!(user.contains("The guest smiles."));
-        assert!(!user.contains("Write concise prose"));
     }
 
     #[test]
@@ -1778,7 +1560,7 @@ mod tests {
         let settings = test_settings();
         let turn = sample_turn();
 
-        let messages = build_resolve_messages(&game, &detail, &turn, &[], "", &settings);
+        let messages = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
         let user = messages[1]["content"].as_str().unwrap();
 
         let rules_pos = user.find("Scenario rules:").unwrap();
@@ -1855,8 +1637,7 @@ mod tests {
         turn.player_action.clear();
         turn.guidance_notes = "Skip the card draw and stay at the counter.".into();
 
-        let messages =
-            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let messages = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
         let user = messages[1]["content"].as_str().unwrap();
         assert!(user.contains("honor this fully"));
         assert!(user.contains("Skip the card draw and stay at the counter."));
@@ -1872,8 +1653,7 @@ mod tests {
         let mut turn = sample_turn();
         turn.guidance_notes = "Keep the tone gentle.".into();
 
-        let messages =
-            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let messages = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
         let user = messages[1]["content"].as_str().unwrap();
         assert!(user.contains("mandatory — must shape this turn alongside the player action"));
         assert!(user.contains("Keep the tone gentle."));

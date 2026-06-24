@@ -1,54 +1,9 @@
 use dreamwell_types::{
-    BoardDef, DeckDef, DeckFrom, DeckInstance, ElementInstances, GameElementsConfig,
-    MechanicalData, MechanicalKind, MechanicalResult, MechanicalStep, MechanicalWhen,
+    BoardDef, DeckDef, DeckInstance, ElementInstances, GameElementsConfig, MechanicalData,
+    MechanicalKind, MechanicalResult,
 };
 
 use crate::game_resolution::roll_system_dice;
-
-pub struct MechanicalContext<'a> {
-    pub elements: &'a GameElementsConfig,
-    pub instances: ElementInstances,
-    pub active_actor: String,
-    pub last_space_tags: Vec<String>,
-    pub last_card_requires_roll: bool,
-}
-
-impl<'a> MechanicalContext<'a> {
-    pub fn new(
-        elements: &'a GameElementsConfig,
-        instances: ElementInstances,
-        active_actor: String,
-    ) -> Self {
-        Self {
-            elements,
-            instances,
-            active_actor,
-            last_space_tags: Vec::new(),
-            last_card_requires_roll: false,
-        }
-    }
-}
-
-pub fn resolve_deck_from_tags(
-    space_tags: &[String],
-    elements: &GameElementsConfig,
-) -> Option<String> {
-    if space_tags.iter().any(|t| t == "truth") {
-        elements
-            .decks
-            .iter()
-            .find(|d| d.id == "truth")
-            .map(|d| d.id.clone())
-            .or_else(|| elements.decks.get(1).map(|d| d.id.clone()))
-    } else {
-        elements
-            .decks
-            .iter()
-            .find(|d| d.id == "transformation")
-            .map(|d| d.id.clone())
-            .or_else(|| elements.decks.first().map(|d| d.id.clone()))
-    }
-}
 
 pub fn board_space_tags(board: &BoardDef, space: u32) -> Vec<String> {
     for rule in &board.tag_rules {
@@ -137,88 +92,6 @@ pub fn execute_dice_roll(dice_expr: &str, label: &str) -> Option<MechanicalResul
     })
 }
 
-pub fn execute_mechanicals(
-    elements: &GameElementsConfig,
-    instances: ElementInstances,
-    steps: &[MechanicalStep],
-    active_actor: &str,
-) -> (Vec<MechanicalResult>, ElementInstances) {
-    if steps.is_empty() {
-        return (Vec::new(), instances);
-    }
-
-    let mut ctx = MechanicalContext::new(elements, instances, active_actor.to_string());
-    let mut results = Vec::new();
-
-    for (i, step) in steps.iter().enumerate() {
-        let result = match step {
-            MechanicalStep::BoardMove { board, actor } => {
-                let actor = actor.as_deref().unwrap_or(&ctx.active_actor);
-                let board_def = ctx
-                    .elements
-                    .boards
-                    .iter()
-                    .find(|b| b.id == *board)
-                    .or_else(|| ctx.elements.boards.first());
-                let Some(board_def) = board_def else {
-                    continue;
-                };
-                let r = execute_board_move(board_def, &mut ctx.instances, actor);
-                if let Some(MechanicalData::BoardMove { space_tags, .. }) =
-                    r.as_ref().map(|x| &x.data)
-                {
-                    ctx.last_space_tags = space_tags.clone();
-                }
-                r
-            }
-            MechanicalStep::CardDraw {
-                deck_from,
-                consume,
-                deck_id,
-            } => {
-                let resolved_id = match deck_from {
-                    DeckFrom::SpaceTag => {
-                        resolve_deck_from_tags(&ctx.last_space_tags, ctx.elements)
-                    }
-                    DeckFrom::Literal => deck_id.clone(),
-                };
-                let Some(deck_id) = resolved_id else {
-                    continue;
-                };
-                let deck_def = ctx.elements.decks.iter().find(|d| d.id == deck_id);
-                let Some(deck_def) = deck_def else {
-                    continue;
-                };
-                let r = execute_card_draw(deck_def, &mut ctx.instances, *consume);
-                if let Some(MechanicalData::CardDraw { text, .. }) = r.as_ref().map(|x| &x.data) {
-                    ctx.last_card_requires_roll = deck_def
-                        .cards
-                        .iter()
-                        .find(|c| c.text == *text)
-                        .map(|c| c.requires_roll)
-                        .unwrap_or(false);
-                }
-                r
-            }
-            MechanicalStep::DiceRoll { dice, label, when } => {
-                if matches!(when, Some(MechanicalWhen::CardRequiresRoll))
-                    && !ctx.last_card_requires_roll
-                {
-                    continue;
-                }
-                execute_dice_roll(dice, label)
-            }
-        };
-
-        if let Some(mut r) = result {
-            r.sort_order = i as i64;
-            results.push(r);
-        }
-    }
-
-    (results, ctx.instances)
-}
-
 pub fn init_element_instances(elements: &GameElementsConfig) -> ElementInstances {
     use rand::seq::SliceRandom;
     let mut rng = rand::rng();
@@ -291,39 +164,6 @@ fn apply_mechanical_result_to_instances(
     }
 }
 
-pub async fn sync_board_positions_to_state(
-    pool: &sqlx::SqlitePool,
-    game_id: i64,
-    turn_id: i64,
-    instances: &ElementInstances,
-    state_schema: &[dreamwell_types::TrackedVarDef],
-) -> crate::error::AppResult<()> {
-    let position_keys = [
-        "Board_position",
-        "Game_piece_position",
-        "Leading_piece_position",
-    ];
-    for key in position_keys {
-        if !state_schema.iter().any(|d| d.key == key) {
-            continue;
-        }
-        let pos = instances.board_positions.get("pc").copied().unwrap_or(0);
-        let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query(
-            "UPDATE game_state_entries SET value=?1, num_value=?2, source_turn=?3, updated_at=?4 WHERE game_id=?5 AND key=?6",
-        )
-        .bind(pos.to_string())
-        .bind(pos as i64)
-        .bind(turn_id)
-        .bind(&now)
-        .bind(game_id)
-        .bind(key)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
 pub async fn flush_turn_mechanicals_streaming(
     pool: &sqlx::SqlitePool,
     game_id: i64,
@@ -342,7 +182,7 @@ pub async fn persist_turn_mechanicals(
     pool: &sqlx::SqlitePool,
     game_id: i64,
     turn_id: i64,
-    game: &dreamwell_types::Game,
+    _game: &dreamwell_types::Game,
     results: &[MechanicalResult],
     instances: &ElementInstances,
 ) -> crate::error::AppResult<()> {
@@ -351,7 +191,6 @@ pub async fn persist_turn_mechanicals(
 
     db::update_turn_mechanical_results(pool, turn_id, results).await?;
     db::update_game_element_instances(pool, game_id, instances).await?;
-    sync_board_positions_to_state(pool, game_id, turn_id, instances, &game.state_schema).await?;
 
     db::clear_system_rolls(pool, turn_id).await?;
     for (i, result) in results.iter().enumerate() {
@@ -379,72 +218,55 @@ pub async fn persist_turn_mechanicals(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dreamwell_types::{CardDef, DeckDef, MechanicalStep};
+    use dreamwell_types::{CardDef, DeckDef};
 
-    fn sample_elements() -> GameElementsConfig {
-        GameElementsConfig {
-            boards: vec![BoardDef {
-                id: "main".to_string(),
-                spaces: 80,
-                move_dice: "1d6".to_string(),
-                tag_rules: vec![dreamwell_types::BoardTagRule {
-                    tag: "truth".to_string(),
-                    spaces: vec![8, 14],
-                }],
-                default_tag: "transformation".to_string(),
+    #[test]
+    fn board_space_tags_uses_rule_or_default() {
+        let board = BoardDef {
+            id: "main".to_string(),
+            spaces: 80,
+            move_dice: "1d6".to_string(),
+            tag_rules: vec![dreamwell_types::BoardTagRule {
+                tag: "truth".to_string(),
+                spaces: vec![8, 14],
             }],
-            decks: vec![
-                DeckDef {
-                    id: "transformation".to_string(),
-                    consume_on_draw: true,
-                    cards: vec![CardDef {
-                        id: "transformation:1".to_string(),
-                        name: "Grow".to_string(),
-                        text: "Grow effect".to_string(),
-                        requires_roll: true,
-                    }],
-                },
-                DeckDef {
-                    id: "truth".to_string(),
-                    consume_on_draw: true,
-                    cards: vec![CardDef {
-                        id: "truth:1".to_string(),
-                        name: "Command".to_string(),
-                        text: "Command effect".to_string(),
-                        requires_roll: false,
-                    }],
-                },
-            ],
-            turn_mechanicals: dreamwell_types::default_board_game_mechanicals(),
-        }
+            default_tag: "space".to_string(),
+        };
+        assert_eq!(board_space_tags(&board, 8), vec!["truth".to_string()]);
+        assert_eq!(board_space_tags(&board, 5), vec!["space".to_string()]);
     }
 
     #[test]
-    fn execute_mechanicals_runs_board_then_draw() {
-        let elements = sample_elements();
-        let instances = init_element_instances(&elements);
-        let steps = vec![
-            MechanicalStep::BoardMove {
-                board: "main".to_string(),
-                actor: Some("Chris".to_string()),
-            },
-            MechanicalStep::CardDraw {
-                deck_from: DeckFrom::SpaceTag,
-                consume: true,
-                deck_id: None,
-            },
-        ];
-        let (results, _) = execute_mechanicals(&elements, instances, &steps, "Chris");
-        assert!(results.iter().any(|r| r.kind == MechanicalKind::BoardMove));
-        assert!(results.iter().any(|r| r.kind == MechanicalKind::CardDraw));
+    fn execute_board_move_updates_position() {
+        let board = BoardDef {
+            id: "main".to_string(),
+            spaces: 80,
+            move_dice: "1d6".to_string(),
+            tag_rules: vec![],
+            default_tag: "space".to_string(),
+        };
+        let mut instances = ElementInstances::default();
+        let result = execute_board_move(&board, &mut instances, "pc").expect("move");
+        assert!(matches!(result.data, MechanicalData::BoardMove { .. }));
+        assert!(instances.board_positions.contains_key("pc"));
     }
 
     #[test]
-    fn resolve_deck_from_tags_picks_truth() {
-        let elements = sample_elements();
-        assert_eq!(
-            resolve_deck_from_tags(&["truth".to_string()], &elements),
-            Some("truth".to_string())
-        );
+    fn execute_card_draw_returns_card() {
+        let deck = DeckDef {
+            id: "events".to_string(),
+            consume_on_draw: true,
+            cards: vec![CardDef {
+                id: "events:1".to_string(),
+                name: "Storm".to_string(),
+                text: "A storm hits.".to_string(),
+            }],
+        };
+        let mut instances = init_element_instances(&GameElementsConfig {
+            decks: vec![deck.clone()],
+            ..Default::default()
+        });
+        let result = execute_card_draw(&deck, &mut instances, true).expect("draw");
+        assert!(matches!(result.data, MechanicalData::CardDraw { .. }));
     }
 }

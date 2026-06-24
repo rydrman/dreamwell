@@ -2,12 +2,11 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use dreamwell_types::{
-    normalize_game_elements, normalize_game_traits, substitute_macros, AppliedStateChange,
-    ElementInstances, EngineMode, Game, GameActor, GameActorUpdate, GameCreate, GameDetail,
-    GameElementsConfig, GameScene, GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck,
-    GameTurnSystemRoll, GameUpdate, Job, JobType, MacroContext, MechanicalResult, ResolutionSystem,
-    RulesBlock, ScenarioTrigger, StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef,
-    TurnObservability, TurnPlan,
+    normalize_game_traits, substitute_macros, AppliedStateChange, ElementInstances, EngineMode,
+    Game, GameActor, GameActorUpdate, GameCreate, GameDetail, GameElementsConfig, GameScene,
+    GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck, GameTurnSystemRoll, GameUpdate,
+    Job, JobType, MacroContext, MechanicalResult, ResolutionSystem, RulesBlock, ScenarioTrigger,
+    StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnObservability,
 };
 use sqlx::SqlitePool;
 
@@ -138,9 +137,7 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
             .and_then(|s| serde_json::from_str(s).ok()),
         scenario_triggers: parse_json_vec::<ScenarioTrigger>(&row.scenario_triggers_json),
         trait_defs: parse_json_vec::<TraitDef>(&row.trait_defs_json),
-        game_elements: normalize_game_elements(parse_json_default::<GameElementsConfig>(
-            &row.game_elements_json,
-        )),
+        game_elements: parse_json_default::<GameElementsConfig>(&row.game_elements_json),
         element_instances: parse_json_default::<ElementInstances>(&row.element_instances_json),
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
@@ -948,7 +945,7 @@ pub async fn fork_game_at_turn(
     let win_condition_json = optional_json_string(&source.win_condition);
     let scenario_triggers_json = json_string(&source.scenario_triggers);
     let trait_defs_json = json_string(&source.trait_defs);
-    let game_elements_json = json_string(&normalize_game_elements(source.game_elements.clone()));
+    let game_elements_json = json_string(&source.game_elements);
     let instances = crate::game_mechanics::replay_element_instances(
         &source.game_elements,
         &kept_turns.iter().copied().cloned().collect::<Vec<_>>(),
@@ -1174,22 +1171,6 @@ pub async fn update_turn_phase(pool: &SqlitePool, turn_id: i64, phase: &str) -> 
     Ok(())
 }
 
-pub async fn update_turn_scene_beats(
-    pool: &SqlitePool,
-    turn_id: i64,
-    beats: &[String],
-) -> AppResult<()> {
-    let json = serde_json::to_string(beats).unwrap_or_else(|_| "[]".to_string());
-    let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE game_turns SET scene_beats=?1, updated_at=?2 WHERE id=?3")
-        .bind(&json)
-        .bind(&now)
-        .bind(turn_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub async fn update_turn_prose(pool: &SqlitePool, turn_id: i64, prose: &str) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
     sqlx::query("UPDATE game_turns SET prose=?1, updated_at=?2 WHERE id=?3")
@@ -1209,18 +1190,6 @@ pub async fn update_turn_state_changes(
     let json = serde_json::to_string(changes).unwrap_or_else(|_| "[]".to_string());
     let now = Utc::now().to_rfc3339();
     sqlx::query("UPDATE game_turns SET state_changes=?1, updated_at=?2 WHERE id=?3")
-        .bind(&json)
-        .bind(&now)
-        .bind(turn_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-pub async fn update_turn_plan(pool: &SqlitePool, turn_id: i64, plan: &TurnPlan) -> AppResult<()> {
-    let json = serde_json::to_string(plan).unwrap_or_else(|_| "{}".to_string());
-    let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE game_turns SET plan_json=?1, updated_at=?2 WHERE id=?3")
         .bind(&json)
         .bind(&now)
         .bind(turn_id)

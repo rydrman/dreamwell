@@ -69,7 +69,7 @@ test.describe("game turn tab visibility resume", () => {
     await page.goto(`/games/${seed.game_id}`);
     await expect(page.getByText("I pick the lock.")).toBeVisible();
     await expect(
-      page.locator("aside, main").getByText("writing prose…").first(),
+      page.locator("aside, main").getByText("running structured agent…").first(),
     ).toBeVisible();
 
     await setTabHidden(page, true);
@@ -78,6 +78,6 @@ test.describe("game turn tab visibility resume", () => {
 
     const main = page.locator("main");
     await expect(main.getByText(seed.expected_content)).toBeVisible();
-    await expect(main.getByText("writing prose…")).toHaveCount(0);
+    await expect(main.getByText("running structured agent…")).toHaveCount(0);
   });
 });

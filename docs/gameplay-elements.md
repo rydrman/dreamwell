@@ -1,6 +1,6 @@
 # Gameplay Elements
 
-Server-authoritative board-game mechanics (board moves, deck draws, dice rolls) with three engine modes for local comparison.
+Server-authoritative board, deck, and dice primitives invoked by the inline-prose agent via tools.
 
 ## Element types
 
@@ -8,45 +8,35 @@ Server-authoritative board-game mechanics (board moves, deck draws, dice rolls) 
 
 - `id`, `spaces`, `move_dice` (e.g. `1d6`)
 - `tag_rules`: map tag → space numbers (e.g. `truth` → `[8, 11, 14, …]`)
-- Default tag when no rule matches (e.g. `transformation`)
+- `default_tag` when no rule matches
 
 ### Deck
 
 - `id`, `consume_on_draw`, `cards[]`
-- Each card: `id`, `name`, `text`, `requires_roll`
+- Each card: `id`, `name`, `text`
 
 ### Game snapshot
 
-- `game_elements`: static defs + `turn_mechanicals` step template
-- `element_instances`: runtime board positions, deck draw piles
+- `game_elements`: static board and deck definitions
+- `element_instances`: runtime board positions and deck draw piles
 
-## Mechanical steps (bulk execution)
+## Agent tools (generic primitives)
 
-Executed in order by `execute_mechanicals()`:
+The structured inline-prose agent calls these tools when scenario rules require mechanics:
 
-1. `board_move` — roll, update position, emit `space_tags`
-2. `card_draw` — `deck_from: space_tag` selects deck; optional `consume`
-3. `dice_roll` — effect roll when last card has `requires_roll`
+| Tool | Purpose |
+|------|---------|
+| `board_move` | Roll the board move die, advance an actor, return from/to space and `space_tags` |
+| `draw_card` | Draw the top card from a named deck (`deck_id` required); returns canonical card text |
+| `roll_dice` | Roll a dice expression (e.g. `1d6`); returns rolls and total |
 
-Results persist on `GameTurn.mechanical_results` and feed cumulative prompts.
+Turn sequencing, deck selection (e.g. mapping space tags to decks), and when to call each tool are defined in the scenario's **rules blocks** — not in the engine.
 
-## Engine modes
+Results persist on `GameTurn.mechanical_results` and feed cumulative prompts. Inline prose markers (`⟦mech:N⟧`) anchor result blocks in streamed narration.
 
-| Mode | ID | Mechanics | LLM phases |
-|------|-----|-----------|------------|
-| Pipeline | `pipeline` | Bulk after plan | Plan → checks → resolve → prose |
-| Tools mechanics | `tools_mechanics` | Tool loop after plan | Same as pipeline |
-| Tools structured | `tools_structured` | Full tool loop | Prose only |
+## Engine mode
 
-Prose always streams last in all modes.
-
-## Comparison metrics
-
-Per turn (see `TurnObservability`):
-
-- `engine_mode`, `llm_call_count`, `tool_call_count`, `tool_iterations`
-- `mechanical_results` summary
-- Phase timings when logged
+All game turns use `tools_structured`: dramatic checks are rolled first, then a single prose pass with inline tool calls for mechanics and state updates.
 
 ## Scenario import/export
 
@@ -58,5 +48,4 @@ Per turn (see `TurnObservability`):
 ## Notes
 
 - `scenario_triggers` remain dormant in v1 (not evaluated at runtime).
-- Legacy `Transformation_card_drawn` state facts are deprecated once mechanical results exist.
-- System rolls table kept for UI compat; dice mechanicals also populate `system_rolls` during transition.
+- System rolls table kept for UI compat; dice mechanicals also populate `system_rolls`.
