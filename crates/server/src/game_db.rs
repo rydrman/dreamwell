@@ -1146,7 +1146,7 @@ async fn prepare_structured_agent_rerun(
         JobType::GameTurnStructuredAgent,
         game_id,
         Some(turn_id),
-        String::new(),
+        turn.guidance_notes.clone(),
     )
     .await
 }

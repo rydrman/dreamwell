@@ -45,7 +45,8 @@ Rules:
 - In gentle or low-peril scenarios, stakes can be social, emotional, craft, memory, composure, or subtle consequence — not combat, injury, or alarm
 - Skip a check only when the action is purely observational or already guaranteed with no meaningful uncertainty
 - When the scenario resolves the action through its own board/deck/dice mechanics (rolling the game's die, moving a piece, drawing or resolving a card), do NOT add a separate dramatic check for that routine mechanical step — return an empty checks array; reserve checks for genuinely uncertain dramatic, social, or interpersonal moments the game's own mechanics do not already cover
-- Do not invent danger, opposition, clocks, or escalation unless the scenario or player action calls for it
+- Do not invent danger, opposition, clocks, or escalation unless the scenario, player action, or GM guidance calls for it
+- When GM guidance is present, treat it as mandatory human direction — use it with the player action, or as the sole direction when the player action is empty
 - When checks are needed: use 2d6 + modifier PbtA-style resolution
 - Propose skill, modifier, stakes, and justification for each check; stakes must fit the scenario tone, not default adventure peril
 - Modifier is situational only (trait base is on the character sheet); keep modifiers modest
@@ -72,8 +73,10 @@ Rules:
 - Output ONLY valid JSON matching the schema"#;
 
 const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
-- The player action is the PC's intent. Do not invent new choices, targets, preferences, dialogue, or strategic decisions for the PC.
-- Only resolve outcomes for the PC that follow directly from what the player action (or GM guidance) explicitly states.
+- The player action is the PC's intent when present. GM guidance is mandatory direction from the human running the game — not optional flavor.
+- When the player action is empty but GM guidance is present, the guidance IS the turn direction; honor it fully in checks, beats, and prose.
+- Only resolve outcomes for the PC that follow directly from what the player action and/or GM guidance explicitly states.
+- Do not invent new choices, targets, preferences, dialogue, or strategic decisions for the PC beyond what the player action or GM guidance authorizes.
 - When the PC must make a choice the player did not specify, stop at revealing what needs deciding — do not pick for them.
 - Partial or vague player actions authorize only what they explicitly request; do not extrapolate unstated follow-on choices for the PC.
 - NPC decisions are fair game: decide freely for NPCs per scenario rules; npc_decision_summary is for NPCs only, never the PC."#;
@@ -107,8 +110,13 @@ Turn shape (decide this BEFORE you narrate or call any tool):
 - Case (B) — START a fresh move: call board_move ONCE to advance the piece, then draw_card for the space you land on. Then either resolve the card (if the player action already supplies its choices) or stop with ask_pc_decision.
 - Hard rules: at most ONE board_move per turn; never board_move or draw_card while a card's effect is unresolved; never skip resolving a drawn card by moving on.
 
+GM guidance (human player direction):
+- When the user message includes GM guidance, treat it as mandatory — the human player's explicit direction for this turn.
+- GM guidance can stand alone when the player action is empty; when both are present, both must shape the turn.
+- Prose and tool use must visibly reflect GM guidance; do not ignore it in favor of default scenario momentum.
+
 How to narrate:
-- Narrate the world, NPCs, environment, and the consequences of the player's stated action — in second person ("you").
+- Narrate the world, NPCs, environment, and the consequences of the player's stated action and GM guidance — in second person ("you").
 - Follow GM style and scenario rules for pacing, length, and level of detail. When the scenario's writing style asks for a long, detailed sequence when an effect resolves, deliver it — do not compress a resolved card effect into a single sentence.
 - Prefer plain action and dialogue over lyrical description and stacked metaphors unless GM style calls for richer prose.
 - Honor any resolved check tiers already rolled for this turn — a fail must not read as unqualified success.
@@ -325,6 +333,37 @@ fn push_section(body: &mut String, section: &str) {
     body.push_str(section);
 }
 
+/// Prefer guidance persisted on the turn; fall back to the queued job payload.
+pub(crate) fn effective_turn_guidance(turn: &GameTurn, job_guidance: &str) -> String {
+    if !turn.guidance_notes.trim().is_empty() {
+        turn.guidance_notes.trim().to_string()
+    } else {
+        job_guidance.trim().to_string()
+    }
+}
+
+fn append_turn_direction(body: &mut String, turn: &GameTurn, job_guidance: &str) {
+    let guidance = effective_turn_guidance(turn, job_guidance);
+    let action = turn.player_action.trim();
+
+    if guidance.is_empty() && action.is_empty() {
+        return;
+    }
+
+    if !guidance.is_empty() {
+        let label = if action.is_empty() {
+            "GM guidance (this turn's direction — no separate player action; honor this fully)"
+        } else {
+            "GM guidance (mandatory — must shape this turn alongside the player action)"
+        };
+        push_section(body, &format!("{label}:\n{guidance}"));
+    }
+
+    if !action.is_empty() {
+        push_section(body, &format!("Player action: {action}"));
+    }
+}
+
 fn format_resolved_checks(checks: &[GameTurnCheck]) -> String {
     if checks.is_empty() {
         "No checks — pure narration.".to_string()
@@ -441,11 +480,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         push_section(&mut body, &format!("Scene beats:\n- {beats}"));
     }
 
-    if !guidance.trim().is_empty() {
-        push_section(&mut body, &format!("GM guidance: {guidance}"));
-    }
-
-    push_section(&mut body, &format!("Player action: {}", turn.player_action));
+    append_turn_direction(&mut body, turn, guidance);
 
     if phase == TurnPromptPhase::Prose {
         push_section(
@@ -455,14 +490,20 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
     }
 
     if phase == TurnPromptPhase::ProseInline {
-        push_section(
-            &mut body,
+        let guidance_present = !effective_turn_guidance(turn, guidance).is_empty();
+        let mut instruction = String::from(
             "Narrate this turn now in second person (\"you\"). \
              FIRST: if a card is still in play from the previous turn and the player's action answers it, resolve that card (roll its die, apply the state changes, narrate the full effect) and do NOT call board_move or draw_card this turn. \
              Only if no card is in play, start the turn with board_move only (it rolls the move die), then draw_card for the space you land on. \
              After draw_card, if the card text says Choose/Name and the player did not specify, call ask_pc_decision before roll_dice or apply_state_changes. \
              Call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
         );
+        if guidance_present {
+            instruction.push_str(
+                " If GM guidance is present above, it is mandatory human direction — the turn must visibly follow it.",
+            );
+        }
+        push_section(&mut body, &instruction);
     }
 
     body
@@ -1793,5 +1834,49 @@ mod tests {
         assert!(rules.contains("## Second"));
         assert!(rules.contains("Kept."));
         assert!(!rules.contains("additional scenario rules omitted"));
+    }
+
+    #[test]
+    fn effective_turn_guidance_prefers_turn_over_job() {
+        let mut turn = sample_turn();
+        turn.guidance_notes = "Keep the scene cozy.".into();
+        assert_eq!(
+            super::effective_turn_guidance(&turn, "ignored job note"),
+            "Keep the scene cozy."
+        );
+    }
+
+    #[test]
+    fn guidance_only_turn_omits_empty_player_action_line() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let settings = test_settings();
+        let mut turn = sample_turn();
+        turn.player_action.clear();
+        turn.guidance_notes = "Skip the card draw and stay at the counter.".into();
+
+        let messages =
+            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("honor this fully"));
+        assert!(user.contains("Skip the card draw and stay at the counter."));
+        assert!(!user.contains("Player action:"));
+        assert!(user.contains("mandatory human direction"));
+    }
+
+    #[test]
+    fn guidance_with_action_includes_both_sections() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let settings = test_settings();
+        let mut turn = sample_turn();
+        turn.guidance_notes = "Keep the tone gentle.".into();
+
+        let messages =
+            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("mandatory — must shape this turn alongside the player action"));
+        assert!(user.contains("Keep the tone gentle."));
+        assert!(user.contains("Player action: I greet the regular at the counter."));
     }
 }
