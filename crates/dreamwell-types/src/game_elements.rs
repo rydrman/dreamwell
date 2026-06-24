@@ -27,31 +27,22 @@ pub fn prose_check_marker(sort_order: i64) -> String {
     format!("{PROSE_CHECK_MARKER_OPEN}{sort_order}{PROSE_INLINE_MARKER_CLOSE}")
 }
 
-/// How a game turn is orchestrated.
+/// How a game turn is orchestrated (tool-calling inline prose agent).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineMode {
     #[default]
-    Pipeline,
-    ToolsMechanics,
+    #[serde(alias = "pipeline", alias = "tools_mechanics")]
     ToolsStructured,
 }
 
 impl EngineMode {
-    pub fn from_db(s: &str) -> Self {
-        match s {
-            "tools_mechanics" => Self::ToolsMechanics,
-            "tools_structured" => Self::ToolsStructured,
-            _ => Self::Pipeline,
-        }
+    pub fn from_db(_s: &str) -> Self {
+        Self::ToolsStructured
     }
 
     pub fn as_db(self) -> &'static str {
-        match self {
-            Self::Pipeline => "pipeline",
-            Self::ToolsMechanics => "tools_mechanics",
-            Self::ToolsStructured => "tools_structured",
-        }
+        "tools_structured"
     }
 }
 
@@ -295,12 +286,15 @@ mod tests {
 
     #[test]
     fn engine_mode_round_trips_db() {
-        assert_eq!(EngineMode::from_db("pipeline"), EngineMode::Pipeline);
+        assert_eq!(EngineMode::from_db("pipeline"), EngineMode::ToolsStructured);
         assert_eq!(
             EngineMode::from_db("tools_mechanics"),
-            EngineMode::ToolsMechanics
+            EngineMode::ToolsStructured
         );
-        assert_eq!(EngineMode::from_db("bogus"), EngineMode::Pipeline);
-        assert_eq!(EngineMode::Pipeline.as_db(), "pipeline");
+        assert_eq!(
+            EngineMode::from_db("tools_structured"),
+            EngineMode::ToolsStructured
+        );
+        assert_eq!(EngineMode::ToolsStructured.as_db(), "tools_structured");
     }
 }

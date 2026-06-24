@@ -668,7 +668,7 @@ pub async fn update_state_entry(
 
 async fn list_turns(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<GameTurn>> {
     let rows = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
+        "SELECT id, game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
     )
     .bind(game_id)
     .fetch_all(pool)
@@ -702,6 +702,7 @@ async fn turn_from_row(pool: &SqlitePool, row: TurnRow) -> AppResult<GameTurn> {
         game_id: row.game_id,
         sort_order: row.sort_order,
         player_action: row.player_action,
+        guidance_notes: row.guidance_notes,
         phase: row.phase,
         scene_beats: parse_string_array(&row.scene_beats),
         prose: row.prose,
@@ -838,7 +839,12 @@ pub async fn prepare_submit_turn(
     game_id: i64,
     payload: &SubmitTurnRequest,
 ) -> AppResult<(GameTurn, Job)> {
-    let game = get_game(pool, game_id).await?;
+    if payload.player_action.trim().is_empty() && payload.guidance_notes.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "Turn requires a player action or GM guidance",
+        ));
+    }
+    let _game = get_game(pool, game_id).await?;
     if let Some(active) = get_active_game_job(pool, game_id).await? {
         return Err(AppError::bad_request(format!(
             "Game already has an active job (id {})",
@@ -853,25 +859,19 @@ pub async fn prepare_submit_turn(
     .await?;
     let now = Utc::now().to_rfc3339();
     let turn_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO game_turns (game_id, sort_order, player_action, phase, is_opening, created_at, updated_at) VALUES (?1,?2,?3,'pending',0,?4,?4) RETURNING id",
+        "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, is_opening, created_at, updated_at) VALUES (?1,?2,?3,?4,'pending',0,?5,?5) RETURNING id",
     )
     .bind(game_id)
     .bind(sort_order)
     .bind(&payload.player_action)
+    .bind(&payload.guidance_notes)
     .bind(&now)
     .fetch_one(pool)
     .await?;
     let turn = get_turn(pool, game_id, turn_id).await?;
-    let job_type = if game.engine_mode == EngineMode::ToolsStructured {
-        JobType::GameTurnStructuredAgent
-    } else if !game.rules_blocks.is_empty() {
-        JobType::GameTurnScenePlan
-    } else {
-        JobType::GameTurnCheck
-    };
     let job = enqueue_game_job(
         pool,
-        job_type,
+        JobType::GameTurnStructuredAgent,
         game_id,
         Some(turn_id),
         payload.guidance_notes.clone(),
@@ -882,37 +882,13 @@ pub async fn prepare_submit_turn(
 }
 
 pub async fn prepare_continue_turn(
-    pool: &SqlitePool,
-    game_id: i64,
-    turn_id: i64,
+    _pool: &SqlitePool,
+    _game_id: i64,
+    _turn_id: i64,
 ) -> AppResult<Job> {
-    let game = get_game(pool, game_id).await?;
-    if game.engine_mode == EngineMode::ToolsStructured {
-        return Err(AppError::bad_request(
-            "Structured agent mode does not support step-mode continue",
-        ));
-    }
-    let turn = get_turn(pool, game_id, turn_id).await?;
-    if !turn.phase.ends_with("_pause")
-        && turn.phase != "rolled"
-        && turn.phase != "checks"
-        && turn.phase != "plan"
-    {
-        return Err(AppError::bad_request("Turn is not paused for step mode"));
-    }
-    if has_active_turn_job(pool, turn_id).await? {
-        return Err(AppError::bad_request("Turn already has an active job"));
-    }
-    let job_type = match turn.phase.as_str() {
-        "plan_pause" | "plan" => JobType::GameTurnCheck,
-        "checks_pause" | "checks" => JobType::GameTurnResolve,
-        "rolled_pause" | "rolled" => JobType::GameTurnResolve,
-        "resolved_pause" | "resolved" => JobType::GameTurnProse,
-        "scene_pause" | "scene" => JobType::GameTurnProse,
-        other if other.ends_with("_pause") => JobType::GameTurnProse,
-        _ => JobType::GameTurnResolve,
-    };
-    enqueue_game_job(pool, job_type, game_id, Some(turn_id), String::new()).await
+    Err(AppError::bad_request(
+        "Step mode is not supported for game turns",
+    ))
 }
 
 pub async fn prepare_regenerate_turn(
@@ -920,7 +896,7 @@ pub async fn prepare_regenerate_turn(
     game_id: i64,
     turn_id: i64,
 ) -> AppResult<Job> {
-    let game = get_game(pool, game_id).await?;
+    let _game = get_game(pool, game_id).await?;
     let turn = get_turn(pool, game_id, turn_id).await?;
     if turn.is_opening {
         return Err(AppError::bad_request("Opening scene cannot be regenerated"));
@@ -928,40 +904,7 @@ pub async fn prepare_regenerate_turn(
     if has_active_turn_job(pool, turn_id).await? {
         return Err(AppError::bad_request("Turn already has an active job"));
     }
-    if game.engine_mode == EngineMode::ToolsStructured {
-        return prepare_structured_agent_rerun(pool, game_id, turn_id, &turn).await;
-    }
-    if turn.phase == "failed" {
-        return prepare_retry_turn(pool, game_id, turn_id, &turn).await;
-    }
-    if turn.phase != "done" {
-        return Err(AppError::bad_request("Turn is not complete"));
-    }
-    let detail = get_game_detail(pool, game_id).await?;
-    crate::game_state::revert_turn_state_changes(
-        pool,
-        game_id,
-        turn_id,
-        &turn.state_changes,
-        &detail.actors,
-    )
-    .await?;
-    reroll_turn_checks(pool, turn_id, &turn.checks).await?;
-    sqlx::query(
-        "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', phase='rolled', updated_at=?1 WHERE id=?2",
-    )
-    .bind(Utc::now().to_rfc3339())
-    .bind(turn_id)
-    .execute(pool)
-    .await?;
-    enqueue_game_job(
-        pool,
-        JobType::GameTurnResolve,
-        game_id,
-        Some(turn_id),
-        String::new(),
-    )
-    .await
+    prepare_structured_agent_rerun(pool, game_id, turn_id, &turn).await
 }
 
 pub async fn fork_game_at_turn(
@@ -1128,11 +1071,12 @@ async fn clone_turn_to_game(
     let mechanical_results = json_string(&turn.mechanical_results);
     let observability = json_string(&turn.observability);
     let new_turn_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO game_turns (game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12) RETURNING id",
+        "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13) RETURNING id",
     )
     .bind(new_game_id)
     .bind(turn.sort_order)
     .bind(&turn.player_action)
+    .bind(&turn.guidance_notes)
     .bind(&turn.phase)
     .bind(&scene_beats)
     .bind(&turn.prose)
@@ -1207,66 +1151,9 @@ async fn prepare_structured_agent_rerun(
     .await
 }
 
-async fn prepare_retry_turn(
-    pool: &SqlitePool,
-    game_id: i64,
-    turn_id: i64,
-    turn: &GameTurn,
-) -> AppResult<Job> {
-    if has_active_turn_job(pool, turn_id).await? {
-        return Err(AppError::bad_request("Turn already has an active job"));
-    }
-    let game = get_game(pool, game_id).await?;
-    if game.engine_mode == EngineMode::ToolsStructured {
-        return prepare_structured_agent_rerun(pool, game_id, turn_id, turn).await;
-    }
-    if turn.checks.is_empty() {
-        sqlx::query(
-            "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', phase='pending', updated_at=?1 WHERE id=?2",
-        )
-        .bind(Utc::now().to_rfc3339())
-        .bind(turn_id)
-        .execute(pool)
-        .await?;
-        return enqueue_game_job(
-            pool,
-            JobType::GameTurnCheck,
-            game_id,
-            Some(turn_id),
-            String::new(),
-        )
-        .await;
-    }
-    let detail = get_game_detail(pool, game_id).await?;
-    crate::game_state::revert_turn_state_changes(
-        pool,
-        game_id,
-        turn_id,
-        &turn.state_changes,
-        &detail.actors,
-    )
-    .await?;
-    reroll_turn_checks(pool, turn_id, &turn.checks).await?;
-    sqlx::query(
-        "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', phase='rolled', updated_at=?1 WHERE id=?2",
-    )
-    .bind(Utc::now().to_rfc3339())
-    .bind(turn_id)
-    .execute(pool)
-    .await?;
-    enqueue_game_job(
-        pool,
-        JobType::GameTurnResolve,
-        game_id,
-        Some(turn_id),
-        String::new(),
-    )
-    .await
-}
-
 pub async fn get_turn(pool: &SqlitePool, game_id: i64, turn_id: i64) -> AppResult<GameTurn> {
     let row = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE id = ?1 AND game_id = ?2",
+        "SELECT id, game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE id = ?1 AND game_id = ?2",
     )
     .bind(turn_id)
     .bind(game_id)
@@ -1463,7 +1350,7 @@ pub async fn merge_turn_observability(
     patch: TurnObservability,
 ) -> AppResult<()> {
     let turn = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE id = ?1",
+        "SELECT id, game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE id = ?1",
     )
     .bind(turn_id)
     .fetch_one(pool)
@@ -1475,9 +1362,7 @@ pub async fn merge_turn_observability(
     for (k, v) in patch.phase_timings_ms {
         obs.phase_timings_ms.insert(k, v);
     }
-    if patch.engine_mode != EngineMode::Pipeline {
-        obs.engine_mode = patch.engine_mode;
-    }
+    obs.engine_mode = patch.engine_mode;
     update_turn_observability(pool, turn_id, &obs).await
 }
 
@@ -1528,32 +1413,6 @@ pub async fn clear_turn_checks(pool: &SqlitePool, turn_id: i64) -> AppResult<()>
         .bind(turn_id)
         .execute(pool)
         .await?;
-    Ok(())
-}
-
-pub async fn reroll_turn_checks(
-    pool: &SqlitePool,
-    turn_id: i64,
-    checks: &[GameTurnCheck],
-) -> AppResult<()> {
-    for check in checks {
-        let Some(roll) = crate::game_resolution::roll_dice(&check.dice_expr, check.modifier) else {
-            continue;
-        };
-        let rolls = serde_json::to_string(&roll.rolls).unwrap_or_else(|_| "[]".to_string());
-        let tier = crate::game_resolution::tier_str(roll.tier).to_string();
-        sqlx::query(
-            "UPDATE game_turn_checks SET seed=0, rolls=?1, total=?2, tier=?3, margin=?4 WHERE id=?5 AND turn_id=?6",
-        )
-        .bind(&rolls)
-        .bind(roll.total)
-        .bind(&tier)
-        .bind(roll.margin)
-        .bind(check.id)
-        .bind(turn_id)
-        .execute(pool)
-        .await?;
-    }
     Ok(())
 }
 
@@ -1652,6 +1511,7 @@ struct TurnRow {
     game_id: i64,
     sort_order: i64,
     player_action: String,
+    guidance_notes: String,
     phase: String,
     scene_beats: String,
     prose: String,

@@ -1156,6 +1156,8 @@ pub struct GameTurn {
     pub game_id: i64,
     pub sort_order: i64,
     pub player_action: String,
+    #[serde(default)]
+    pub guidance_notes: String,
     pub phase: String,
     pub scene_beats: Vec<String>,
     pub prose: String,

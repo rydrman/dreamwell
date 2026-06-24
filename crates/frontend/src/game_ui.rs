@@ -156,13 +156,14 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         Callback::from(move |_| {
             let Some(game_id) = game_id else { return };
             let action = (*action_input).clone();
-            if action.trim().is_empty() {
+            let guidance = (*guidance_input).clone();
+            if action.trim().is_empty() && guidance.trim().is_empty() {
                 return;
             }
             submitting.set(true);
-            let guidance = (*guidance_input).clone();
             let detail = detail.clone();
             let action_input = action_input.clone();
+            let guidance_input = guidance_input.clone();
             let submitting = submitting.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let payload = SubmitTurnRequest {
@@ -173,6 +174,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     Ok(d) => {
                         detail.set(Some(d));
                         action_input.set(String::new());
+                        guidance_input.set(String::new());
                     }
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
@@ -325,6 +327,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         .settings
         .as_ref()
         .is_some_and(|s| s.model.trim().is_empty());
+    let composer_empty = (*action_input).trim().is_empty() && (*guidance_input).trim().is_empty();
     let state_overlay_open = props.route.overlay() == Some(Overlay::State);
 
     html! {
@@ -394,11 +397,8 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let step_paused = turn.phase.ends_with("_pause");
                                 let show_continue = step_paused;
                                 let show_regenerate = turn.phase == "done";
-                                let structured_mode =
-                                    game_detail.game.engine_mode == EngineMode::ToolsStructured;
                                 let show_retry = turn.phase == "failed"
-                                    || (structured_mode
-                                        && !is_opening
+                                    || (!is_opening
                                         && turn.phase != "done"
                                         && turn.phase != "pending"
                                         && !turn.phase.ends_with("_pause"));
@@ -446,15 +446,27 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let prose_has_inline_blocks = prose_has_inline_mech
                                     || prose_has_inline_state
                                     || prose_has_inline_check;
-                                let hide_detached_phases =
-                                    structured_mode && prose_has_inline_blocks;
+                                let hide_detached_phases = prose_has_inline_blocks;
                                 html! {
                                     <div key={turn_id} class={classes!("game-turn-pair", is_opening.then_some("game-opening"))}>
-                                        if !is_opening && !turn.player_action.trim().is_empty() {
+                                        if !is_opening
+                                            && (!turn.player_action.trim().is_empty()
+                                                || !turn.guidance_notes.trim().is_empty())
+                                        {
                                             <div class="message user">
-                                                <div class="game-prose markdown-body">
-                                                    { render_message_content(&turn.player_action) }
-                                                </div>
+                                                if !turn.player_action.trim().is_empty() {
+                                                    <div class="game-prose markdown-body">
+                                                        { render_message_content(&turn.player_action) }
+                                                    </div>
+                                                }
+                                                if !turn.guidance_notes.trim().is_empty() {
+                                                    <div class="game-turn-guidance">
+                                                        <span class="game-turn-guidance-label muted">{"GM guidance"}</span>
+                                                        <div class="game-turn-guidance-body">
+                                                            { render_message_content(&turn.guidance_notes) }
+                                                        </div>
+                                                    </div>
+                                                }
                                             </div>
                                         }
                                         <div class="message assistant">
@@ -498,8 +510,8 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     class="message-menu-item"
                                                                     onclick={on_regenerate.reform(move |_| turn_id)}
                                                                 >
-                                                                    { if structured_mode && turn.phase != "failed" {
-                                                                        "Re-run structured agent"
+                                                                    { if turn.phase != "failed" {
+                                                                        "Re-run turn"
                                                                     } else {
                                                                         "Retry"
                                                                     } }
@@ -675,33 +687,35 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                             </div>
                         }
                         <div class="composer game-composer">
-                            <textarea
-                                class="input"
-                                placeholder="What do you do?"
-                                rows="2"
-                                value={(*action_input).clone()}
-                                oninput={Callback::from({
-                                    let action_input = action_input.clone();
-                                    move |e: InputEvent| {
-                                        let input: HtmlTextAreaElement = e.target_unchecked_into();
-                                        action_input.set(input.value());
-                                    }
-                                })}
-                            />
-                            <input
-                                class="input"
-                                type="text"
-                                placeholder="Optional guidance for the GM"
-                                value={(*guidance_input).clone()}
-                                oninput={Callback::from({
-                                    let guidance_input = guidance_input.clone();
-                                    move |e: InputEvent| {
-                                        let input: HtmlInputElement = e.target_unchecked_into();
-                                        guidance_input.set(input.value());
-                                    }
-                                })}
-                            />
-                            <button class="btn" disabled={*submitting || model_missing} onclick={on_submit}>
+                            <div class="composer-input-stack">
+                                <textarea
+                                    class="composer-input-stack__primary input"
+                                    placeholder="What do you do?"
+                                    rows="2"
+                                    value={(*action_input).clone()}
+                                    oninput={Callback::from({
+                                        let action_input = action_input.clone();
+                                        move |e: InputEvent| {
+                                            let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                            action_input.set(input.value());
+                                        }
+                                    })}
+                                />
+                                <textarea
+                                    class="composer-input-stack__secondary input"
+                                    placeholder="Optional guidance for the GM"
+                                    rows="1"
+                                    value={(*guidance_input).clone()}
+                                    oninput={Callback::from({
+                                        let guidance_input = guidance_input.clone();
+                                        move |e: InputEvent| {
+                                            let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                            guidance_input.set(input.value());
+                                        }
+                                    })}
+                                />
+                            </div>
+                            <button class="btn" disabled={*submitting || model_missing || composer_empty} onclick={on_submit}>
                                 { if *submitting { "Submitting…" } else { "Take action" } }
                             </button>
                         </div>
@@ -757,7 +771,6 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
     let game_detail = &props.game_detail;
     let detail_state = props.on_detail.clone();
     let game_id = game_detail.game.id;
-    let engine_mode_error = use_state(|| None::<String>);
     let state_rows = sort_state_rows(game_detail.state.iter().map(StateEntryRow::from).collect());
 
     html! {
@@ -940,78 +953,6 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                     </details>
                 }
                 <StateEntriesPanel entries={state_rows} />
-                <label class="step-mode-toggle">
-                    <input
-                        type="checkbox"
-                        checked={game_detail.game.step_mode}
-                        onchange={{
-                            let detail_state = detail_state.clone();
-                            Callback::from(move |e: Event| {
-                                let input: HtmlInputElement = e.target_unchecked_into();
-                                let detail_state = detail_state.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    let payload = GameUpdate {
-                                        step_mode: Some(input.checked()),
-                                        ..Default::default()
-                                    };
-                                    if let Ok(d) = api::update_game(game_id, &payload).await {
-                                        detail_state.emit(d);
-                                    }
-                                });
-                            })
-                        }}
-                    />
-                    {" Step mode (pause between phases)"}
-                </label>
-                <label class="engine-mode-select">
-                    <span class="muted">{"Engine mode (experimental)"}</span>
-                    <select
-                        class="input input-compact"
-                        onchange={{
-                            let detail_state = detail_state.clone();
-                            let engine_mode_error = engine_mode_error.clone();
-                            Callback::from(move |e: Event| {
-                                let select: web_sys::HtmlSelectElement = e.target_unchecked_into();
-                                let mode = match select.value().as_str() {
-                                    "tools_mechanics" => EngineMode::ToolsMechanics,
-                                    "tools_structured" => EngineMode::ToolsStructured,
-                                    _ => EngineMode::Pipeline,
-                                };
-                                let detail_state = detail_state.clone();
-                                let engine_mode_error = engine_mode_error.clone();
-                                engine_mode_error.set(None);
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    let payload = GameUpdate {
-                                        engine_mode: Some(mode),
-                                        ..Default::default()
-                                    };
-                                    match api::update_game(game_id, &payload).await {
-                                        Ok(d) => detail_state.emit(d),
-                                        Err(err) => {
-                                            engine_mode_error.set(Some(err));
-                                        }
-                                    }
-                                });
-                            })
-                        }}
-                    >
-                        <option value="pipeline" selected={game_detail.game.engine_mode == EngineMode::Pipeline}>
-                            {"Pipeline (bulk mechanicals)"}
-                        </option>
-                        <option value="tools_mechanics" selected={game_detail.game.engine_mode == EngineMode::ToolsMechanics}>
-                            {"Tools: mechanics only"}
-                        </option>
-                        <option value="tools_structured" selected={game_detail.game.engine_mode == EngineMode::ToolsStructured}>
-                            {"Tools: full structured"}
-                        </option>
-                    </select>
-                </label>
-                if let Some(err) = (*engine_mode_error).clone() {
-                    <div class="message-error composer-notice" role="alert">
-                        <strong>{"Could not save engine mode"}</strong>
-                        <span>{ err }</span>
-                    </div>
-                }
                 <details class="game-settings-panel">
                     <summary>{"Game settings"}</summary>
                     <div class="game-settings-fields">

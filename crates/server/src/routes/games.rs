@@ -12,9 +12,8 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    EngineMode, Game, GameActorUpdate, GameCreate, GameDetail, GameStateEntryUpdate,
-    GameStreamPayload, GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse,
-    SubmitTurnRequest,
+    Game, GameActorUpdate, GameCreate, GameDetail, GameStateEntryUpdate, GameStreamPayload,
+    GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse, SubmitTurnRequest,
 };
 
 use crate::character_import::parse_character_import;
@@ -172,13 +171,16 @@ async fn submit_turn(
 ) -> AppResult<Json<GameDetail>> {
     let settings = db::get_settings(&state.pool).await?;
     let game = db::get_game(&state.pool, id).await?;
-    let model_phase = match game.engine_mode {
-        EngineMode::ToolsStructured | EngineMode::ToolsMechanics => {
-            crate::game_turn::GameModelPhase::Resolve
-        }
-        EngineMode::Pipeline => crate::game_turn::GameModelPhase::Checks,
-    };
-    crate::game_turn::ensure_model_for_phase(&game, &settings, model_phase)?;
+    crate::game_turn::ensure_model_for_phase(
+        &game,
+        &settings,
+        crate::game_turn::GameModelPhase::Checks,
+    )?;
+    crate::game_turn::ensure_model_for_phase(
+        &game,
+        &settings,
+        crate::game_turn::GameModelPhase::Prose,
+    )?;
     let (_turn, job) = db::prepare_submit_turn(&state.pool, id, &payload).await?;
     enqueue_game_generation(&state.queue, job).await?;
     Ok(Json(db::get_game_detail(&state.pool, id).await?))
@@ -199,15 +201,16 @@ async fn regenerate_turn(
 ) -> AppResult<Json<GameDetail>> {
     let settings = db::get_settings(&state.pool).await?;
     let game = db::get_game(&state.pool, id).await?;
-    let turn = db::get_turn(&state.pool, id, turn_id).await?;
-    let model_phase = if game.engine_mode == EngineMode::ToolsStructured {
-        crate::game_turn::GameModelPhase::Resolve
-    } else if turn.phase == "failed" && turn.checks.is_empty() {
-        crate::game_turn::GameModelPhase::Checks
-    } else {
-        crate::game_turn::GameModelPhase::Resolve
-    };
-    crate::game_turn::ensure_model_for_phase(&game, &settings, model_phase)?;
+    crate::game_turn::ensure_model_for_phase(
+        &game,
+        &settings,
+        crate::game_turn::GameModelPhase::Checks,
+    )?;
+    crate::game_turn::ensure_model_for_phase(
+        &game,
+        &settings,
+        crate::game_turn::GameModelPhase::Prose,
+    )?;
     let job = db::prepare_regenerate_turn(&state.pool, id, turn_id).await?;
     enqueue_game_generation(&state.queue, job).await?;
     Ok(Json(db::get_game_detail(&state.pool, id).await?))

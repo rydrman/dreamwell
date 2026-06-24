@@ -1,6 +1,4 @@
-use dreamwell_types::{
-    ElementInstances, Game, GameDetail, GameTurn, MechanicalData, MechanicalResult,
-};
+use dreamwell_types::{ElementInstances, Game, MechanicalData, MechanicalResult};
 use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
@@ -8,45 +6,6 @@ use crate::game_mechanics::{
     execute_board_move, execute_card_draw, execute_dice_roll, resolve_deck_from_tags,
 };
 use crate::inference::ToolCall;
-
-pub fn mechanical_tool_specs() -> Vec<Value> {
-    vec![
-        tool_spec(
-            "roll_dice",
-            "Roll dice with a standard expression (e.g. 1d6, 2d6).",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "dice_expr": { "type": "string", "description": "Dice expression such as 1d6 or 2d6" },
-                    "label": { "type": "string", "description": "Short label for this roll" }
-                },
-                "required": ["dice_expr"]
-            }),
-        ),
-        tool_spec(
-            "board_move",
-            "Move the active player on the main board using the board's move dice.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "board_id": { "type": "string", "description": "Board element id (default main)" },
-                    "actor": { "type": "string", "description": "Actor key (default pc)" }
-                }
-            }),
-        ),
-        tool_spec(
-            "draw_card",
-            "Draw a card from a deck. When deck_id is omitted, uses the landed space tag.",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "deck_id": { "type": "string" },
-                    "consume": { "type": "boolean" }
-                }
-            }),
-        ),
-    ]
-}
 
 /// Mechanical tools with descriptions tuned for the inline prose agent.
 pub fn inline_mechanical_tool_specs() -> Vec<Value> {
@@ -161,8 +120,6 @@ fn tool_spec(name: &str, description: &str, parameters: Value) -> Value {
 
 pub struct ToolSessionState {
     pub game: Game,
-    pub detail: GameDetail,
-    pub turn: GameTurn,
     pub instances: ElementInstances,
     pub mechanical_results: Vec<MechanicalResult>,
     pub last_space_tags: Vec<String>,
@@ -170,12 +127,10 @@ pub struct ToolSessionState {
 }
 
 impl ToolSessionState {
-    pub fn new(game: Game, detail: GameDetail, turn: GameTurn) -> Self {
+    pub fn new(game: Game) -> Self {
         let instances = game.element_instances.clone();
         Self {
             game,
-            detail,
-            turn,
             instances,
             mechanical_results: Vec::new(),
             last_space_tags: Vec::new(),
@@ -331,9 +286,7 @@ fn error_result(message: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dreamwell_types::{
-        BoardDef, Game, GameDetail, GameElementsConfig, GameTurn, ResolutionSystem,
-    };
+    use dreamwell_types::{BoardDef, Game, GameElementsConfig, ResolutionSystem};
 
     fn sample_state() -> ToolSessionState {
         let game = Game {
@@ -376,35 +329,7 @@ mod tests {
             active_job: None,
             queued_jobs: 0,
         };
-        ToolSessionState::new(
-            game.clone(),
-            GameDetail {
-                game,
-                turns: vec![],
-                actors: vec![],
-                state: vec![],
-                scenes: vec![],
-            },
-            GameTurn {
-                id: 1,
-                game_id: 1,
-                sort_order: 0,
-                player_action: "go".into(),
-                phase: "prose".into(),
-                scene_beats: vec![],
-                prose: String::new(),
-                state_changes: vec![],
-                checks: vec![],
-                system_rolls: vec![],
-                plan: None,
-                mechanical_results: vec![],
-                observability: Default::default(),
-                generation_error: None,
-                is_opening: false,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-        )
+        ToolSessionState::new(game)
     }
 
     #[test]
