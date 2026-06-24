@@ -1,9 +1,11 @@
 use dreamwell_types::*;
-use std::collections::HashMap;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
-use crate::scenario_ui::ScenarioDraft;
+use crate::scenario_ui::{
+    add_trait_column, remove_trait_column, rename_trait_column, synced_trait_values_row,
+    trait_column_names, traits_for_columns, ScenarioDraft, TraitRowOwner,
+};
 
 fn mutate_draft(draft: &UseStateHandle<ScenarioDraft>, f: impl FnOnce(&mut ScenarioDraft)) {
     let mut next = (**draft).clone();
@@ -80,7 +82,7 @@ fn trait_defs_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     html! {
         <details class="scenario-extra-panel">
             <summary>{ format!("Trait definitions ({})", draft.trait_defs.len()) }</summary>
-            <p class="muted scenario-traits-help">{"Define custom trait names and descriptions. When present, these replace the default PbtA sheet in the traits editor above."}</p>
+            <p class="muted scenario-traits-help">{"Define custom trait names and descriptions. Names and values stay synced with the traits matrix."}</p>
             { for draft.trait_defs.iter().enumerate().map(|(index, def)| {
                 let name = def.name.clone();
                 let description = def.description.clone();
@@ -91,9 +93,7 @@ fn trait_defs_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                             Callback::from(move |e: InputEvent| {
                                 let input: HtmlInputElement = e.target_unchecked_into();
                                 mutate_draft(&draft, |d| {
-                                    if let Some(row) = d.trait_defs.get_mut(index) {
-                                        row.name = input.value();
-                                    }
+                                    rename_trait_column(d, index, input.value());
                                 });
                             })
                         }} />
@@ -110,7 +110,7 @@ fn trait_defs_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                         }} />
                         <button type="button" class="btn secondary btn-compact" onclick={{
                             let draft = draft.clone();
-                            Callback::from(move |_| mutate_draft(&draft, |d| { d.trait_defs.remove(index); }))
+                            Callback::from(move |_| mutate_draft(&draft, |d| { remove_trait_column(d, index); }))
                         }}>{"Remove"}</button>
                     </div>
                 }
@@ -118,7 +118,15 @@ fn trait_defs_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
             <button type="button" class="btn secondary" onclick={{
                 let draft = draft.clone();
                 Callback::from(move |_| mutate_draft(&draft, |d| {
-                    d.trait_defs.push(TraitDef::default());
+                    if d.trait_defs.is_empty() && !d.trait_rows.is_empty() {
+                        for (name, _) in d.trait_rows.clone() {
+                            d.trait_defs.push(TraitDef {
+                                name,
+                                description: String::new(),
+                            });
+                        }
+                    }
+                    add_trait_column(d);
                 }))
             }}>{"Add trait definition"}</button>
         </details>
@@ -156,6 +164,10 @@ fn cast_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                                 }
                             }))
                         }) }
+                        <div class="field">
+                            <span class="muted">{"Traits"}</span>
+                            { synced_trait_values_row(draft, TraitRowOwner::CastNpc(index)) }
+                        </div>
                         <button type="button" class="btn secondary btn-compact" onclick={{
                             let draft = draft.clone();
                             Callback::from(move |_| mutate_draft(&draft, |d| { d.cast.remove(index); }))
@@ -165,7 +177,13 @@ fn cast_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
             }) }
             <button type="button" class="btn secondary" onclick={{
                 let draft = draft.clone();
-                Callback::from(move |_| mutate_draft(&draft, |d| { d.cast.push(ScenarioNpc::default()); }))
+                Callback::from(move |_| mutate_draft(&draft, |d| {
+                    let columns = trait_column_names(d);
+                    d.cast.push(ScenarioNpc {
+                        traits: traits_for_columns(&columns),
+                        ..ScenarioNpc::default()
+                    });
+                }))
             }}>{"Add NPC"}</button>
         </details>
     }
@@ -216,7 +234,6 @@ fn pc_options_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
             { for draft.pc_options.iter().enumerate().map(|(index, pc)| {
                 let name = pc.name.clone();
                 let description = pc.description.clone();
-                let trait_summary: String = pc.traits.iter().map(|(k,v)| format!("{k}:{v}")).collect::<Vec<_>>().join(", ");
                 html! {
                     <div class="scenario-editor-block" key={index}>
                         { text_input("Name", &name, {
@@ -231,14 +248,10 @@ fn pc_options_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                                 if let Some(row) = d.pc_options.get_mut(index) { row.description = value; }
                             }))
                         }) }
-                        { text_input("Traits (name:value, comma-separated)", &trait_summary, {
-                            let draft = draft.clone();
-                            Callback::from(move |value: String| mutate_draft(&draft, |d| {
-                                if let Some(row) = d.pc_options.get_mut(index) {
-                                    row.traits = parse_trait_pairs(&value);
-                                }
-                            }))
-                        }) }
+                        <div class="field">
+                            <span class="muted">{"Traits"}</span>
+                            { synced_trait_values_row(draft, TraitRowOwner::PcOption(index)) }
+                        </div>
                         <button type="button" class="btn secondary btn-compact" onclick={{
                             let draft = draft.clone();
                             Callback::from(move |_| mutate_draft(&draft, |d| { d.pc_options.remove(index); }))
@@ -248,29 +261,16 @@ fn pc_options_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
             }) }
             <button type="button" class="btn secondary" onclick={{
                 let draft = draft.clone();
-                Callback::from(move |_| mutate_draft(&draft, |d| { d.pc_options.push(PcOption::default()); }))
+                Callback::from(move |_| mutate_draft(&draft, |d| {
+                    let columns = trait_column_names(d);
+                    d.pc_options.push(PcOption {
+                        traits: traits_for_columns(&columns),
+                        ..PcOption::default()
+                    });
+                }))
             }}>{"Add PC option"}</button>
         </details>
     }
-}
-
-fn parse_trait_pairs(raw: &str) -> HashMap<String, i64> {
-    let mut traits = HashMap::new();
-    for part in raw.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        if let Some((name, value)) = part.split_once(':') {
-            let name = name.trim();
-            if name.is_empty() {
-                continue;
-            }
-            let value = value.trim().parse::<i64>().unwrap_or(0);
-            traits.insert(name.to_string(), value);
-        }
-    }
-    traits
 }
 
 fn state_schema_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {

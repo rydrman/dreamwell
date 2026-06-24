@@ -695,6 +695,59 @@ input.header-title {
   gap: 0.5rem;
 }
 
+.scenario-trait-matrix-wrap {
+  overflow-x: auto;
+  margin-top: 0.5rem;
+}
+
+.scenario-trait-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.scenario-trait-matrix th,
+.scenario-trait-matrix td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.5rem;
+  vertical-align: middle;
+}
+
+.scenario-trait-matrix thead th {
+  text-align: center;
+  font-weight: 500;
+}
+
+.scenario-trait-matrix tbody th[scope="row"] {
+  text-align: left;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.scenario-trait-matrix td {
+  text-align: center;
+}
+
+.scenario-trait-header-cell {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.scenario-trait-matrix-inline {
+  width: max-content;
+  min-width: 100%;
+}
+
+.scenario-trait-matrix-inline th,
+.scenario-trait-matrix-inline td {
+  white-space: nowrap;
+}
+
+.scenario-trait-matrix-inline .scenario-trait-mod {
+  width: 4.5rem;
+}
+
 .scenario-trait-row {
   display: grid;
   grid-template-columns: 1fr auto auto;

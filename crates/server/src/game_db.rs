@@ -234,12 +234,15 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
             .await?;
 
     for (sort_order, npc) in payload.invited_cast.iter().enumerate() {
+        let npc_traits_json =
+            serde_json::to_string(&npc.traits).unwrap_or_else(|_| "{}".to_string());
         sqlx::query(
-            "INSERT INTO game_actors (game_id, role, name, description, skills, sort_order, created_at, updated_at) VALUES (?1,'npc',?2,?3,'{}',?4,?5,?5)",
+            "INSERT INTO game_actors (game_id, role, name, description, skills, sort_order, created_at, updated_at) VALUES (?1,'npc',?2,?3,?4,?5,?6,?6)",
         )
         .bind(id)
         .bind(&npc.name)
         .bind(&npc.content)
+        .bind(&npc_traits_json)
         .bind((sort_order + 1) as i64)
         .bind(&actor_now)
         .execute(pool)

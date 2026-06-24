@@ -16,6 +16,8 @@ pub struct ScenarioNpc {
     pub content: String,
     #[serde(default)]
     pub keywords: Vec<String>,
+    #[serde(default)]
+    pub traits: HashMap<String, i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -328,6 +328,19 @@ impl ScenarioDraft {
                 })
                 .collect()
         };
+        let columns: Vec<String> = if scenario.trait_defs.is_empty() {
+            trait_rows.iter().map(|(name, _)| name.clone()).collect()
+        } else {
+            scenario.trait_defs.iter().map(|t| t.name.clone()).collect()
+        };
+        let mut pc_options = scenario.pc_options.clone();
+        for pc in &mut pc_options {
+            ensure_trait_keys(&mut pc.traits, &columns);
+        }
+        let mut cast = scenario.cast.clone();
+        for npc in &mut cast {
+            ensure_trait_keys(&mut npc.traits, &columns);
+        }
         Self {
             title: scenario.title.clone(),
             premise: scenario.premise.clone(),
@@ -340,9 +353,9 @@ impl ScenarioDraft {
             objective: scenario.objective.clone(),
             setup_text: scenario.setup_text.clone(),
             rules_blocks: scenario.rules_blocks.clone(),
-            cast: scenario.cast.clone(),
+            cast,
             trait_defs: scenario.trait_defs.clone(),
-            pc_options: scenario.pc_options.clone(),
+            pc_options,
             state_schema: scenario.state_schema.clone(),
             content_flags: scenario.content_flags.clone(),
             win_condition: scenario.win_condition.clone(),
@@ -417,71 +430,344 @@ impl ScenarioDraft {
     }
 }
 
+fn ensure_trait_keys(traits: &mut HashMap<String, i64>, columns: &[String]) {
+    for column in columns {
+        traits.entry(column.clone()).or_insert(0);
+    }
+}
+
+pub(crate) fn trait_column_names(draft: &ScenarioDraft) -> Vec<String> {
+    if !draft.trait_defs.is_empty() {
+        draft
+            .trait_defs
+            .iter()
+            .map(|def| def.name.clone())
+            .collect()
+    } else {
+        draft
+            .trait_rows
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TraitRowOwner {
+    Default,
+    PcOption(usize),
+    CastNpc(usize),
+}
+
+pub(crate) fn trait_value(draft: &ScenarioDraft, owner: TraitRowOwner, trait_name: &str) -> i64 {
+    match owner {
+        TraitRowOwner::Default => draft.traits_map().get(trait_name).copied().unwrap_or(0),
+        TraitRowOwner::PcOption(index) => draft
+            .pc_options
+            .get(index)
+            .and_then(|pc| pc.traits.get(trait_name))
+            .copied()
+            .unwrap_or(0),
+        TraitRowOwner::CastNpc(index) => draft
+            .cast
+            .get(index)
+            .and_then(|npc| npc.traits.get(trait_name))
+            .copied()
+            .unwrap_or(0),
+    }
+}
+
+pub(crate) fn set_trait_value(
+    draft: &mut ScenarioDraft,
+    owner: TraitRowOwner,
+    trait_name: &str,
+    value: i64,
+) {
+    match owner {
+        TraitRowOwner::Default => {
+            if let Some(row) = draft
+                .trait_rows
+                .iter_mut()
+                .find(|(name, _)| name == trait_name)
+            {
+                row.1 = value;
+            } else {
+                draft.trait_rows.push((trait_name.to_string(), value));
+            }
+        }
+        TraitRowOwner::PcOption(index) => {
+            if let Some(pc) = draft.pc_options.get_mut(index) {
+                pc.traits.insert(trait_name.to_string(), value);
+            }
+        }
+        TraitRowOwner::CastNpc(index) => {
+            if let Some(npc) = draft.cast.get_mut(index) {
+                npc.traits.insert(trait_name.to_string(), value);
+            }
+        }
+    }
+}
+
+pub(crate) fn rename_trait_column(draft: &mut ScenarioDraft, col_index: usize, new_name: String) {
+    let columns = trait_column_names(draft);
+    let Some(old_name) = columns.get(col_index).cloned() else {
+        return;
+    };
+    if old_name == new_name {
+        return;
+    }
+
+    if !draft.trait_defs.is_empty() {
+        if let Some(def) = draft.trait_defs.get_mut(col_index) {
+            def.name = new_name.clone();
+        }
+    }
+    if let Some(row) = draft.trait_rows.get_mut(col_index) {
+        row.0 = new_name.clone();
+    }
+
+    for pc in &mut draft.pc_options {
+        if let Some(value) = pc.traits.remove(&old_name) {
+            pc.traits.insert(new_name.clone(), value);
+        }
+    }
+    for npc in &mut draft.cast {
+        if let Some(value) = npc.traits.remove(&old_name) {
+            npc.traits.insert(new_name.clone(), value);
+        }
+    }
+}
+
+pub(crate) fn add_trait_column(draft: &mut ScenarioDraft) {
+    if !draft.trait_defs.is_empty() {
+        draft.trait_defs.push(TraitDef::default());
+    }
+    draft.trait_rows.push((String::new(), 0));
+    for pc in &mut draft.pc_options {
+        pc.traits.insert(String::new(), 0);
+    }
+    for npc in &mut draft.cast {
+        npc.traits.insert(String::new(), 0);
+    }
+}
+
+pub(crate) fn remove_trait_column(draft: &mut ScenarioDraft, col_index: usize) {
+    let name = trait_column_names(draft).get(col_index).cloned();
+    if !draft.trait_defs.is_empty() {
+        draft.trait_defs.remove(col_index);
+    }
+    draft.trait_rows.remove(col_index);
+    if let Some(name) = name {
+        for pc in &mut draft.pc_options {
+            pc.traits.remove(&name);
+        }
+        for npc in &mut draft.cast {
+            npc.traits.remove(&name);
+        }
+    }
+}
+
+pub(crate) fn traits_for_columns(columns: &[String]) -> HashMap<String, i64> {
+    columns.iter().map(|column| (column.clone(), 0)).collect()
+}
+
+fn trait_row_label(draft: &ScenarioDraft, owner: TraitRowOwner) -> String {
+    match owner {
+        TraitRowOwner::Default => {
+            if draft.pc_name.trim().is_empty() {
+                "Default PC".to_string()
+            } else {
+                draft.pc_name.clone()
+            }
+        }
+        TraitRowOwner::PcOption(index) => draft
+            .pc_options
+            .get(index)
+            .map(|pc| {
+                if pc.name.trim().is_empty() {
+                    format!("PC option {}", index + 1)
+                } else {
+                    pc.name.clone()
+                }
+            })
+            .unwrap_or_else(|| format!("PC option {}", index + 1)),
+        TraitRowOwner::CastNpc(index) => draft
+            .cast
+            .get(index)
+            .map(|npc| {
+                let name = if npc.name.trim().is_empty() {
+                    format!("NPC {}", index + 1)
+                } else {
+                    npc.name.clone()
+                };
+                format!("{name} (NPC)")
+            })
+            .unwrap_or_else(|| format!("NPC {} (NPC)", index + 1)),
+    }
+}
+
+pub(crate) fn synced_trait_values_row(
+    draft: &UseStateHandle<ScenarioDraft>,
+    owner: TraitRowOwner,
+) -> Html {
+    let columns = trait_column_names(draft);
+    if columns.is_empty() {
+        return html! {};
+    }
+    html! {
+        <div class="scenario-trait-matrix-wrap">
+            <table class="scenario-trait-matrix scenario-trait-matrix-inline">
+                <thead>
+                    <tr>
+                        { for columns.iter().enumerate().map(|(col_index, column)| {
+                            html! {
+                                <th key={col_index}>{ column.clone() }</th>
+                            }
+                        }) }
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        { for columns.iter().enumerate().map(|(col_index, column)| {
+                            let column = column.clone();
+                            let value = trait_value(draft, owner, &column);
+                            html! {
+                                <td key={col_index}>
+                                    <input
+                                        type="number"
+                                        class="input input-compact scenario-trait-mod"
+                                        value={value.to_string()}
+                                        oninput={{
+                                            let draft = draft.clone();
+                                            let column = column.clone();
+                                            Callback::from(move |e: InputEvent| {
+                                                let input: HtmlInputElement = e.target_unchecked_into();
+                                                let parsed = input.value().parse::<i64>().unwrap_or(0);
+                                                let mut next = (*draft).clone();
+                                                set_trait_value(&mut next, owner, &column, parsed);
+                                                draft.set(next);
+                                            })
+                                        }}
+                                    />
+                                </td>
+                            }
+                        }) }
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
 fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
+    let columns = trait_column_names(draft);
+    let custom_defs = !draft.trait_defs.is_empty();
+    let pc_count = draft.pc_options.len();
+    let cast_count = draft.cast.len();
+    let row_count = 1 + pc_count + cast_count;
+
     html! {
         <div class="scenario-traits">
             <div class="scenario-traits-header">
                 <span class="muted">{"Traits / roles"}</span>
-                <p class="muted scenario-traits-help">{"These names are used for dice checks when you play this scenario. Default sheet modifiers can be negative or positive."}</p>
+                <p class="muted scenario-traits-help">{"Trait modifiers for the default PC, alternate PC options, and cast NPCs. Columns match the trait sheet used during play."}</p>
             </div>
-            <div class="scenario-traits-grid">
-                { for draft.trait_rows.iter().enumerate().map(|(index, (name, value))| {
-                    let name = name.clone();
-                    let value = *value;
-                    html! {
-                        <div class="scenario-trait-row" key={index}>
-                            <input
-                                type="text"
-                                class="input"
-                                placeholder="Trait name"
-                                value={name.clone()}
-                                oninput={{
-                                    let draft = draft.clone();
-                                    Callback::from(move |e: InputEvent| {
-                                        let input: HtmlInputElement = e.target_unchecked_into();
-                                        let mut next = (*draft).clone();
-                                        if let Some(row) = next.trait_rows.get_mut(index) {
-                                            row.0 = input.value();
-                                        }
-                                        draft.set(next);
-                                    })
-                                }}
-                            />
-                            <input
-                                type="number"
-                                class="input input-compact scenario-trait-mod"
-                                value={value.to_string()}
-                                oninput={{
-                                    let draft = draft.clone();
-                                    Callback::from(move |e: InputEvent| {
-                                        let input: HtmlInputElement = e.target_unchecked_into();
-                                        let parsed = input.value().parse::<i64>().unwrap_or(0);
-                                        let mut next = (*draft).clone();
-                                        if let Some(row) = next.trait_rows.get_mut(index) {
-                                            row.1 = parsed;
-                                        }
-                                        draft.set(next);
-                                    })
-                                }}
-                            />
-                            <button
-                                type="button"
-                                class="btn secondary btn-compact"
-                                onclick={{
-                                    let draft = draft.clone();
-                                    Callback::from(move |_| {
-                                        let mut next = (*draft).clone();
-                                        next.trait_rows.remove(index);
-                                        draft.set(next);
-                                    })
-                                }}
-                            >
-                                {"Remove"}
-                            </button>
-                        </div>
-                    }
-                }) }
-            </div>
+            if columns.is_empty() {
+                <p class="muted">{"No traits defined yet."}</p>
+            } else {
+                <div class="scenario-trait-matrix-wrap">
+                    <table class="scenario-trait-matrix">
+                        <thead>
+                            <tr>
+                                <th>{"Character"}</th>
+                                { for columns.iter().enumerate().map(|(col_index, column)| {
+                                    let column = column.clone();
+                                    html! {
+                                        <th key={col_index}>
+                                            if custom_defs {
+                                                { column }
+                                            } else {
+                                                <div class="scenario-trait-header-cell">
+                                                    <input
+                                                        type="text"
+                                                        class="input"
+                                                        placeholder="Trait"
+                                                        value={column}
+                                                        oninput={{
+                                                            let draft = draft.clone();
+                                                            Callback::from(move |e: InputEvent| {
+                                                                let input: HtmlInputElement = e.target_unchecked_into();
+                                                                let mut next = (*draft).clone();
+                                                                rename_trait_column(&mut next, col_index, input.value());
+                                                                draft.set(next);
+                                                            })
+                                                        }}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        class="btn secondary btn-compact"
+                                                        title="Remove trait"
+                                                        onclick={{
+                                                            let draft = draft.clone();
+                                                            Callback::from(move |_| {
+                                                                let mut next = (*draft).clone();
+                                                                remove_trait_column(&mut next, col_index);
+                                                                draft.set(next);
+                                                            })
+                                                        }}
+                                                    >
+                                                        {"×"}
+                                                    </button>
+                                                </div>
+                                            }
+                                        </th>
+                                    }
+                                }) }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            { for (0..row_count).map(|row_index| {
+                                let owner = if row_index == 0 {
+                                    TraitRowOwner::Default
+                                } else if row_index - 1 < pc_count {
+                                    TraitRowOwner::PcOption(row_index - 1)
+                                } else {
+                                    TraitRowOwner::CastNpc(row_index - 1 - pc_count)
+                                };
+                                html! {
+                                    <tr key={row_index}>
+                                        <th scope="row">{ trait_row_label(draft, owner) }</th>
+                                        { for columns.iter().enumerate().map(|(col_index, column)| {
+                                            let column = column.clone();
+                                            let value = trait_value(draft, owner, &column);
+                                            html! {
+                                                <td key={col_index}>
+                                                    <input
+                                                        type="number"
+                                                        class="input input-compact scenario-trait-mod"
+                                                        value={value.to_string()}
+                                                        oninput={{
+                                                            let draft = draft.clone();
+                                                            let column = column.clone();
+                                                            Callback::from(move |e: InputEvent| {
+                                                                let input: HtmlInputElement = e.target_unchecked_into();
+                                                                let parsed = input.value().parse::<i64>().unwrap_or(0);
+                                                                let mut next = (*draft).clone();
+                                                                set_trait_value(&mut next, owner, &column, parsed);
+                                                                draft.set(next);
+                                                            })
+                                                        }}
+                                                    />
+                                                </td>
+                                            }
+                                        }) }
+                                    </tr>
+                                }
+                            }) }
+                        </tbody>
+                    </table>
+                </div>
+            }
             <button
                 type="button"
                 class="btn secondary"
@@ -490,7 +776,7 @@ fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                     let draft = draft.clone();
                     Callback::from(move |_| {
                         let mut next = (*draft).clone();
-                        next.trait_rows.push((String::new(), 0));
+                        add_trait_column(&mut next);
                         draft.set(next);
                     })
                 }}
