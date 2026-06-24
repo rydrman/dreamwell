@@ -293,20 +293,32 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
         setup_vars: &payload.setup_var_values,
     };
     let opening = substitute_macros(payload.opening_message.trim(), &macro_ctx);
+    let opening_guidance = substitute_macros(payload.opening_guidance.trim(), &macro_ctx);
     if payload.opening_as_player_action {
-        if !opening.is_empty() {
+        if !opening.is_empty() || !opening_guidance.is_empty() {
             prepare_submit_turn(
                 pool,
                 id,
                 &SubmitTurnRequest {
                     player_action: opening,
-                    guidance_notes: String::new(),
+                    guidance_notes: opening_guidance,
                 },
             )
             .await?;
         }
     } else {
         seed_opening_turn(pool, id, &opening, &now).await?;
+        if !opening_guidance.is_empty() {
+            prepare_submit_turn(
+                pool,
+                id,
+                &SubmitTurnRequest {
+                    player_action: String::new(),
+                    guidance_notes: opening_guidance,
+                },
+            )
+            .await?;
+        }
     }
 
     get_game_detail(pool, id).await
@@ -1706,6 +1718,43 @@ mod tests {
         .expect("health");
         assert_eq!(health_rows.len(), 1);
         assert_eq!(health_rows[0], (Some(3), Some(3)));
+    }
+
+    #[tokio::test]
+    async fn create_game_applies_opening_guidance_on_first_turn() {
+        let pool = test_pool().await;
+        let payload = GameCreate {
+            opening_message: "I look around the room.".into(),
+            opening_guidance: "Keep the tone cozy and skip combat.".into(),
+            opening_as_player_action: true,
+            ..Default::default()
+        };
+        let detail = create_game(&pool, payload).await.expect("create");
+        assert_eq!(detail.turns.len(), 1);
+        let turn = &detail.turns[0];
+        assert!(!turn.is_opening);
+        assert_eq!(turn.player_action, "I look around the room.");
+        assert_eq!(turn.guidance_notes, "Keep the tone cozy and skip combat.");
+    }
+
+    #[tokio::test]
+    async fn create_game_queues_guidance_only_turn_after_static_opening() {
+        let pool = test_pool().await;
+        let payload = GameCreate {
+            opening_message: "Steam curls from the kettle.".into(),
+            opening_guidance: "Introduce the shopkeeper gently.".into(),
+            opening_as_player_action: false,
+            ..Default::default()
+        };
+        let detail = create_game(&pool, payload).await.expect("create");
+        assert_eq!(detail.turns.len(), 2);
+        assert!(detail.turns[0].is_opening);
+        assert_eq!(detail.turns[0].prose, "Steam curls from the kettle.");
+        assert_eq!(detail.turns[1].player_action, "");
+        assert_eq!(
+            detail.turns[1].guidance_notes,
+            "Introduce the shopkeeper gently."
+        );
     }
 
     #[tokio::test]

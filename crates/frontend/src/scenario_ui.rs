@@ -1,6 +1,6 @@
 use dreamwell_types::*;
 use std::collections::HashMap;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
 use crate::api;
@@ -268,6 +268,7 @@ pub(crate) struct ScenarioDraft {
     pub(crate) setting: String,
     pub(crate) gm_style: String,
     pub(crate) opening_message: String,
+    pub(crate) opening_guidance: String,
     pub(crate) pc_name: String,
     pub(crate) pc_description: String,
     pub(crate) pc_initial_state: Vec<CharacterStateDef>,
@@ -294,6 +295,7 @@ impl Default for ScenarioDraft {
             setting: String::new(),
             gm_style: String::new(),
             opening_message: String::new(),
+            opening_guidance: String::new(),
             pc_name: String::new(),
             pc_description: String::new(),
             pc_initial_state: Vec::new(),
@@ -349,6 +351,7 @@ impl ScenarioDraft {
             setting: scenario.setting.clone(),
             gm_style: scenario.gm_style.clone(),
             opening_message: scenario.opening_message.clone(),
+            opening_guidance: scenario.opening_guidance.clone(),
             pc_name: scenario.pc_name.clone(),
             pc_description: scenario.pc_description.clone(),
             pc_initial_state: scenario.pc_initial_state.clone(),
@@ -387,6 +390,7 @@ impl ScenarioDraft {
             setting: self.setting.clone(),
             gm_style: self.gm_style.clone(),
             opening_message: self.opening_message.clone(),
+            opening_guidance: self.opening_guidance.clone(),
             pc_name: self.pc_name.clone(),
             pc_description: self.pc_description.clone(),
             pc_initial_state: self.pc_initial_state.clone(),
@@ -414,6 +418,7 @@ impl ScenarioDraft {
             setting: Some(self.setting.clone()),
             gm_style: Some(self.gm_style.clone()),
             opening_message: Some(self.opening_message.clone()),
+            opening_guidance: Some(self.opening_guidance.clone()),
             pc_name: Some(self.pc_name.clone()),
             pc_description: Some(self.pc_description.clone()),
             pc_initial_state: Some(self.pc_initial_state.clone()),
@@ -792,10 +797,53 @@ fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     }
 }
 
+fn scenario_opening_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
+    let draft = draft.clone();
+    html! {
+        <label class="field">
+            <span class="muted">{"Opening message"}</span>
+            <div class="composer-input-stack">
+                <textarea
+                    class="composer-input-stack__primary input"
+                    rows="4"
+                    placeholder="Opening narration or first player action"
+                    value={draft.opening_message.clone()}
+                    oninput={{
+                        let draft = draft.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlTextAreaElement = e.target_unchecked_into();
+                            let mut next = (*draft).clone();
+                            next.opening_message = input.value();
+                            draft.set(next);
+                        })
+                    }}
+                />
+                <textarea
+                    class="composer-input-stack__secondary input"
+                    rows="2"
+                    placeholder="Optional guidance for the GM"
+                    value={draft.opening_guidance.clone()}
+                    oninput={{
+                        let draft = draft.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlTextAreaElement = e.target_unchecked_into();
+                            let mut next = (*draft).clone();
+                            next.opening_guidance = input.value();
+                            draft.set(next);
+                        })
+                    }}
+                />
+            </div>
+            <span class="muted scenario-field-hint">
+                {"GM guidance is applied to the auto-submitted first turn when you start a game from this scenario."}
+            </span>
+        </label>
+    }
+}
+
 fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     let fields_before_tone = [
         ("title", "Title", false),
-        ("opening_message", "Opening message", true),
         ("premise", "Premise / scenario", true),
         ("objective", "Objective", true),
     ];
@@ -822,6 +870,7 @@ fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                     </label>
                 }
             }) }
+            { scenario_opening_fields(draft) }
             <GmTonePresetPicker on_apply={Callback::from({
                 let draft = draft.clone();
                 move |(setting, gm_style)| {
@@ -853,6 +902,7 @@ fn scenario_draft_field(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Stri
     match key {
         "title" => draft.title.clone(),
         "opening_message" => draft.opening_message.clone(),
+        "opening_guidance" => draft.opening_guidance.clone(),
         "premise" => draft.premise.clone(),
         "setting" => draft.setting.clone(),
         "gm_style" => draft.gm_style.clone(),
@@ -873,6 +923,7 @@ fn scenario_draft_oninput(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Ca
         match key.as_str() {
             "title" => next.title = value,
             "opening_message" => next.opening_message = value,
+            "opening_guidance" => next.opening_guidance = value,
             "premise" => next.premise = value,
             "setting" => next.setting = value,
             "gm_style" => next.gm_style = value,
@@ -910,7 +961,10 @@ pub fn default_game_title(scenario_title: &str, scenario_id: i64, games: &[Game]
 }
 
 pub fn scenario_opening_as_player_action(scenario: &Scenario) -> bool {
-    !scenario.opening_message.trim().is_empty() && !scenario.pc_options.is_empty()
+    if scenario.pc_options.is_empty() {
+        return false;
+    }
+    !scenario.opening_message.trim().is_empty() || !scenario.opening_guidance.trim().is_empty()
 }
 
 pub fn sorted_trait_rows(traits: &HashMap<String, i64>) -> Vec<(String, i64)> {
@@ -939,6 +993,7 @@ pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCrea
         setting: scenario.setting.clone(),
         gm_style: scenario.gm_style.clone(),
         opening_message: scenario.opening_message.clone(),
+        opening_guidance: scenario.opening_guidance.clone(),
         character_id: scenario.character_id,
         scenario_id: Some(scenario.id),
         pc_name: scenario.pc_name.clone(),

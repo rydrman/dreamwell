@@ -29,6 +29,7 @@ pub fn scenario_create_from_scenario(scenario: &Scenario) -> ScenarioCreate {
         setting: scenario.setting.clone(),
         gm_style: scenario.gm_style.clone(),
         opening_message: scenario.opening_message.clone(),
+        opening_guidance: scenario.opening_guidance.clone(),
         pc_name: scenario.pc_name.clone(),
         pc_description: scenario.pc_description.clone(),
         pc_initial_state: scenario.pc_initial_state.clone(),

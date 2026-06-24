@@ -930,6 +930,9 @@ pub struct Scenario {
     pub gm_style: String,
     #[serde(default)]
     pub opening_message: String,
+    /// GM guidance applied to the auto-submitted first turn when starting a game from this scenario.
+    #[serde(default)]
+    pub opening_guidance: String,
     pub pc_name: String,
     pub pc_description: String,
     #[serde(default)]
@@ -978,6 +981,8 @@ pub struct ScenarioCreate {
     pub gm_style: String,
     #[serde(default)]
     pub opening_message: String,
+    #[serde(default)]
+    pub opening_guidance: String,
     #[serde(default)]
     pub pc_name: String,
     #[serde(default)]
@@ -1048,6 +1053,7 @@ pub struct ScenarioUpdate {
     pub setting: Option<String>,
     pub gm_style: Option<String>,
     pub opening_message: Option<String>,
+    pub opening_guidance: Option<String>,
     pub pc_name: Option<String>,
     pub pc_description: Option<String>,
     pub pc_initial_state: Option<Vec<CharacterStateDef>>,
@@ -1290,6 +1296,9 @@ pub struct GameCreate {
     /// seeding a static narrator opening bubble (Infinite Worlds `firstInput`).
     #[serde(default)]
     pub opening_as_player_action: bool,
+    /// GM guidance for the auto-submitted first turn (from scenario `opening_guidance`).
+    #[serde(default)]
+    pub opening_guidance: String,
     #[serde(default)]
     pub engine_mode: EngineMode,
     #[serde(default)]
