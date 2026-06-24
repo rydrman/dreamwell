@@ -1781,6 +1781,19 @@ fn app() -> Html {
                                 ));
                             }
                         })}
+                        on_open_game={Callback::from({
+                            let navigate = navigate.clone();
+                            move |game_id| {
+                                navigate.emit((
+                                    AppRoute::Games {
+                                        game_id: Some(game_id),
+                                        overlay: None,
+                                        sidebar: false,
+                                    },
+                                    true,
+                                ));
+                            }
+                        })}
                         on_queue_change={Callback::from({
                             let queue = queue.clone();
                             move |status| queue.set(Some(status))
