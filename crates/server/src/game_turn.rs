@@ -3,6 +3,7 @@ use dreamwell_types::{
     Settings,
 };
 use sqlx::SqlitePool;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config;
@@ -61,6 +62,7 @@ pub async fn run_game_job(
     job: &Job,
     settings: &Settings,
     token: CancellationToken,
+    work_tx: &mpsc::UnboundedSender<()>,
 ) -> AppResult<()> {
     match job.job_type {
         JobType::GameTurnStructuredAgent => {
@@ -78,6 +80,7 @@ pub async fn run_game_job(
                 &job.guidance_notes,
                 settings,
                 &token,
+                work_tx,
             )
             .await
         }

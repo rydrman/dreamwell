@@ -420,12 +420,22 @@ async fn run_job_guarded(
     token: CancellationToken,
     work_tx: mpsc::UnboundedSender<()>,
 ) {
-    if let Err(err) = run_job(pool, job_id, token, &work_tx).await {
+    let run_result = run_job(pool, job_id, token, &work_tx).await;
+    if let Err(err) = run_result {
         tracing::error!(job_id, %err, "job failed");
         if let Ok(job) = db::get_job(pool, job_id).await {
             if job.status == JobStatus::Running {
                 let _ = fail_job(pool, job_id, &job, &err.to_string()).await;
             }
+        }
+    } else if let Ok(job) = db::get_job(pool, job_id).await {
+        if job.status == JobStatus::Running {
+            tracing::warn!(
+                job_id,
+                job_type = ?job.job_type,
+                "job handler returned Ok but job is still running; completing"
+            );
+            let _ = db::complete_job(pool, job_id, JobStatus::Completed, None).await;
         }
     }
 }
@@ -489,7 +499,7 @@ async fn run_job(
         | JobType::GameSceneSummarize
         | JobType::GameProseRecheck
         | JobType::GameStateRecheck => {
-            crate::game_turn::run_game_job(pool, job_id, &job, &settings, token).await
+            crate::game_turn::run_game_job(pool, job_id, &job, &settings, token, work_tx).await
         }
     }
 }

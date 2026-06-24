@@ -1,5 +1,6 @@
 use dreamwell_types::Settings;
 use sqlx::SqlitePool;
+use tokio::sync::mpsc;
 
 use crate::config;
 use crate::db;
@@ -74,7 +75,11 @@ pub async fn run_game_scene_summarize_job(
     Ok(())
 }
 
-pub async fn maybe_enqueue_scene_summarize(pool: &SqlitePool, game_id: i64) -> AppResult<()> {
+pub async fn maybe_enqueue_scene_summarize(
+    pool: &SqlitePool,
+    work_tx: &mpsc::UnboundedSender<()>,
+    game_id: i64,
+) -> AppResult<()> {
     let detail = db::get_game_detail(pool, game_id).await?;
     let turn_count = detail.turns.len() as i64;
     if turn_count < 3 {
@@ -84,8 +89,7 @@ pub async fn maybe_enqueue_scene_summarize(pool: &SqlitePool, game_id: i64) -> A
         Some(s) if !s.summary_valid && turn_count - s.start_turn >= 3 => s,
         _ => return Ok(()),
     };
-    let active = db::get_active_game_job(pool, game_id).await?;
-    if active.is_some() {
+    if db::has_active_scene_summarize_job(pool, game_id).await? {
         return Ok(());
     }
     db::enqueue_game_job(
@@ -96,6 +100,7 @@ pub async fn maybe_enqueue_scene_summarize(pool: &SqlitePool, game_id: i64) -> A
         String::new(),
     )
     .await?;
+    let _ = work_tx.send(());
     let _ = scene;
     Ok(())
 }

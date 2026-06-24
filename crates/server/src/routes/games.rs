@@ -66,7 +66,11 @@ async fn create_game(
     State(state): State<AppState>,
     Json(payload): Json<GameCreate>,
 ) -> AppResult<Json<GameDetail>> {
-    Ok(Json(db::create_game(&state.pool, payload).await?))
+    let detail = db::create_game(&state.pool, payload).await?;
+    if detail.game.queued_jobs > 0 {
+        state.queue.wake();
+    }
+    Ok(Json(detail))
 }
 
 async fn import_game_draft(
@@ -269,7 +273,7 @@ async fn stream_game(
                     break;
                 }
             };
-            let active_job = db::get_active_game_job(&pool, id).await.ok().flatten();
+            let active_job = db::get_blocking_game_job(&pool, id).await.ok().flatten();
             let has_active_job = active_job.is_some();
             let payload = serde_json::to_string(&GameStreamPayload {
                 detail: detail.clone(),

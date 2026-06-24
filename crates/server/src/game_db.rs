@@ -785,14 +785,30 @@ fn scene_from_row(row: SceneRow) -> AppResult<GameScene> {
     })
 }
 
-pub async fn get_active_game_job(pool: &SqlitePool, game_id: i64) -> AppResult<Option<Job>> {
+/// Active jobs that block turn submission and show generation UI on the game view.
+/// Background work such as scene summarization is excluded.
+pub async fn get_blocking_game_job(pool: &SqlitePool, game_id: i64) -> AppResult<Option<Job>> {
     let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE game_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
+        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE game_id = ?1 AND job_type != 'game_scene_summarize' AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
     )
     .bind(game_id)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(Into::into))
+}
+
+pub async fn get_active_game_job(pool: &SqlitePool, game_id: i64) -> AppResult<Option<Job>> {
+    get_blocking_game_job(pool, game_id).await
+}
+
+pub async fn has_active_scene_summarize_job(pool: &SqlitePool, game_id: i64) -> AppResult<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM generation_jobs WHERE game_id = ?1 AND job_type = 'game_scene_summarize' AND status IN ('queued','running')",
+    )
+    .bind(game_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
 }
 
 pub async fn has_active_turn_job(pool: &SqlitePool, turn_id: i64) -> AppResult<bool> {

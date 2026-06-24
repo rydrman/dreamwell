@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
-use dreamwell_types::{AppliedStateChange, EngineMode, Settings, TurnObservability};
+use dreamwell_types::{AppliedStateChange, EngineMode, JobStatus, Settings, TurnObservability};
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::db;
@@ -19,6 +20,7 @@ use crate::tool_stream::{
     ToolStreamJail,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tools_structured_phase(
     pool: &SqlitePool,
     job_id: i64,
@@ -27,10 +29,20 @@ pub async fn run_tools_structured_phase(
     guidance: &str,
     settings: &Settings,
     token: &CancellationToken,
+    work_tx: &mpsc::UnboundedSender<()>,
 ) -> AppResult<()> {
     let started = Instant::now();
     if token.is_cancelled() {
         return Err(AppError::bad_request("cancelled"));
+    }
+
+    let turn = db::get_turn(pool, game_id, turn_id).await?;
+    if turn.phase == "done" {
+        let job = db::get_job(pool, job_id).await?;
+        if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
+            db::complete_job(pool, job_id, JobStatus::Completed, None).await?;
+        }
+        return Ok(());
     }
 
     // Phase 1 — decide & roll dramatic checks based on the PC's skills.
@@ -332,7 +344,7 @@ pub async fn run_tools_structured_phase(
     db::update_turn_phase(pool, turn_id, "done").await?;
     db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
     db::touch_game(pool, game_id).await?;
-    crate::game_summarize::maybe_enqueue_scene_summarize(pool, game_id).await?;
+    crate::game_summarize::maybe_enqueue_scene_summarize(pool, work_tx, game_id).await?;
     Ok(())
 }
 
