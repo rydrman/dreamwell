@@ -1182,8 +1182,7 @@ pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let mut settings = row.into_settings(connections.clone());
     if let Some(active_id) = settings.active_connection_id {
         if let Some(active) = connections.iter().find(|c| c.id == active_id) {
-            settings.inference_url = active.inference_url.clone();
-            settings.model = active.model.clone();
+            apply_connection_profile(&mut settings, active);
         }
     }
     Ok(settings)
@@ -1285,12 +1284,44 @@ fn parse_json_format_strategy(raw: &str) -> JsonFormatStrategy {
     }
 }
 
-pub async fn list_inference_connections(pool: &SqlitePool) -> AppResult<Vec<InferenceConnection>> {
-    let rows = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser FROM inference_connections ORDER BY id",
+const INFERENCE_CONNECTION_SELECT: &str = "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser, temperature, top_p, max_tokens, context_tokens, max_context_messages, auto_context_on_model_change FROM inference_connections";
+
+fn apply_connection_profile(settings: &mut Settings, conn: &InferenceConnection) {
+    settings.inference_url = conn.inference_url.clone();
+    settings.model = conn.model.clone();
+    settings.temperature = conn.temperature;
+    settings.top_p = conn.top_p;
+    settings.max_tokens = conn.max_tokens;
+    settings.context_tokens = conn.context_tokens;
+    settings.max_context_messages = conn.max_context_messages;
+    settings.auto_context_on_model_change = conn.auto_context_on_model_change;
+}
+
+async fn snapshot_active_connection_settings(
+    pool: &SqlitePool,
+    connection: &InferenceConnection,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE app_settings SET inference_url = ?1, model = ?2, temperature = ?3, top_p = ?4, max_tokens = ?5, context_tokens = ?6, max_context_messages = ?7, auto_context_on_model_change = ?8 WHERE id = 1",
     )
-    .fetch_all(pool)
+    .bind(&connection.inference_url)
+    .bind(&connection.model)
+    .bind(connection.temperature)
+    .bind(connection.top_p)
+    .bind(connection.max_tokens)
+    .bind(connection.context_tokens)
+    .bind(connection.max_context_messages)
+    .bind(connection.auto_context_on_model_change as i64)
+    .execute(pool)
     .await?;
+    Ok(())
+}
+
+pub async fn list_inference_connections(pool: &SqlitePool) -> AppResult<Vec<InferenceConnection>> {
+    let query = format!("{INFERENCE_CONNECTION_SELECT} ORDER BY id");
+    let rows = sqlx::query_as::<_, InferenceConnectionRow>(&query)
+        .fetch_all(pool)
+        .await?;
     Ok(rows
         .into_iter()
         .map(InferenceConnectionRow::into_connection)
@@ -1317,13 +1348,12 @@ pub async fn get_inference_connection(
     pool: &SqlitePool,
     id: i64,
 ) -> AppResult<InferenceConnection> {
-    let row = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser FROM inference_connections WHERE id = ?1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
+    let query = format!("{INFERENCE_CONNECTION_SELECT} WHERE id = ?1");
+    let row = sqlx::query_as::<_, InferenceConnectionRow>(&query)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
     Ok(row.into_connection())
 }
 
@@ -1332,13 +1362,12 @@ pub async fn update_inference_connection(
     id: i64,
     payload: InferenceConnectionUpdate,
 ) -> AppResult<InferenceConnection> {
-    let current = sqlx::query_as::<_, InferenceConnectionRow>(
-        "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser FROM inference_connections WHERE id = ?1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
+    let query = format!("{INFERENCE_CONNECTION_SELECT} WHERE id = ?1");
+    let current = sqlx::query_as::<_, InferenceConnectionRow>(&query)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
 
     let name = payload.name.unwrap_or(current.name);
     let inference_url = payload.inference_url.unwrap_or(current.inference_url);
@@ -1352,9 +1381,19 @@ pub async fn update_inference_connection(
         .unwrap_or(current.json_format_strategy.as_str());
     let tool_call_parser = payload.tool_call_parser.unwrap_or(current.tool_call_parser);
     let model = payload.model.unwrap_or(current.model);
+    let temperature = payload.temperature.unwrap_or(current.temperature);
+    let top_p = payload.top_p.unwrap_or(current.top_p);
+    let max_tokens = payload.max_tokens.unwrap_or(current.max_tokens);
+    let context_tokens = payload.context_tokens.unwrap_or(current.context_tokens);
+    let max_context_messages = payload
+        .max_context_messages
+        .unwrap_or(current.max_context_messages);
+    let auto_context_on_model_change = payload
+        .auto_context_on_model_change
+        .unwrap_or(current.auto_context_on_model_change != 0);
 
     sqlx::query(
-        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, model = ?4, json_format_strategy = ?5, tool_call_parser = ?6 WHERE id = ?7",
+        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, model = ?4, json_format_strategy = ?5, tool_call_parser = ?6, temperature = ?7, top_p = ?8, max_tokens = ?9, context_tokens = ?10, max_context_messages = ?11, auto_context_on_model_change = ?12 WHERE id = ?13",
     )
     .bind(name.trim())
     .bind(inference_url.trim())
@@ -1362,6 +1401,12 @@ pub async fn update_inference_connection(
     .bind(model)
     .bind(json_format_strategy)
     .bind(tool_call_parser)
+    .bind(temperature)
+    .bind(top_p)
+    .bind(max_tokens)
+    .bind(context_tokens)
+    .bind(max_context_messages)
+    .bind(auto_context_on_model_change as i64)
     .bind(id)
     .execute(pool)
     .await?;
@@ -1404,11 +1449,17 @@ pub async fn delete_inference_connection(pool: &SqlitePool, id: i64) -> AppResul
 async fn set_active_inference_connection(pool: &SqlitePool, id: i64) -> AppResult<()> {
     let connection = get_inference_connection(pool, id).await?;
     sqlx::query(
-        "UPDATE app_settings SET active_inference_connection_id = ?1, inference_url = ?2, model = ?3 WHERE id = 1",
+        "UPDATE app_settings SET active_inference_connection_id = ?1, inference_url = ?2, model = ?3, temperature = ?4, top_p = ?5, max_tokens = ?6, context_tokens = ?7, max_context_messages = ?8, auto_context_on_model_change = ?9 WHERE id = 1",
     )
     .bind(id)
     .bind(&connection.inference_url)
     .bind(&connection.model)
+    .bind(connection.temperature)
+    .bind(connection.top_p)
+    .bind(connection.max_tokens)
+    .bind(connection.context_tokens)
+    .bind(connection.max_context_messages)
+    .bind(connection.auto_context_on_model_change as i64)
     .execute(pool)
     .await?;
     Ok(())
@@ -1421,11 +1472,22 @@ async fn sync_active_connection_snapshot(pool: &SqlitePool) -> AppResult<()> {
             .await?;
     if let Some(id) = active_id {
         let connection = get_inference_connection(pool, id).await?;
-        sqlx::query("UPDATE app_settings SET inference_url = ?1, model = ?2 WHERE id = 1")
-            .bind(&connection.inference_url)
-            .bind(&connection.model)
-            .execute(pool)
-            .await?;
+        snapshot_active_connection_settings(pool, &connection).await?;
+    }
+    Ok(())
+}
+
+async fn update_active_connection_profile(
+    pool: &SqlitePool,
+    current: &mut Settings,
+    update: InferenceConnectionUpdate,
+) -> AppResult<()> {
+    let Some(active_id) = current.active_connection_id else {
+        return Ok(());
+    };
+    let updated = update_inference_connection(pool, active_id, update).await?;
+    if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
+        *conn = updated;
     }
     Ok(())
 }
@@ -1434,9 +1496,15 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     let mut current = get_settings(pool).await?;
     let inference_url_updated = payload.inference_url.is_some();
     let model_updated = payload.model.is_some();
+    let temperature_updated = payload.temperature.is_some();
+    let top_p_updated = payload.top_p.is_some();
+    let max_tokens_updated = payload.max_tokens.is_some();
+    let max_context_messages_updated = payload.max_context_messages.is_some();
+    let context_tokens_updated = payload.context_tokens.is_some();
+    let auto_context_updated = payload.auto_context_on_model_change.is_some();
 
     // Apply connection switch before per-connection fields so autosave cannot write
-    // URL/model from the previous profile onto the newly selected one.
+    // profile fields from the previous connection onto the newly selected one.
     if let Some(v) = payload.active_connection_id {
         set_active_inference_connection(pool, v).await?;
         current.active_connection_id = Some(v);
@@ -1449,6 +1517,24 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
         }
         if !model_updated {
             current.model = fresh.model;
+        }
+        if !temperature_updated {
+            current.temperature = fresh.temperature;
+        }
+        if !top_p_updated {
+            current.top_p = fresh.top_p;
+        }
+        if !max_tokens_updated {
+            current.max_tokens = fresh.max_tokens;
+        }
+        if !context_tokens_updated {
+            current.context_tokens = fresh.context_tokens;
+        }
+        if !max_context_messages_updated {
+            current.max_context_messages = fresh.max_context_messages;
+        }
+        if !auto_context_updated {
+            current.auto_context_on_model_change = fresh.auto_context_on_model_change;
         }
     }
 
@@ -1488,12 +1574,39 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     }
     if let Some(v) = payload.temperature {
         current.temperature = v;
+        update_active_connection_profile(
+            pool,
+            &mut current,
+            InferenceConnectionUpdate {
+                temperature: Some(v),
+                ..Default::default()
+            },
+        )
+        .await?;
     }
     if let Some(v) = payload.top_p {
         current.top_p = v;
+        update_active_connection_profile(
+            pool,
+            &mut current,
+            InferenceConnectionUpdate {
+                top_p: Some(v),
+                ..Default::default()
+            },
+        )
+        .await?;
     }
     if let Some(v) = payload.max_tokens {
         current.max_tokens = v;
+        update_active_connection_profile(
+            pool,
+            &mut current,
+            InferenceConnectionUpdate {
+                max_tokens: Some(v),
+                ..Default::default()
+            },
+        )
+        .await?;
     }
     if let Some(v) = payload.system_prompt_prefix {
         current.system_prompt_prefix = v;
@@ -1527,12 +1640,39 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     }
     if let Some(v) = payload.max_context_messages {
         current.max_context_messages = v;
+        update_active_connection_profile(
+            pool,
+            &mut current,
+            InferenceConnectionUpdate {
+                max_context_messages: Some(v),
+                ..Default::default()
+            },
+        )
+        .await?;
     }
     if let Some(v) = payload.context_tokens {
         current.context_tokens = v.max(0);
+        update_active_connection_profile(
+            pool,
+            &mut current,
+            InferenceConnectionUpdate {
+                context_tokens: Some(v.max(0)),
+                ..Default::default()
+            },
+        )
+        .await?;
     }
     if let Some(v) = payload.auto_context_on_model_change {
         current.auto_context_on_model_change = v;
+        update_active_connection_profile(
+            pool,
+            &mut current,
+            InferenceConnectionUpdate {
+                auto_context_on_model_change: Some(v),
+                ..Default::default()
+            },
+        )
+        .await?;
     }
     if let Some(v) = payload.max_concurrent_jobs {
         MAX_CONCURRENT_JOBS.store(v.max(1), std::sync::atomic::Ordering::SeqCst);
@@ -2134,6 +2274,12 @@ struct InferenceConnectionRow {
     model: String,
     json_format_strategy: String,
     tool_call_parser: String,
+    temperature: f64,
+    top_p: f64,
+    max_tokens: i64,
+    context_tokens: i64,
+    max_context_messages: i64,
+    auto_context_on_model_change: i64,
 }
 
 impl InferenceConnectionRow {
@@ -2146,6 +2292,12 @@ impl InferenceConnectionRow {
             model: self.model,
             json_format_strategy: parse_json_format_strategy(&self.json_format_strategy),
             tool_call_parser: self.tool_call_parser,
+            temperature: self.temperature,
+            top_p: self.top_p,
+            max_tokens: self.max_tokens,
+            context_tokens: self.context_tokens,
+            max_context_messages: self.max_context_messages,
+            auto_context_on_model_change: self.auto_context_on_model_change != 0,
         }
     }
 }
@@ -2472,6 +2624,76 @@ mod settings_update_tests {
             .expect("second");
         assert_eq!(first.model, "local-model");
         assert_eq!(second_saved.model, "hosted-model");
+    }
+
+    #[tokio::test]
+    async fn update_settings_switching_connection_preserves_per_profile_generation_defaults() {
+        let (pool, first_id) = test_pool_with_connection().await;
+        update_inference_connection(
+            &pool,
+            first_id,
+            InferenceConnectionUpdate {
+                temperature: Some(0.3),
+                top_p: Some(0.7),
+                context_tokens: Some(4096),
+                max_tokens: Some(1024),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("first profile");
+
+        let second = create_inference_connection(
+            &pool,
+            InferenceConnectionCreate {
+                name: "Hosted".into(),
+                inference_url: "https://api.featherlight.ai/v1".into(),
+                api_key: None,
+            },
+        )
+        .await
+        .expect("second connection");
+        update_inference_connection(
+            &pool,
+            second.id,
+            InferenceConnectionUpdate {
+                temperature: Some(1.1),
+                top_p: Some(0.95),
+                context_tokens: Some(16384),
+                max_tokens: Some(2048),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("second profile");
+
+        let on_second = update_settings(
+            &pool,
+            SettingsUpdate {
+                active_connection_id: Some(second.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("switch to second");
+        assert_eq!(on_second.temperature, 1.1);
+        assert_eq!(on_second.top_p, 0.95);
+        assert_eq!(on_second.context_tokens, 16384);
+        assert_eq!(on_second.max_tokens, 2048);
+
+        let on_first = update_settings(
+            &pool,
+            SettingsUpdate {
+                active_connection_id: Some(first_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("switch to first");
+        assert_eq!(on_first.temperature, 0.3);
+        assert_eq!(on_first.top_p, 0.7);
+        assert_eq!(on_first.context_tokens, 4096);
+        assert_eq!(on_first.max_tokens, 1024);
     }
 
     #[tokio::test]

@@ -635,10 +635,46 @@ pub struct InferenceConnection {
     /// Text-embedded tool-call parser for streaming game narration (`auto`, `none`, or a dynamo parser name).
     #[serde(default = "default_tool_call_parser")]
     pub tool_call_parser: String,
+    #[serde(default = "default_connection_temperature")]
+    pub temperature: f64,
+    #[serde(default = "default_connection_top_p")]
+    pub top_p: f64,
+    #[serde(default = "default_connection_max_tokens")]
+    pub max_tokens: i64,
+    #[serde(default = "default_connection_context_tokens")]
+    pub context_tokens: i64,
+    #[serde(default = "default_connection_max_context_messages")]
+    pub max_context_messages: i64,
+    #[serde(default = "default_connection_auto_context_on_model_change")]
+    pub auto_context_on_model_change: bool,
 }
 
 fn default_tool_call_parser() -> String {
     "auto".to_string()
+}
+
+fn default_connection_temperature() -> f64 {
+    0.8
+}
+
+fn default_connection_top_p() -> f64 {
+    0.9
+}
+
+fn default_connection_max_tokens() -> i64 {
+    512
+}
+
+fn default_connection_context_tokens() -> i64 {
+    8192
+}
+
+fn default_connection_max_context_messages() -> i64 {
+    40
+}
+
+fn default_connection_auto_context_on_model_change() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -658,6 +694,12 @@ pub struct InferenceConnectionUpdate {
     pub model: Option<String>,
     pub json_format_strategy: Option<JsonFormatStrategy>,
     pub tool_call_parser: Option<String>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub max_tokens: Option<i64>,
+    pub context_tokens: Option<i64>,
+    pub max_context_messages: Option<i64>,
+    pub auto_context_on_model_change: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

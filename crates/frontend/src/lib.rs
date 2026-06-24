@@ -3846,9 +3846,8 @@ impl SettingsSaveContext {
             return;
         };
         current.active_connection_id = Some(id);
-        if let Some(conn) = current.connections.iter().find(|c| c.id == id) {
-            current.inference_url = conn.inference_url.clone();
-            current.model = conn.model.clone();
+        if let Some(conn) = current.connections.iter().find(|c| c.id == id).cloned() {
+            apply_connection_to_settings(&mut current, &conn);
         }
         *self.draft_ref.borrow_mut() = Some(current.clone());
         self.draft.set(Some(current));
@@ -3926,6 +3925,7 @@ impl SettingsSaveContext {
             return;
         };
         update(&mut current);
+        sync_settings_to_active_connection(&mut current);
         let dirty = Some(&current) != (*self.last_saved).as_ref();
         *self.draft_ref.borrow_mut() = Some(current.clone());
         self.draft.set(Some(current));
@@ -3940,6 +3940,45 @@ impl SettingsSaveContext {
             self.cancel_debounce();
             self.phase.set(SettingsSavePhase::Synced);
         }
+    }
+}
+
+fn apply_connection_to_settings(settings: &mut Settings, conn: &InferenceConnection) {
+    settings.inference_url = conn.inference_url.clone();
+    settings.model = conn.model.clone();
+    settings.temperature = conn.temperature;
+    settings.top_p = conn.top_p;
+    settings.max_tokens = conn.max_tokens;
+    settings.context_tokens = conn.context_tokens;
+    settings.max_context_messages = conn.max_context_messages;
+    settings.auto_context_on_model_change = conn.auto_context_on_model_change;
+}
+
+fn sync_settings_to_active_connection(settings: &mut Settings) {
+    let Some(active_id) = settings.active_connection_id else {
+        return;
+    };
+    let inference_url = settings.inference_url.clone();
+    let model = settings.model.clone();
+    let temperature = settings.temperature;
+    let top_p = settings.top_p;
+    let max_tokens = settings.max_tokens;
+    let context_tokens = settings.context_tokens;
+    let max_context_messages = settings.max_context_messages;
+    let auto_context_on_model_change = settings.auto_context_on_model_change;
+    if let Some(conn) = settings
+        .connections
+        .iter_mut()
+        .find(|connection| connection.id == active_id)
+    {
+        conn.inference_url = inference_url;
+        conn.model = model;
+        conn.temperature = temperature;
+        conn.top_p = top_p;
+        conn.max_tokens = max_tokens;
+        conn.context_tokens = context_tokens;
+        conn.max_context_messages = max_context_messages;
+        conn.auto_context_on_model_change = auto_context_on_model_change;
     }
 }
 
@@ -4073,9 +4112,9 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
     html! {
         <div>
             <div class="settings-group">
-                <strong>{"Inference connection"}</strong>
+                <strong>{"Inference settings"}</strong>
                 <p class="muted" style="margin:0.35rem 0 0.5rem;">
-                    {"Save multiple API endpoints (Ollama, Featherlight.ai, etc.) and switch between them. API keys are stored on the server and sent as Bearer tokens."}
+                    {"Each connection stores its own endpoint, model, and generation defaults. Switch connections to load a saved profile; API keys are stored on the server and sent as Bearer tokens."}
                 </p>
                 <div class="settings-connection-row">
                     <label class="field">
@@ -4084,6 +4123,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                             let save_ctx = save_ctx.clone();
                             let models = models.clone();
                             let model_error = model_error.clone();
+                            let detected_caps = detected_caps.clone();
                             Callback::from(move |e: Event| {
                                 let input: HtmlInputElement = e.target_unchecked_into();
                                 let id: i64 = input.value().parse().unwrap_or(0);
@@ -4094,6 +4134,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                                 let models = models.clone();
                                 let model_error = model_error.clone();
                                 save_ctx.switch_active_connection(id);
+                                detected_caps.set(None);
                                 wasm_bindgen_futures::spawn_local(async move {
                                     match api::list_models().await {
                                         Ok(list) => {
@@ -4132,7 +4173,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                                         save_ctx.update_field(|current| {
                                             current.connections.push(conn.clone());
                                             current.active_connection_id = Some(conn.id);
-                                            current.inference_url = conn.inference_url;
+                                            apply_connection_to_settings(current, &conn);
                                         });
                                     }
                                     Err(err) => save_ctx.phase.set(SettingsSavePhase::Failed(err)),
@@ -4186,8 +4227,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                         }} />
                     </label>
                 }
-            </div>
-            <label class="field">
+                <label class="field">
                 <span class="muted">{"API base URL"}</span>
                 <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
                     <input value={s.inference_url.clone()} placeholder="https://api.featherlight.ai/v1" oninput={{
@@ -4196,12 +4236,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                             let input: HtmlInputElement = e.target_unchecked_into();
                             let url = input.value();
                             save_ctx.update_field(|current| {
-                                current.inference_url = url.clone();
-                                if let Some(active_id) = current.active_connection_id {
-                                    if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
-                                        conn.inference_url = url;
-                                    }
-                                }
+                                current.inference_url = url;
                             });
                         })
                     }} />
@@ -4340,12 +4375,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                                     let input: HtmlInputElement = e.target_unchecked_into();
                                     let model = input.value();
                                     save_ctx.update_field(|current| {
-                                        current.model = model.clone();
-                                        if let Some(active_id) = current.active_connection_id {
-                                            if let Some(conn) = current.connections.iter_mut().find(|c| c.id == active_id) {
-                                                conn.model = model;
-                                            }
-                                        }
+                                        current.model = model;
                                     });
                                 })
                             }}
@@ -4410,8 +4440,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     <p class="muted">{"Could not detect context for this backend — set it manually."}</p>
                 }
             }
-            <div class="settings-group">
-                <strong>{"Context budget"}</strong>
+                <strong style="display:block;margin-top:0.75rem;">{"Context budget"}</strong>
                 <p class="muted" style="margin:0.35rem 0 0.5rem;">
                     {"Total context is split between the prompt (history + character) and the response. Lower response length leaves more room for chat history."}
                 </p>
@@ -4477,18 +4506,20 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                         });
                     })
                 }}>{"Detect context from backend"}</button>
+                <div class="settings-params-grid" style="margin-top:0.75rem;">
+                    <label class="field"><span class="muted">{"Temperature"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(save_ctx.clone(), "temperature")} />
+                        </AutoSaveField>
+                    </label>
+                    <label class="field"><span class="muted">{"Top P"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(save_ctx.clone(), "top_p")} />
+                        </AutoSaveField>
+                    </label>
+                </div>
             </div>
             <div class="settings-params-grid">
-                <label class="field"><span class="muted">{"Temperature"}</span>
-                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
-                        <input type="number" step="0.05" value={s.temperature.to_string()} oninput={num_input(save_ctx.clone(), "temperature")} />
-                    </AutoSaveField>
-                </label>
-                <label class="field"><span class="muted">{"Top P"}</span>
-                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
-                        <input type="number" step="0.05" value={s.top_p.to_string()} oninput={num_input(save_ctx.clone(), "top_p")} />
-                    </AutoSaveField>
-                </label>
                 <label class="field"><span class="muted">{"Max concurrent jobs"}</span>
                     <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
                         <input type="number" value={s.max_concurrent_jobs.to_string()} oninput={num_input(save_ctx.clone(), "max_concurrent_jobs")} />
