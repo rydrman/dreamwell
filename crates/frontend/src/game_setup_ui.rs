@@ -80,6 +80,7 @@ pub fn game_setup_wizard(props: &GameSetupWizardProps) -> Html {
         let pc_name = (*pc_name).clone();
         let pc_description = (*pc_description).clone();
         let trait_rows = (*trait_rows).clone();
+        let pc_index = *pc_index;
         let on_create = props.on_create.clone();
         let on_close = props.on_close.clone();
         Callback::from(move |_| {
@@ -89,6 +90,11 @@ pub fn game_setup_wizard(props: &GameSetupWizardProps) -> Html {
                 .filter(|npc| cast_picks.iter().any(|n| n == &npc.name))
                 .cloned()
                 .collect();
+            let pc_state = scenario
+                .pc_options
+                .get(pc_index)
+                .map(|pc| pc.initial_state.as_slice())
+                .unwrap_or(scenario.pc_initial_state.as_slice());
             let title =
                 crate::scenario_ui::default_game_title(&scenario.title, scenario.id, &games);
             let mut payload = game_create_from_scenario(&scenario, title);
@@ -97,7 +103,9 @@ pub fn game_setup_wizard(props: &GameSetupWizardProps) -> Html {
             payload.pc_traits = traits_from_rows(&trait_rows);
             payload.setup_var_values = setup_values.clone();
             payload.cast_selections = cast_picks.clone();
-            payload.invited_cast = invited_cast;
+            payload.invited_cast = invited_cast.clone();
+            payload.state_schema =
+                merge_game_state_schema(&scenario.state_schema, pc_state, &invited_cast);
             on_create.emit(payload);
             on_close.emit(());
         })

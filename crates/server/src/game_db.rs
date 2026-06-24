@@ -330,8 +330,25 @@ async fn seed_scenario_state(
         let actor_id = match def.scope {
             StateScope::World => None,
             StateScope::Pc => Some(pc_actor_id),
+            StateScope::Npc => {
+                let name = def.actor_name.as_deref().unwrap_or("").trim();
+                if name.is_empty() {
+                    None
+                } else {
+                    sqlx::query_scalar(
+                        "SELECT id FROM game_actors WHERE game_id = ?1 AND role = 'npc' AND name = ?2 LIMIT 1",
+                    )
+                    .bind(game_id)
+                    .bind(name)
+                    .fetch_optional(pool)
+                    .await?
+                }
+            }
         };
-        if def.kind == StateKind::Resource && actor_id.is_some() {
+        if def.scope == StateScope::Npc && actor_id.is_none() {
+            continue;
+        }
+        if matches!(def.kind, StateKind::Resource | StateKind::Clock) {
             let max_value = def.initial_max.or(num_value);
             sqlx::query(
                 "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, max_value, source_turn, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,-1,?8)",
@@ -1576,7 +1593,7 @@ struct SceneRow {
 
 #[cfg(test)]
 mod tests {
-    use dreamwell_types::{GameCreate, StateKind, StateScope, TrackedVarDef};
+    use dreamwell_types::{GameCreate, ScenarioNpc, StateKind, StateScope, TrackedVarDef};
 
     use super::*;
 
@@ -1689,5 +1706,82 @@ mod tests {
         .expect("health");
         assert_eq!(health_rows.len(), 1);
         assert_eq!(health_rows[0], (Some(3), Some(3)));
+    }
+
+    #[tokio::test]
+    async fn seed_scenario_state_applies_npc_scoped_entries() {
+        let pool = test_pool().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO games (title, premise, setting, gm_style, opening_message, created_at, updated_at) VALUES ('g','','','','',?1,?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("game");
+        let game_id: i64 = sqlx::query_scalar("SELECT id FROM games WHERE title = 'g'")
+            .fetch_one(&pool)
+            .await
+            .expect("id");
+        sqlx::query(
+            "INSERT INTO game_actors (game_id, role, name, description, skills, sort_order, created_at, updated_at) VALUES (?1,'pc','Hero','','{}',0,?2,?2)",
+        )
+        .bind(game_id)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("pc");
+        let pc_id: i64 =
+            sqlx::query_scalar("SELECT id FROM game_actors WHERE game_id = ?1 AND role = 'pc'")
+                .bind(game_id)
+                .fetch_one(&pool)
+                .await
+                .expect("pc id");
+        sqlx::query(
+            "INSERT INTO game_actors (game_id, role, name, description, skills, sort_order, created_at, updated_at) VALUES (?1,'npc','Guard','','{}',1,?2,?2)",
+        )
+        .bind(game_id)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("npc");
+        let guard_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM game_actors WHERE game_id = ?1 AND role = 'npc' AND name = 'Guard'",
+        )
+        .bind(game_id)
+        .fetch_one(&pool)
+        .await
+        .expect("guard");
+
+        let payload = GameCreate {
+            invited_cast: vec![ScenarioNpc {
+                name: "Guard".into(),
+                ..Default::default()
+            }],
+            state_schema: vec![TrackedVarDef {
+                key: "alertness".into(),
+                kind: StateKind::Clock,
+                scope: StateScope::Npc,
+                actor_name: Some("Guard".into()),
+                initial_num: Some(2),
+                initial_max: Some(4),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        seed_scenario_state(&pool, game_id, pc_id, &payload, &now)
+            .await
+            .expect("seed");
+
+        let (actor_id, num, max): (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT actor_id, num_value, max_value FROM game_state_entries WHERE game_id = ?1 AND key = 'alertness'",
+        )
+        .bind(game_id)
+        .fetch_one(&pool)
+        .await
+        .expect("alertness");
+        assert_eq!(actor_id, Some(guard_id));
+        assert_eq!(num, Some(2));
+        assert_eq!(max, Some(4));
     }
 }

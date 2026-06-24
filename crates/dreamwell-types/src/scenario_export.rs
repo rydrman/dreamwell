@@ -31,6 +31,7 @@ pub fn scenario_create_from_scenario(scenario: &Scenario) -> ScenarioCreate {
         opening_message: scenario.opening_message.clone(),
         pc_name: scenario.pc_name.clone(),
         pc_description: scenario.pc_description.clone(),
+        pc_initial_state: scenario.pc_initial_state.clone(),
         traits: scenario.traits.clone(),
         character_id: scenario.character_id,
         rules_blocks: scenario.rules_blocks.clone(),

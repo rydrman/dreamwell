@@ -6,11 +6,13 @@ use axum::{
     Json, Router,
 };
 use dreamwell_types::{
-    ImportScenarioResponse, OkResponse, Scenario, ScenarioCreate, ScenarioExport, ScenarioUpdate,
+    GenerateCharacterStateRequest, GenerateCharacterStateResponse, ImportScenarioResponse,
+    OkResponse, Scenario, ScenarioCreate, ScenarioExport, ScenarioUpdate,
 };
 
 use crate::error::{AppError, AppResult};
 use crate::routes::AppState;
+use crate::scenario_character_state;
 use crate::scenario_db;
 use crate::scenario_import::{import_source_label, scenario_create_from_import};
 
@@ -18,6 +20,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_scenarios).post(create_scenario))
         .route("/import", post(import_scenario))
+        .route("/generate-character-state", post(generate_character_state))
         .route("/:id/export", get(export_scenario))
         .route(
             "/:id",
@@ -63,6 +66,17 @@ async fn delete_scenario(
 ) -> AppResult<Json<OkResponse>> {
     scenario_db::delete_scenario(&state.pool, id).await?;
     Ok(Json(OkResponse { ok: true }))
+}
+
+async fn generate_character_state(
+    State(state): State<AppState>,
+    Json(payload): Json<GenerateCharacterStateRequest>,
+) -> AppResult<Json<GenerateCharacterStateResponse>> {
+    let settings = crate::db::get_settings(&state.pool).await?;
+    Ok(Json(
+        scenario_character_state::generate_character_state(&state.pool, &payload, &settings)
+            .await?,
+    ))
 }
 
 async fn export_scenario(

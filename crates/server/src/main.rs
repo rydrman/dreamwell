@@ -20,6 +20,7 @@ mod message_followups;
 mod prompts;
 mod queue;
 mod routes;
+mod scenario_character_state;
 mod scenario_db;
 mod scenario_import;
 mod state_recheck;

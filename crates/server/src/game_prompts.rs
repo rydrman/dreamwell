@@ -523,8 +523,14 @@ fn format_tracked_state_schema(schema: &[dreamwell_types::TrackedVarDef]) -> Str
             let scope = match def.scope {
                 dreamwell_types::StateScope::World => "world",
                 dreamwell_types::StateScope::Pc => "pc",
+                dreamwell_types::StateScope::Npc => "npc",
             };
             let mut line = format!("- {} ({}, {})", def.key, state_kind_str(def.kind), scope);
+            if def.scope == dreamwell_types::StateScope::Npc {
+                if let Some(name) = def.actor_name.as_deref().filter(|n| !n.trim().is_empty()) {
+                    line.push_str(&format!(" [{name}]"));
+                }
+            }
             if !def.description.trim().is_empty() {
                 line.push_str(&format!(": {}", def.description.trim()));
             }

@@ -27,7 +27,9 @@ pub use scenario_export::{
     ScenarioExport, SCENARIO_EXPORT_FORMAT,
 };
 pub use scenario_iw::{
-    ContentFlags, GameTurnSystemRoll, PcOption, RulesBlock, ScenarioNpc, ScenarioTrigger,
+    merge_character_state, merge_game_state_schema, CharacterStateDef, ContentFlags,
+    GameTurnSystemRoll, GenerateCharacterStateRequest, GenerateCharacterStateResponse,
+    GenerateCharacterStateTarget, PcOption, RulesBlock, ScenarioNpc, ScenarioTrigger,
     SetupVarChoice, SourceMeta, StateScope, SystemRollRequest, TrackedVarDef, TraitDef,
     TriggerCondition, TriggerEffect, TurnPlan, WinCondition,
 };
@@ -931,6 +933,8 @@ pub struct Scenario {
     pub pc_name: String,
     pub pc_description: String,
     #[serde(default)]
+    pub pc_initial_state: Vec<CharacterStateDef>,
+    #[serde(default)]
     pub traits: std::collections::HashMap<String, i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character_id: Option<i64>,
@@ -978,6 +982,8 @@ pub struct ScenarioCreate {
     pub pc_name: String,
     #[serde(default)]
     pub pc_description: String,
+    #[serde(default)]
+    pub pc_initial_state: Vec<CharacterStateDef>,
     #[serde(default = "default_game_traits")]
     pub traits: std::collections::HashMap<String, i64>,
     #[serde(default)]
@@ -1044,6 +1050,7 @@ pub struct ScenarioUpdate {
     pub opening_message: Option<String>,
     pub pc_name: Option<String>,
     pub pc_description: Option<String>,
+    pub pc_initial_state: Option<Vec<CharacterStateDef>>,
     pub traits: Option<std::collections::HashMap<String, i64>>,
     pub character_id: Option<Option<i64>>,
     pub rules_blocks: Option<Vec<RulesBlock>>,

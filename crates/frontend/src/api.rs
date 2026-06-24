@@ -553,6 +553,12 @@ pub async fn import_scenario(file: &web_sys::File) -> Result<Scenario, String> {
     Ok(result.scenario)
 }
 
+pub async fn generate_character_state(
+    payload: &GenerateCharacterStateRequest,
+) -> Result<GenerateCharacterStateResponse, String> {
+    json_body("POST", "/api/scenarios/generate-character-state", payload).await
+}
+
 #[derive(Clone)]
 pub struct StreamNudge {
     inner: Rc<ReconnectingEventSource>,
