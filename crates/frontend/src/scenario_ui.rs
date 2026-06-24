@@ -214,7 +214,7 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                 }) }
             </div>
             { scenario_fields(&draft) }
-            { scenario_extra_sections(&draft) }
+            { crate::scenario_editors::scenario_advanced_editors(&draft) }
             { scenario_traits_editor(&draft) }
             <button class="btn" style="margin-top:0.5rem;" onclick={{
                 let draft = draft.clone();
@@ -262,27 +262,27 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
 }
 
 #[derive(Clone, PartialEq)]
-struct ScenarioDraft {
-    title: String,
-    premise: String,
-    setting: String,
-    gm_style: String,
-    opening_message: String,
-    pc_name: String,
-    pc_description: String,
-    trait_rows: Vec<(String, i64)>,
-    objective: String,
-    setup_text: String,
-    rules_blocks: Vec<RulesBlock>,
-    cast: Vec<ScenarioNpc>,
-    trait_defs: Vec<TraitDef>,
-    pc_options: Vec<PcOption>,
-    state_schema: Vec<TrackedVarDef>,
-    content_flags: ContentFlags,
-    win_condition: Option<WinCondition>,
-    scenario_triggers: Vec<ScenarioTrigger>,
-    source_meta: Option<SourceMeta>,
-    game_elements: GameElementsConfig,
+pub(crate) struct ScenarioDraft {
+    pub(crate) title: String,
+    pub(crate) premise: String,
+    pub(crate) setting: String,
+    pub(crate) gm_style: String,
+    pub(crate) opening_message: String,
+    pub(crate) pc_name: String,
+    pub(crate) pc_description: String,
+    pub(crate) trait_rows: Vec<(String, i64)>,
+    pub(crate) objective: String,
+    pub(crate) setup_text: String,
+    pub(crate) rules_blocks: Vec<RulesBlock>,
+    pub(crate) cast: Vec<ScenarioNpc>,
+    pub(crate) trait_defs: Vec<TraitDef>,
+    pub(crate) pc_options: Vec<PcOption>,
+    pub(crate) state_schema: Vec<TrackedVarDef>,
+    pub(crate) content_flags: ContentFlags,
+    pub(crate) win_condition: Option<WinCondition>,
+    pub(crate) scenario_triggers: Vec<ScenarioTrigger>,
+    pub(crate) source_meta: Option<SourceMeta>,
+    pub(crate) game_elements: GameElementsConfig,
 }
 
 impl Default for ScenarioDraft {
@@ -417,45 +417,6 @@ impl ScenarioDraft {
     }
 }
 
-fn scenario_extra_sections(draft: &UseStateHandle<ScenarioDraft>) -> Html {
-    if draft.rules_blocks.is_empty() && draft.cast.is_empty() && draft.trait_defs.is_empty() {
-        return html! {};
-    }
-    html! {
-        <div class="scenario-extra-sections">
-            if !draft.trait_defs.is_empty() {
-                <details class="scenario-extra-panel" open=true>
-                    <summary>{"Scenario traits"}</summary>
-                    <ul>
-                        { for draft.trait_defs.iter().map(|t| html! { <li>{ &t.name }</li> }) }
-                    </ul>
-                </details>
-            }
-            if !draft.cast.is_empty() {
-                <details class="scenario-extra-panel">
-                    <summary>{ format!("Cast ({})", draft.cast.len()) }</summary>
-                    <ul>
-                        { for draft.cast.iter().map(|npc| html! {
-                            <li><strong>{ &npc.name }</strong>{ ": " }{ &npc.content }</li>
-                        }) }
-                    </ul>
-                </details>
-            }
-            if !draft.rules_blocks.is_empty() {
-                <details class="scenario-extra-panel">
-                    <summary>{ format!("Rules blocks ({})", draft.rules_blocks.len()) }</summary>
-                    { for draft.rules_blocks.iter().map(|block| html! {
-                        <details class="rules-block-item" key={block.name.clone()}>
-                            <summary>{ &block.name }</summary>
-                            <pre class="rules-block-content">{ &block.content }</pre>
-                        </details>
-                    }) }
-                </details>
-            }
-        </div>
-    }
-}
-
 fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     html! {
         <div class="scenario-traits">
@@ -545,10 +506,12 @@ fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
         ("title", "Title", false),
         ("opening_message", "Opening message", true),
         ("premise", "Premise / scenario", true),
+        ("objective", "Objective", true),
     ];
     let fields_after_tone = [
         ("setting", "Setting / world", true),
         ("gm_style", "GM style", true),
+        ("setup_text", "Setup instructions", true),
         ("pc_name", "Default PC name", false),
         ("pc_description", "Default PC description", true),
     ];
@@ -604,6 +567,8 @@ fn scenario_draft_field(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Stri
         "gm_style" => draft.gm_style.clone(),
         "pc_name" => draft.pc_name.clone(),
         "pc_description" => draft.pc_description.clone(),
+        "objective" => draft.objective.clone(),
+        "setup_text" => draft.setup_text.clone(),
         _ => String::new(),
     }
 }
@@ -622,6 +587,8 @@ fn scenario_draft_oninput(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Ca
             "gm_style" => next.gm_style = value,
             "pc_name" => next.pc_name = value,
             "pc_description" => next.pc_description = value,
+            "objective" => next.objective = value,
+            "setup_text" => next.setup_text = value,
             _ => {}
         }
         draft.set(next);

@@ -28,8 +28,8 @@ pub use scenario_export::{
 };
 pub use scenario_iw::{
     ContentFlags, GameTurnSystemRoll, PcOption, RulesBlock, ScenarioNpc, ScenarioTrigger,
-    SetupVarChoice, SourceMeta, SystemRollRequest, TrackedVarDef, TraitDef, TriggerCondition,
-    TriggerEffect, TurnPlan, WinCondition,
+    SetupVarChoice, SourceMeta, StateScope, SystemRollRequest, TrackedVarDef, TraitDef,
+    TriggerCondition, TriggerEffect, TurnPlan, WinCondition,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -901,9 +901,10 @@ pub enum CheckTier {
     Strong,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StateKind {
+    #[default]
     Resource,
     Condition,
     Fact,

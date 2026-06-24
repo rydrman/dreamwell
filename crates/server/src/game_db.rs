@@ -6,7 +6,7 @@ use dreamwell_types::{
     Game, GameActor, GameActorUpdate, GameCreate, GameDetail, GameElementsConfig, GameScene,
     GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck, GameTurnSystemRoll, GameUpdate,
     Job, JobType, MacroContext, MechanicalResult, ResolutionSystem, RulesBlock, ScenarioTrigger,
-    StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnObservability,
+    StateKind, StateScope, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnObservability,
 };
 use sqlx::SqlitePool;
 
@@ -246,7 +246,16 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
         .await?;
     }
 
+    let pc_schema_keys: std::collections::HashSet<&str> = payload
+        .state_schema
+        .iter()
+        .filter(|def| def.scope == StateScope::Pc)
+        .map(|def| def.key.as_str())
+        .collect();
     for (key, current, max) in [("health", 5, 5), ("stress", 0, 5)] {
+        if pc_schema_keys.contains(key) {
+            continue;
+        }
         sqlx::query(
             "INSERT INTO game_state_entries (game_id, actor_id, kind, key, num_value, max_value, source_turn, updated_at) VALUES (?1,?2,'resource',?3,?4,?5,-1,?6)",
         )
@@ -260,7 +269,7 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
         .await?;
     }
 
-    seed_scenario_state(pool, id, &payload, &now).await?;
+    seed_scenario_state(pool, id, actor_id, &payload, &now).await?;
 
     sqlx::query(
         "INSERT INTO game_scenes (game_id, title, start_turn, sort_order, created_at, updated_at) VALUES (?1,'Opening Scene',0,0,?2,?2)",
@@ -303,6 +312,7 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
 async fn seed_scenario_state(
     pool: &SqlitePool,
     game_id: i64,
+    pc_actor_id: i64,
     payload: &GameCreate,
     now: &str,
 ) -> AppResult<()> {
@@ -314,17 +324,39 @@ async fn seed_scenario_state(
             .unwrap_or_else(|| def.initial_value.clone());
         let num_value = def.initial_num.or_else(|| value.parse::<i64>().ok());
         let kind = state_kind_str(def.kind);
-        sqlx::query(
-            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, source_turn, updated_at) VALUES (?1,NULL,?2,?3,?4,?5,-1,?6)",
-        )
-        .bind(game_id)
-        .bind(kind)
-        .bind(&def.key)
-        .bind(&value)
-        .bind(num_value)
-        .bind(now)
-        .execute(pool)
-        .await?;
+        let actor_id = match def.scope {
+            StateScope::World => None,
+            StateScope::Pc => Some(pc_actor_id),
+        };
+        if def.kind == StateKind::Resource && actor_id.is_some() {
+            let max_value = def.initial_max.or(num_value);
+            sqlx::query(
+                "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, max_value, source_turn, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,-1,?8)",
+            )
+            .bind(game_id)
+            .bind(actor_id)
+            .bind(kind)
+            .bind(&def.key)
+            .bind(&value)
+            .bind(num_value)
+            .bind(max_value)
+            .bind(now)
+            .execute(pool)
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, source_turn, updated_at) VALUES (?1,?2,?3,?4,?5,?6,-1,?7)",
+            )
+            .bind(game_id)
+            .bind(actor_id)
+            .bind(kind)
+            .bind(&def.key)
+            .bind(&value)
+            .bind(num_value)
+            .bind(now)
+            .execute(pool)
+            .await?;
+        }
     }
     for (key, value) in &payload.setup_var_values {
         if payload.state_schema.iter().any(|d| d.key == *key) {
@@ -1537,4 +1569,122 @@ struct SceneRow {
     sort_order: i64,
     created_at: String,
     updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use dreamwell_types::{GameCreate, StateKind, StateScope, TrackedVarDef};
+
+    use super::*;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
+
+    #[tokio::test]
+    async fn seed_scenario_state_applies_world_and_pc_scope() {
+        let pool = test_pool().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO games (title, premise, setting, gm_style, opening_message, created_at, updated_at) VALUES ('g','','','','',?1,?1)",
+        )
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("game");
+        let game_id: i64 = sqlx::query_scalar("SELECT id FROM games WHERE title = 'g'")
+            .fetch_one(&pool)
+            .await
+            .expect("id");
+        sqlx::query(
+            "INSERT INTO game_actors (game_id, role, name, description, skills, created_at, updated_at) VALUES (?1,'pc','Hero','','{}',?2,?2)",
+        )
+        .bind(game_id)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("actor");
+        let pc_id: i64 =
+            sqlx::query_scalar("SELECT id FROM game_actors WHERE game_id = ?1 AND role = 'pc'")
+                .bind(game_id)
+                .fetch_one(&pool)
+                .await
+                .expect("pc");
+
+        let payload = GameCreate {
+            state_schema: vec![
+                TrackedVarDef {
+                    key: "Leader_Position".into(),
+                    kind: StateKind::Resource,
+                    scope: StateScope::World,
+                    initial_num: Some(3),
+                    ..Default::default()
+                },
+                TrackedVarDef {
+                    key: "health".into(),
+                    kind: StateKind::Resource,
+                    scope: StateScope::Pc,
+                    initial_num: Some(8),
+                    initial_max: Some(10),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        seed_scenario_state(&pool, game_id, pc_id, &payload, &now)
+            .await
+            .expect("seed");
+
+        let world_actor: Option<i64> = sqlx::query_scalar(
+            "SELECT actor_id FROM game_state_entries WHERE game_id = ?1 AND key = 'Leader_Position'",
+        )
+        .bind(game_id)
+        .fetch_one(&pool)
+        .await
+        .expect("world row");
+        assert!(world_actor.is_none());
+
+        let (pc_actor, num, max): (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT actor_id, num_value, max_value FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
+        )
+        .bind(game_id)
+        .fetch_one(&pool)
+        .await
+        .expect("health row");
+        assert_eq!(pc_actor, Some(pc_id));
+        assert_eq!(num, Some(8));
+        assert_eq!(max, Some(10));
+    }
+
+    #[tokio::test]
+    async fn create_game_skips_default_health_when_schema_defines_it() {
+        let pool = test_pool().await;
+        let payload = GameCreate {
+            pc_name: "Hero".into(),
+            state_schema: vec![TrackedVarDef {
+                key: "health".into(),
+                kind: StateKind::Resource,
+                scope: StateScope::Pc,
+                initial_num: Some(3),
+                initial_max: Some(3),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let detail = create_game(&pool, payload).await.expect("create");
+        let health_rows: Vec<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT num_value, max_value FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
+        )
+        .bind(detail.game.id)
+        .fetch_all(&pool)
+        .await
+        .expect("health");
+        assert_eq!(health_rows.len(), 1);
+        assert_eq!(health_rows[0], (Some(3), Some(3)));
+    }
 }
