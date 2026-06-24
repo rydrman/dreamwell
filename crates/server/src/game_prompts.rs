@@ -1047,43 +1047,6 @@ fn format_mechanical_result_line(result: &dreamwell_types::MechanicalResult) -> 
     }
 }
 
-pub fn build_structured_agent_messages(
-    game: &Game,
-    detail: &GameDetail,
-    turn: &GameTurn,
-    guidance: &str,
-    settings: &Settings,
-    full_structured: bool,
-) -> Vec<serde_json::Value> {
-    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
-    let inputs = TurnPromptInputs {
-        game,
-        detail,
-        turn,
-        checks: &turn.checks,
-        guidance,
-        settings,
-        ctx: &ctx,
-    };
-    let mut body = build_cumulative_turn_body(TurnPromptPhase::DeclareChecks, &inputs);
-    if full_structured {
-        body.push_str("\n\nUse tools to run mechanics, declare and roll checks, apply state changes, and set scene beats. Call complete_structured_phase when finished.");
-    } else {
-        body.push_str(
-            "\n\nUse only mechanical tools (board_move, draw_card, roll_dice) for this phase.",
-        );
-    }
-    let user = user_message_with_scenario(game, &body, &ctx);
-    vec![
-        serde_json::json!({ "role": "system", "content": STRUCTURED_AGENT_SYSTEM }),
-        serde_json::json!({ "role": "user", "content": user }),
-    ]
-}
-
-const STRUCTURED_AGENT_SYSTEM: &str = r#"You are a tabletop RPG engine assistant executing structured turn steps via tools.
-Use the provided tools instead of inventing mechanical outcomes. Follow scenario rules exactly.
-When a card is drawn, use the canonical card text returned by the tool in later narration context."#;
-
 pub fn declare_checks_schema() -> serde_json::Value {
     json!({
         "type": "object",
@@ -1130,7 +1093,7 @@ mod tests {
             modifier_max: 3,
             merge_resolve_scene: true,
             step_mode: false,
-            engine_mode: dreamwell_types::EngineMode::Pipeline,
+            engine_mode: dreamwell_types::EngineMode::ToolsStructured,
             game_elements: dreamwell_types::GameElementsConfig::default(),
             element_instances: dreamwell_types::ElementInstances::default(),
             model_checks: String::new(),
@@ -1155,6 +1118,7 @@ mod tests {
             game_id: 1,
             sort_order: -1,
             player_action: String::new(),
+            guidance_notes: String::new(),
             phase: "done".into(),
             scene_beats: vec![],
             prose: "Steam curls from the kettle.".into(),
@@ -1197,6 +1161,7 @@ mod tests {
             game_id: 1,
             sort_order: 0,
             player_action: "I greet the regular at the counter.".into(),
+            guidance_notes: String::new(),
             phase: "checks".into(),
             scene_beats: vec![],
             prose: String::new(),

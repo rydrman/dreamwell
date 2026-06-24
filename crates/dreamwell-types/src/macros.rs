@@ -264,7 +264,7 @@ mod tests {
                 modifier_max: 3,
                 merge_resolve_scene: true,
                 step_mode: false,
-                engine_mode: crate::EngineMode::Pipeline,
+                engine_mode: crate::EngineMode::ToolsStructured,
                 game_elements: crate::GameElementsConfig::default(),
                 element_instances: crate::ElementInstances::default(),
                 model_checks: String::new(),

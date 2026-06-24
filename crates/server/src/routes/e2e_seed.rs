@@ -110,7 +110,7 @@ async fn seed_game_running(
     .await?;
     let job = db::enqueue_game_job(
         &state.pool,
-        dreamwell_types::JobType::GameTurnProse,
+        dreamwell_types::JobType::GameTurnStructuredAgent,
         game_id,
         Some(turn_id),
         String::new(),

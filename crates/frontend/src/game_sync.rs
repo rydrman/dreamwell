@@ -75,7 +75,7 @@ mod tests {
             modifier_max: 3,
             merge_resolve_scene: true,
             step_mode: false,
-            engine_mode: EngineMode::Pipeline,
+            engine_mode: EngineMode::ToolsStructured,
             game_elements: GameElementsConfig::default(),
             element_instances: ElementInstances::default(),
             model_checks: String::new(),

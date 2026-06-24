@@ -254,7 +254,7 @@ mod tests {
             modifier_max: 3,
             merge_resolve_scene: true,
             step_mode: false,
-            engine_mode: dreamwell_types::EngineMode::Pipeline,
+            engine_mode: dreamwell_types::EngineMode::ToolsStructured,
             game_elements: dreamwell_types::GameElementsConfig::default(),
             element_instances: dreamwell_types::ElementInstances::default(),
             model_checks: String::new(),

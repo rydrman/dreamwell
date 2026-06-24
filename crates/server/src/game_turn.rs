@@ -1,5 +1,5 @@
 use dreamwell_types::{
-    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, EngineMode, GameTurnCheck,
+    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, GameTurnCheck,
     GameTurnSystemRoll, Job, JobType, Settings, TurnObservability, TurnPlan,
 };
 use futures_util::StreamExt;
@@ -223,7 +223,7 @@ async fn run_turn_mechanicals(
     game: &dreamwell_types::Game,
     game_id: i64,
     turn_id: i64,
-    token: &CancellationToken,
+    _token: &CancellationToken,
 ) -> AppResult<()> {
     let plan_started = std::time::Instant::now();
     if game.game_elements.turn_mechanicals.is_empty() {
@@ -252,28 +252,17 @@ async fn run_turn_mechanicals(
         return Ok(());
     }
 
-    match game.engine_mode {
-        EngineMode::ToolsMechanics => {
-            let settings = db::get_settings(pool).await?;
-            crate::game_turn_agent::run_tools_mechanics_phase(
-                pool, game_id, turn_id, &settings, token,
-            )
-            .await?;
-        }
-        _ => {
-            crate::game_turn_agent::run_bulk_mechanicals(pool, game_id, turn_id, game).await?;
-            let obs = TurnObservability {
-                engine_mode: game.engine_mode,
-                phase_timings_ms: [(
-                    "mechanics".to_string(),
-                    plan_started.elapsed().as_millis() as u64,
-                )]
-                .into(),
-                ..Default::default()
-            };
-            db::merge_turn_observability(pool, turn_id, obs).await?;
-        }
-    }
+    crate::game_turn_agent::run_bulk_mechanicals(pool, game_id, turn_id, game).await?;
+    let obs = TurnObservability {
+        engine_mode: game.engine_mode,
+        phase_timings_ms: [(
+            "mechanics".to_string(),
+            plan_started.elapsed().as_millis() as u64,
+        )]
+        .into(),
+        ..Default::default()
+    };
+    db::merge_turn_observability(pool, turn_id, obs).await?;
     Ok(())
 }
 
@@ -593,7 +582,7 @@ mod tests {
             modifier_max: 3,
             merge_resolve_scene: true,
             step_mode: false,
-            engine_mode: dreamwell_types::EngineMode::Pipeline,
+            engine_mode: dreamwell_types::EngineMode::ToolsStructured,
             game_elements: dreamwell_types::GameElementsConfig::default(),
             element_instances: dreamwell_types::ElementInstances::default(),
             model_checks: String::new(),
