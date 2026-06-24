@@ -57,7 +57,7 @@ use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use scenario_ui::{default_game_title, game_create_from_scenario, ScenariosPage};
 use sidebar::AppSidebar;
-use state_ui::{PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow};
+use state_ui::{PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow, StateScopeActor};
 use stories_ui::StoriesShell;
 use story_save::{AutoSaveField, AutoSavePhase};
 use story_sync::{FetchGeneration, AUTOSAVE_DEBOUNCE_MS};
@@ -3769,6 +3769,7 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
     let variables = use_state(Vec::<ChatVariable>::new);
 
     let chat_state = use_state(Vec::<ChatStateEntry>::new);
+    let chat_state_actors = use_state(Vec::<StateScopeActor>::new);
 
     let refresh_signal = VariableRefreshSignal {
         chat_id: props.chat_id,
@@ -3782,21 +3783,31 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
     {
         let variables = variables.clone();
         let chat_state = chat_state.clone();
+        let chat_state_actors = chat_state_actors.clone();
         use_effect_with(refresh_signal, move |signal| {
             if let Some(chat_id) = signal.chat_id {
                 let variables = variables.clone();
                 let chat_state = chat_state.clone();
+                let chat_state_actors = chat_state_actors.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(list) = api::get_variables(chat_id).await {
                         variables.set(list);
                     }
                     if let Ok(detail) = api::get_chat_detail(chat_id).await {
                         chat_state.set(detail.state);
+                        chat_state_actors.set(
+                            detail
+                                .actors
+                                .iter()
+                                .map(StateScopeActor::from)
+                                .collect(),
+                        );
                     }
                 });
             } else {
                 variables.set(vec![]);
                 chat_state.set(vec![]);
+                chat_state_actors.set(vec![]);
             }
             || ()
         });
@@ -3821,7 +3832,10 @@ fn variables_panel(props: &VariablesPanelProps) -> Html {
 
     html! {
         <>
-            <StateEntriesPanel entries={chat_state.iter().map(StateEntryRow::from).collect::<Vec<_>>()} />
+            <StateEntriesPanel
+                entries={chat_state.iter().map(StateEntryRow::from).collect::<Vec<_>>()}
+                actors={(*chat_state_actors).clone()}
+            />
             <VariableList
             rows={rows}
             scope_options={scope_options}

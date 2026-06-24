@@ -18,21 +18,33 @@ GOOD (actor-scoped, atomic):
 
 pub const STATE_CHANGE_RULES: &str = r#"State change rules:
 - kind: resource|condition|fact|clock; op: set|add|remove
-- One atomic scalar per (target, kind, key): single subject, single attribute — no lists or sentences in value
+- One atomic scalar per (target, key) — keys are unique per target regardless of kind
 - Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
 - value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"
 - Resource/clock use numeric delta or set values; conditions/facts use value strings
-- Resource and clock values clamp to 0..max"#;
+- Resource and clock values clamp to 0..max
+
+State kind rules (one slot per target+key — pick the right kind once and keep it):
+- resource: numeric track with a max (stress 2/5, hit points, supply). Use op add/set/remove with delta or numeric value.
+- clock: numeric progress track in segments (countdown 2/4, investigation clock). Same ops as resource; defaults to 4 segments unless schema says otherwise.
+- fact: durable text attribute (location=tavern, shirt_color=green, has_key=true). Use op set/remove with value strings.
+- condition: temporary or status text tag (bleeding, hidden, suspicious). Same storage as fact; use when the value is likely to clear soon."#;
 
 pub const STATE_CHANGE_PROMPT: &str = r#"State change rules:
 - target: "pc" for the player character, "world" for global scope, or a named NPC
 - kind: resource|condition|fact|clock; op: set|add|remove
-- One atomic scalar per (target, kind, key): single subject, single attribute — no lists or sentences in value
+- One atomic scalar per (target, key) — keys are unique per target regardless of kind
 - Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
 - value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"
 - Prefer actor targets over world for anything about a specific person
 - Resource/clock use numeric delta or set values; conditions/facts use value strings
 - Resource and clock values clamp to 0..max
+
+State kind rules (one slot per target+key — pick the right kind once and keep it):
+- resource: numeric track with a max (stress 2/5, hit points, supply). Use op add/set/remove with delta or numeric value.
+- clock: numeric progress track in segments (countdown 2/4, investigation clock). Same ops as resource; defaults to 4 segments unless schema says otherwise.
+- fact: durable text attribute (location=tavern, shirt_color=green, has_key=true). Use op set/remove with value strings.
+- condition: temporary or status text tag (bleeding, hidden, suspicious). Same storage as fact; use when the value is likely to clear soon.
 
 State target rules:
 - "pc" (or "user"): the player character ONLY — their clothing, mood, inventory, injuries, held items
@@ -86,6 +98,7 @@ mod tests {
         assert!(STATE_CHANGE_PROMPT.contains("clothing_state"));
         assert!(STATE_CHANGE_PROMPT.contains("shirt_color"));
         assert!(STATE_CHANGE_PROMPT.contains("Prefer actor targets"));
+        assert!(STATE_CHANGE_PROMPT.contains("numeric track with a max"));
     }
 
     #[test]

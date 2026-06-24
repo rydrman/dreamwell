@@ -1199,6 +1199,9 @@ pub struct AppliedStateChange {
     pub prev_value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_num: Option<i64>,
+    /// Kind of the entry before this change, when an existing slot was updated or replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_kind: Option<StateKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

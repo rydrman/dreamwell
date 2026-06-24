@@ -17,8 +17,8 @@ use crate::markdown::render_message_content;
 use crate::message_menu::MessageOptionsMenu;
 use crate::router::{AppRoute, Overlay};
 use crate::state_ui::{
-    sort_state_rows, InlineStateChangesGroup, PhaseSection, PlanBeatsList, StateEntriesPanel,
-    StateEntryRow,
+    InlineStateChangesGroup, PhaseSection, PlanBeatsList, StateEntriesPanel, StateEntryRow,
+    StateScopeActor,
 };
 use crate::title_editor::TitleEditor;
 use crate::view_scroll::scroll_content_view_to_bottom;
@@ -771,7 +771,13 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
     let game_detail = &props.game_detail;
     let detail_state = props.on_detail.clone();
     let game_id = game_detail.game.id;
-    let state_rows = sort_state_rows(game_detail.state.iter().map(StateEntryRow::from).collect());
+    let state_rows: Vec<StateEntryRow> =
+        game_detail.state.iter().map(StateEntryRow::from).collect();
+    let state_actors: Vec<StateScopeActor> = game_detail
+        .actors
+        .iter()
+        .map(StateScopeActor::from)
+        .collect();
 
     html! {
         <div id="game-state-panel" class="settings-popover panel-overlay">
@@ -952,7 +958,8 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                         </ul>
                     </details>
                 }
-                <StateEntriesPanel entries={state_rows} />
+                <h3 class="state-tracked-heading">{"Tracked state"}</h3>
+                <StateEntriesPanel entries={state_rows} actors={state_actors} />
                 <details class="game-settings-panel">
                     <summary>{"Game settings"}</summary>
                     <div class="game-settings-fields">

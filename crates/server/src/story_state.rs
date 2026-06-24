@@ -177,6 +177,14 @@ async fn persist_mutation(
             .execute(pool)
             .await?;
         }
+        EntryMutation::UpdateKind { entry_id, kind } => {
+            sqlx::query("UPDATE story_state_entries SET kind=?1, updated_at=?2 WHERE id=?3")
+                .bind(state_kind_str(*kind))
+                .bind(now)
+                .bind(entry_id)
+                .execute(pool)
+                .await?;
+        }
         EntryMutation::Delete { entry_id } => {
             sqlx::query("DELETE FROM story_state_entries WHERE id = ?1")
                 .bind(entry_id)

@@ -20,6 +20,7 @@ use crate::item_list::StoryList;
 use crate::router::{AppRoute, Overlay, StoryNav};
 use crate::state_ui::{
     PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow,
+    StateScopeActor,
 };
 use crate::story_save::{
     draft_is_dirty, fail_auto_save, finish_auto_save, use_autosave_tab_flush, AutoSaveController,
@@ -3147,6 +3148,10 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
         .as_ref()
         .map(|detail| detail.state.iter().map(StateEntryRow::from).collect())
         .unwrap_or_default();
+    let state_actors: Vec<StateScopeActor> = detail
+        .as_ref()
+        .map(|detail| detail.actors.iter().map(StateScopeActor::from).collect())
+        .unwrap_or_default();
 
     html! {
         <div id="story-variables-panel" class="settings-popover panel-overlay" ref={panel_ref} oninput={container_input_callback()}>
@@ -3155,7 +3160,7 @@ pub fn story_variables_overlay(props: &StoryVariablesOverlayProps) -> Html {
                 <button class="btn secondary btn-compact" onclick={props.on_close.reform(|_| ())}>{"Close"}</button>
             </div>
             <div class="panel-overlay-body">
-                <StateEntriesPanel entries={state_rows} />
+                <StateEntriesPanel entries={state_rows} actors={state_actors} />
                 <VariableList
                     rows={rows}
                     scope_options={scope_options}
