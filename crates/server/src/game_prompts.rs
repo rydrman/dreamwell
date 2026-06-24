@@ -520,7 +520,11 @@ fn format_tracked_state_schema(schema: &[dreamwell_types::TrackedVarDef]) -> Str
     let lines: Vec<String> = schema
         .iter()
         .map(|def| {
-            let mut line = format!("- {} ({})", def.key, state_kind_str(def.kind));
+            let scope = match def.scope {
+                dreamwell_types::StateScope::World => "world",
+                dreamwell_types::StateScope::Pc => "pc",
+            };
+            let mut line = format!("- {} ({}, {})", def.key, state_kind_str(def.kind), scope);
             if !def.description.trim().is_empty() {
                 line.push_str(&format!(": {}", def.description.trim()));
             }

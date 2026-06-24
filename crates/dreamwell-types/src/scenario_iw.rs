@@ -44,16 +44,28 @@ pub struct TraitDef {
     pub description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateScope {
+    #[default]
+    World,
+    Pc,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrackedVarDef {
     pub key: String,
     pub kind: StateKind,
+    #[serde(default)]
+    pub scope: StateScope,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub initial_value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_num: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_max: Option<i64>,
     #[serde(default)]
     pub visibility: String,
     #[serde(default)]
