@@ -69,18 +69,15 @@
           {
             "id": "event:1",
             "name": "Boost",
-            "text": "Move forward 2 extra spaces.",
-            "requires_roll": false
+            "text": "Move forward 2 extra spaces."
           },
           {
             "id": "event:2",
             "name": "Redirect",
-            "text": "Send another player back 3 spaces.",
-            "requires_roll": false
+            "text": "Send another player back 3 spaces."
           }
         ]
       }
-    ],
-    "turn_mechanicals": []
+    ]
   }
 }

@@ -52,8 +52,6 @@ pub struct GameElementsConfig {
     pub boards: Vec<BoardDef>,
     #[serde(default)]
     pub decks: Vec<DeckDef>,
-    #[serde(default)]
-    pub turn_mechanicals: Vec<MechanicalStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,7 +76,7 @@ fn default_move_dice() -> String {
 }
 
 fn default_board_tag() -> String {
-    "transformation".to_string()
+    "space".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -106,56 +104,6 @@ pub struct CardDef {
     pub id: String,
     pub name: String,
     pub text: String,
-    #[serde(default)]
-    pub requires_roll: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum MechanicalStep {
-    BoardMove {
-        #[serde(default = "default_main_board")]
-        board: String,
-        #[serde(default)]
-        actor: Option<String>,
-    },
-    CardDraw {
-        #[serde(default = "default_deck_from")]
-        deck_from: DeckFrom,
-        #[serde(default = "default_true")]
-        consume: bool,
-        #[serde(default)]
-        deck_id: Option<String>,
-    },
-    DiceRoll {
-        #[serde(default = "default_move_dice")]
-        dice: String,
-        #[serde(default)]
-        label: String,
-        #[serde(default)]
-        when: Option<MechanicalWhen>,
-    },
-}
-
-fn default_main_board() -> String {
-    "main".to_string()
-}
-
-fn default_deck_from() -> DeckFrom {
-    DeckFrom::SpaceTag
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeckFrom {
-    SpaceTag,
-    Literal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MechanicalWhen {
-    CardRequiresRoll,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -230,59 +178,9 @@ pub struct TurnObservability {
     pub phase_timings_ms: HashMap<String, u64>,
 }
 
-/// Fill in the default board-game mechanical step template when boards/decks exist but
-/// `turn_mechanicals` was never seeded (e.g. games created before import wired it in).
-pub fn normalize_game_elements(mut config: GameElementsConfig) -> GameElementsConfig {
-    let has_board_game_content =
-        !config.boards.is_empty() || config.decks.iter().any(|deck| !deck.cards.is_empty());
-    if config.turn_mechanicals.is_empty() && has_board_game_content {
-        config.turn_mechanicals = default_board_game_mechanicals();
-    }
-    config
-}
-
-/// Default turn template for board game scenarios.
-pub fn default_board_game_mechanicals() -> Vec<MechanicalStep> {
-    vec![
-        MechanicalStep::BoardMove {
-            board: "main".to_string(),
-            actor: None,
-        },
-        MechanicalStep::CardDraw {
-            deck_from: DeckFrom::SpaceTag,
-            consume: true,
-            deck_id: None,
-        },
-        MechanicalStep::DiceRoll {
-            dice: "1d6".to_string(),
-            label: "card_effect".to_string(),
-            when: Some(MechanicalWhen::CardRequiresRoll),
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normalize_game_elements_fills_turn_mechanicals() {
-        let config = GameElementsConfig {
-            boards: vec![BoardDef {
-                id: "main".to_string(),
-                spaces: 80,
-                move_dice: "1d6".to_string(),
-                tag_rules: vec![],
-                default_tag: "transformation".to_string(),
-            }],
-            ..Default::default()
-        };
-        let normalized = normalize_game_elements(config);
-        assert_eq!(
-            normalized.turn_mechanicals,
-            default_board_game_mechanicals()
-        );
-    }
 
     #[test]
     fn engine_mode_round_trips_db() {

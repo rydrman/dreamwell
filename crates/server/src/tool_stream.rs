@@ -132,7 +132,7 @@ impl ToolStreamJail {
             let (calls, normal_text) = try_tool_call_parse_aggregate(&section, self.parser, tools)
                 .await
                 .map_err(|err| AppError::inference(err.to_string()))?;
-            let (calls, normal_text) = merge_with_fallback(calls, normal_text, &section);
+            let (calls, normal_text) = merge_with_fallback(calls, normal_text, &section, tools);
             events.extend(tool_calls_to_events_from_calls(calls));
             self.buffer = remainder;
             self.state = JailState::Prose;
@@ -171,7 +171,7 @@ impl ToolStreamJail {
             detect_and_parse_tool_call_with_recovery(&section, self.parser, tools)
                 .await
                 .map_err(|err| AppError::inference(err.to_string()))?;
-        let (calls, normal_text) = merge_with_fallback(calls, normal_text, &section);
+        let (calls, normal_text) = merge_with_fallback(calls, normal_text, &section, tools);
         let mut events = tool_calls_to_events_from_calls(calls);
         if let Some(text) = normal_text.filter(|s| !s.is_empty()) {
             events.push(JailEvent::Prose(text));
@@ -224,10 +224,11 @@ async fn extract_tool_calls_from_text(
             .await
             .map_err(|err| AppError::inference(err.to_string()))?
     } else {
-        let (calls, prose) = fallback_extract_bare_calls(text);
+        let known = known_tool_names(tools);
+        let (calls, prose) = fallback_extract_bare_calls(text, known.as_deref());
         return Ok((calls, if prose.is_empty() { None } else { Some(prose) }));
     };
-    let (calls, prose) = merge_with_fallback(dynamo_calls, normal_text, text);
+    let (calls, prose) = merge_with_fallback(dynamo_calls, normal_text, text, tools);
     Ok((calls, prose))
 }
 
@@ -235,6 +236,7 @@ fn merge_with_fallback(
     dynamo_calls: Vec<ToolCallResponse>,
     normal_text: Option<String>,
     section: &str,
+    tools: Option<&[ToolDefinition]>,
 ) -> (Vec<ToolCall>, Option<String>) {
     if !dynamo_calls.is_empty() {
         return (
@@ -249,7 +251,8 @@ fn merge_with_fallback(
             normal_text,
         );
     }
-    let (fallback_calls, prose) = fallback_extract_bare_calls(section);
+    let known = known_tool_names(tools);
+    let (fallback_calls, prose) = fallback_extract_bare_calls(section, known.as_deref());
     if fallback_calls.is_empty() {
         return (Vec::new(), normal_text);
     }
@@ -263,24 +266,34 @@ fn merge_with_fallback(
     )
 }
 
-/// Parse gemma-style `call:name{key:value,...}` when dynamo cannot (e.g. unquoted apostrophes).
-fn fallback_extract_bare_calls(text: &str) -> (Vec<ToolCall>, String) {
+fn known_tool_names(tools: Option<&[ToolDefinition]>) -> Option<Vec<&str>> {
+    let tools = tools?;
+    if tools.is_empty() {
+        return None;
+    }
+    let mut names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    Some(names)
+}
+
+/// Parse gemma-style `call:name{key:value,...}` and, when tool defs are provided,
+/// bare `name{key:value,...}` for known tool names.
+fn fallback_extract_bare_calls(
+    text: &str,
+    known_tools: Option<&[&str]>,
+) -> (Vec<ToolCall>, String) {
+    let known = known_tools.unwrap_or(&[]);
     let mut calls = Vec::new();
     let mut prose = String::with_capacity(text.len());
     let mut cursor = 0;
     while cursor < text.len() {
-        let Some(rel) = text[cursor..].find(BARE_CALL_PREFIX) else {
+        let Some(start) = find_next_fallback_start(text, cursor, known) else {
             prose.push_str(&text[cursor..]);
             break;
         };
-        let start = cursor + rel;
-        if !is_bare_call_boundary(text, start) {
-            prose.push_str(&text[cursor..=start]);
-            cursor = start + 1;
-            continue;
-        }
         prose.push_str(&text[cursor..start]);
-        let Some((call, consumed)) = parse_bare_call_at(&text[start..], calls.len()) else {
+        let Some((call, consumed)) = parse_fallback_call_at(&text[start..], calls.len(), known)
+        else {
             prose.push_str(&text[start..]);
             break;
         };
@@ -288,6 +301,84 @@ fn fallback_extract_bare_calls(text: &str) -> (Vec<ToolCall>, String) {
         cursor = start + consumed;
     }
     (calls, prose)
+}
+
+fn find_next_fallback_start(text: &str, cursor: usize, known_tools: &[&str]) -> Option<usize> {
+    let slice = &text[cursor..];
+    let mut best: Option<usize> = None;
+
+    if let Some(rel) = slice.find(BARE_CALL_PREFIX) {
+        let start = cursor + rel;
+        if is_bare_call_boundary(text, start) {
+            best = Some(start);
+        }
+    }
+
+    for name in known_tools {
+        let mut search_from = 0usize;
+        while let Some(rel) = slice[search_from..].find(name) {
+            let start = cursor + search_from + rel;
+            if is_direct_tool_call_start(text, start, name) {
+                best = Some(best.map_or(start, |current| current.min(start)));
+                break;
+            }
+            search_from += rel + name.len();
+        }
+    }
+
+    best
+}
+
+fn is_direct_tool_call_start(text: &str, idx: usize, name: &str) -> bool {
+    if !is_bare_call_boundary(text, idx) || !text[idx..].starts_with(name) {
+        return false;
+    }
+    let after_name = idx + name.len();
+    if text
+        .get(after_name..)
+        .is_none_or(|rest| !rest.starts_with('{'))
+    {
+        return false;
+    }
+    // `call:ask_pc_decision{...}` is handled by the `call:` path above.
+    if idx >= BARE_CALL_PREFIX.len() && &text[idx - BARE_CALL_PREFIX.len()..idx] == BARE_CALL_PREFIX
+    {
+        return false;
+    }
+    true
+}
+
+fn parse_fallback_call_at(
+    s: &str,
+    index: usize,
+    known_tools: &[&str],
+) -> Option<(ToolCall, usize)> {
+    if s.starts_with(BARE_CALL_PREFIX) {
+        return parse_bare_call_at(s, index);
+    }
+    for name in known_tools {
+        if let Some(call) = parse_direct_tool_call_at(s, name, index) {
+            return Some(call);
+        }
+    }
+    None
+}
+
+fn parse_direct_tool_call_at(s: &str, name: &str, index: usize) -> Option<(ToolCall, usize)> {
+    if !s.starts_with(name) {
+        return None;
+    }
+    let rest = &s[name.len()..];
+    let (inner, close_len) = balanced_brace_content(rest)?;
+    let arguments = bare_gemma_kv_to_json(inner)?;
+    Some((
+        ToolCall {
+            id: format!("call_fallback_{index}"),
+            name: name.to_string(),
+            arguments,
+        },
+        name.len() + close_len,
+    ))
 }
 
 fn is_bare_call_boundary(text: &str, idx: usize) -> bool {
@@ -370,6 +461,20 @@ fn gemma_value_to_json_value(value: &str) -> Option<serde_json::Value> {
     if value.starts_with('{') {
         let (inner, _) = balanced_brace_content(value)?;
         return gemma_object_to_json_value(inner);
+    }
+    if value.len() >= 2 {
+        if let Some(unquoted) = value
+            .strip_prefix('"')
+            .and_then(|inner| inner.strip_suffix('"'))
+        {
+            return Some(serde_json::Value::String(unquoted.to_string()));
+        }
+        if let Some(unquoted) = value
+            .strip_prefix('\'')
+            .and_then(|inner| inner.strip_suffix('\''))
+        {
+            return Some(serde_json::Value::String(unquoted.to_string()));
+        }
     }
     Some(serde_json::Value::String(value.to_string()))
 }
@@ -493,9 +598,13 @@ fn balanced_bracket_content(s: &str) -> Option<(&str, usize)> {
     None
 }
 
-/// Extract any remaining `call:name{...}` segments from text (e.g. prose leaked during streaming).
-pub fn salvage_bare_tool_calls(text: &str) -> (Vec<ToolCall>, String) {
-    fallback_extract_bare_calls(text)
+/// Extract remaining inline tool-call segments from text (e.g. prose leaked during streaming).
+pub fn salvage_bare_tool_calls(
+    text: &str,
+    tools: Option<&[ToolDefinition]>,
+) -> (Vec<ToolCall>, String) {
+    let known = known_tool_names(tools);
+    fallback_extract_bare_calls(text, known.as_deref())
 }
 
 fn only_partial_start_marker(buffer: &str, parser: Option<&'static str>) -> bool {
@@ -643,7 +752,7 @@ mod tests {
     #[test]
     fn fallback_parses_call_after_mech_marker() {
         let text = "⟦mech:0⟧call:board_move{actor:pc,board_id:main}";
-        let (calls, prose) = fallback_extract_bare_calls(text);
+        let (calls, prose) = fallback_extract_bare_calls(text, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "board_move");
         assert_eq!(prose, "⟦mech:0⟧");
@@ -652,7 +761,7 @@ mod tests {
     #[test]
     fn fallback_parses_concatenated_calls() {
         let text = "call:roll_dice{dice_expr:1d6,label:test}call:draw_card{deck_id:transformation}";
-        let (calls, prose) = fallback_extract_bare_calls(text);
+        let (calls, prose) = fallback_extract_bare_calls(text, None);
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].name, "roll_dice");
         assert_eq!(calls[1].name, "draw_card");
@@ -662,12 +771,39 @@ mod tests {
     #[test]
     fn fallback_parses_apply_state_changes_with_array() {
         let text = "call:apply_state_changes{changes:[{key:game_status,kind:fact,op:set,target:world,value:in progress}]}";
-        let (calls, _) = fallback_extract_bare_calls(text);
+        let (calls, _) = fallback_extract_bare_calls(text, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "apply_state_changes");
         let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
         assert_eq!(args["changes"][0]["key"], "game_status");
         assert_eq!(args["changes"][0]["value"], "in progress");
+    }
+
+    #[test]
+    fn fallback_parses_known_tool_without_call_prefix() {
+        let text = r#"Ready to begin.
+
+ask_pc_decision{question: "The game is set up and your friends are ready. Who will take the first turn?"}"#;
+        let known = ["ask_pc_decision"];
+        let (calls, prose) = fallback_extract_bare_calls(text, Some(&known));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "ask_pc_decision");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(
+            args["question"],
+            "The game is set up and your friends are ready. Who will take the first turn?"
+        );
+        assert_eq!(prose.trim(), "Ready to begin.");
+    }
+
+    #[test]
+    fn fallback_prefers_call_prefix_over_embedded_tool_name() {
+        let text = "call:ask_pc_decision{question: Who goes first?}";
+        let known = ["ask_pc_decision"];
+        let (calls, prose) = fallback_extract_bare_calls(text, Some(&known));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "ask_pc_decision");
+        assert!(prose.is_empty());
     }
 
     #[tokio::test]
@@ -721,7 +857,7 @@ mod tests {
     #[tokio::test]
     async fn dynamo_parses_roll_dice_bare_call_from_game_15() {
         let call_text = "call:roll_dice{dice_expr:1d6,label:Ryan's first move}";
-        let (calls, _) = fallback_extract_bare_calls(call_text);
+        let (calls, _) = fallback_extract_bare_calls(call_text, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "roll_dice");
         let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();

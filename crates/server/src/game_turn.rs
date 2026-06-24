@@ -1,22 +1,16 @@
 use dreamwell_types::{
-    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, GameTurnCheck,
-    GameTurnSystemRoll, Job, JobType, Settings, TurnObservability, TurnPlan,
+    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, GameTurnCheck, Job, JobType,
+    Settings,
 };
-use futures_util::StreamExt;
 use sqlx::SqlitePool;
 use tokio_util::sync::CancellationToken;
 
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::game_prompts::{
-    build_declare_checks_messages, build_plan_messages, build_prose_messages,
-    build_resolve_messages, declare_checks_schema, plan_schema, resolve_schema,
-};
-use crate::game_resolution::{clamp_modifier, roll_dice, roll_system_dice};
-use crate::game_state::{apply_state_changes, skill_modifier, validate_skill};
-use crate::game_summarize::maybe_enqueue_scene_summarize;
-use crate::inference::stream_chat_completion;
+use crate::game_prompts::{build_declare_checks_messages, declare_checks_schema};
+use crate::game_resolution::{clamp_modifier, roll_dice};
+use crate::game_state::{skill_modifier, validate_skill};
 
 #[derive(Debug, Clone, Copy)]
 pub enum GameModelPhase {
@@ -69,10 +63,6 @@ pub async fn run_game_job(
     token: CancellationToken,
 ) -> AppResult<()> {
     match job.job_type {
-        JobType::GameTurnCheck => run_turn_from_checks(pool, job_id, job, settings, &token).await,
-        JobType::GameTurnScenePlan => run_turn_plan(pool, job_id, job, settings, &token).await,
-        JobType::GameTurnResolve => run_turn_resolve(pool, job_id, job, settings, &token).await,
-        JobType::GameTurnProse => run_turn_prose(pool, job_id, job, settings, &token).await,
         JobType::GameTurnStructuredAgent => {
             let game_id = job
                 .game_id
@@ -138,137 +128,8 @@ pub async fn run_game_job(
     }
 }
 
-async fn run_turn_from_checks(
-    pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
-) -> AppResult<()> {
-    let game_id = job
-        .game_id
-        .ok_or_else(|| AppError::internal("game job missing game_id"))?;
-    let turn_id = job
-        .turn_id
-        .ok_or_else(|| AppError::internal("turn job missing turn_id"))?;
-    let detail = db::get_game_detail(pool, game_id).await?;
-    let turn = db::get_turn(pool, game_id, turn_id).await?;
-    if !detail.game.rules_blocks.is_empty() && turn.plan.is_none() {
-        return run_turn_plan(pool, job_id, job, settings, token).await;
-    }
-    if !detail.game.game_elements.turn_mechanicals.is_empty() && turn.mechanical_results.is_empty()
-    {
-        run_turn_mechanicals(pool, job_id, &detail.game, game_id, turn_id, token).await?;
-    }
-    run_turn_checks_phase(pool, job_id, job, settings, token, game_id, turn_id).await
-}
-
-async fn run_turn_plan(
-    pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
-) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
-    let game_id = job
-        .game_id
-        .ok_or_else(|| AppError::internal("game job missing game_id"))?;
-    let turn_id = job
-        .turn_id
-        .ok_or_else(|| AppError::internal("turn job missing turn_id"))?;
-
-    if token.is_cancelled() {
-        return cancel_turn_job(pool, job).await;
-    }
-
-    db::update_turn_phase(pool, turn_id, "plan").await?;
-    let detail = db::get_game_detail(pool, game_id).await?;
-    let turn = db::get_turn(pool, game_id, turn_id).await?;
-    let game = detail.game.clone();
-
-    let messages = build_plan_messages(&game, &detail, &turn, &job.guidance_notes, settings);
-    let plan_model = model_for_phase(&game, settings, GameModelPhase::Resolve);
-    let plan: TurnPlan = db::chat_completion_json_for_connection(
-        pool,
-        &inference,
-        &plan_model,
-        &messages,
-        0.3,
-        settings.top_p,
-        structured_output_tokens(settings),
-        Some(&plan_schema()),
-        max_retries(),
-        token,
-    )
-    .await?;
-
-    db::update_turn_plan(pool, turn_id, &plan).await?;
-
-    run_turn_mechanicals(pool, job_id, &game, game_id, turn_id, token).await?;
-
-    if game.step_mode {
-        db::update_turn_phase(pool, turn_id, "plan_pause").await?;
-        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
-        db::touch_game(pool, game_id).await?;
-        return Ok(());
-    }
-
-    run_turn_checks_phase(pool, job_id, job, settings, token, game_id, turn_id).await
-}
-
-async fn run_turn_mechanicals(
-    pool: &SqlitePool,
-    _job_id: i64,
-    game: &dreamwell_types::Game,
-    game_id: i64,
-    turn_id: i64,
-    _token: &CancellationToken,
-) -> AppResult<()> {
-    let plan_started = std::time::Instant::now();
-    if game.game_elements.turn_mechanicals.is_empty() {
-        let turn = db::get_turn(pool, game_id, turn_id).await?;
-        let plan = turn.plan.as_ref();
-        db::clear_system_rolls(pool, turn_id).await?;
-        if let Some(plan) = plan {
-            for (i, request) in plan.system_rolls_needed.iter().enumerate() {
-                let roll = roll_system_dice(&request.dice_expr)
-                    .unwrap_or_else(|| roll_system_dice("1d6").expect("default 1d6 roll"));
-                let summary = format!("Rolled {:?}", roll.rolls);
-                let system_roll = GameTurnSystemRoll {
-                    id: 0,
-                    turn_id,
-                    label: request.label.clone(),
-                    dice_expr: request.dice_expr.clone(),
-                    rolls: roll.rolls,
-                    outcome_key: request.purpose.clone(),
-                    outcome_summary: summary,
-                    sort_order: i as i64,
-                    created_at: chrono::Utc::now(),
-                };
-                db::insert_system_roll(pool, turn_id, &system_roll).await?;
-            }
-        }
-        return Ok(());
-    }
-
-    crate::game_turn_agent::run_bulk_mechanicals(pool, game_id, turn_id, game).await?;
-    let obs = TurnObservability {
-        engine_mode: game.engine_mode,
-        phase_timings_ms: [(
-            "mechanics".to_string(),
-            plan_started.elapsed().as_millis() as u64,
-        )]
-        .into(),
-        ..Default::default()
-    };
-    db::merge_turn_observability(pool, turn_id, obs).await?;
-    Ok(())
-}
-
 /// Ask the model which dramatic checks (if any) the action needs based on the PC's
-/// skills, then validate, roll, and persist them. Shared by the pipeline checks phase
-/// and the structured inline-prose agent. Caller owns the surrounding turn phase markers.
+/// skills, then validate, roll, and persist them. Used by the structured inline-prose agent.
 pub async fn declare_and_roll_checks(
     pool: &SqlitePool,
     game_id: i64,
@@ -332,208 +193,6 @@ pub async fn declare_and_roll_checks(
     Ok(rolled_checks)
 }
 
-async fn run_turn_checks_phase(
-    pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
-    game_id: i64,
-    turn_id: i64,
-) -> AppResult<()> {
-    if token.is_cancelled() {
-        return cancel_turn_job(pool, job).await;
-    }
-    db::update_turn_phase(pool, turn_id, "checks").await?;
-    let game = db::get_game_detail(pool, game_id).await?.game;
-
-    declare_and_roll_checks(pool, game_id, turn_id, &job.guidance_notes, settings, token).await?;
-
-    db::update_turn_phase(pool, turn_id, "rolled").await?;
-
-    if game.step_mode {
-        db::update_turn_phase(pool, turn_id, "rolled_pause").await?;
-        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
-        db::touch_game(pool, game_id).await?;
-        return Ok(());
-    }
-
-    run_resolve_and_prose(pool, job_id, job, settings, token, game_id, turn_id).await
-}
-
-async fn run_turn_resolve(
-    pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
-) -> AppResult<()> {
-    let game_id = job.game_id.unwrap_or(0);
-    let turn_id = job.turn_id.unwrap_or(0);
-    run_resolve_and_prose(pool, job_id, job, settings, token, game_id, turn_id).await
-}
-
-async fn run_resolve_and_prose(
-    pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
-    game_id: i64,
-    turn_id: i64,
-) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
-    if token.is_cancelled() {
-        return cancel_turn_job(pool, job).await;
-    }
-
-    db::update_turn_phase(pool, turn_id, "resolved").await?;
-    let detail = db::get_game_detail(pool, game_id).await?;
-    let turn = db::get_turn(pool, game_id, turn_id).await?;
-    let game = detail.game.clone();
-    let checks = turn.checks.clone();
-
-    let messages = build_resolve_messages(
-        &game,
-        &detail,
-        &turn,
-        &checks,
-        &job.guidance_notes,
-        settings,
-    );
-    let resolve_model = model_for_phase(&game, settings, GameModelPhase::Resolve);
-    let resolved: dreamwell_types::ResolveTurnResponse = db::chat_completion_json_for_connection(
-        pool,
-        &inference,
-        &resolve_model,
-        &messages,
-        0.5,
-        settings.top_p,
-        structured_output_tokens(settings),
-        Some(&resolve_schema()),
-        max_retries(),
-        token,
-    )
-    .await?;
-
-    db::update_turn_scene_beats(pool, turn_id, &resolved.scene_beats).await?;
-
-    let state_detail = db::get_game_detail(pool, game_id).await?;
-    let applied = apply_state_changes(
-        pool,
-        game_id,
-        turn_id,
-        &resolved.state_changes,
-        &state_detail.actors,
-        &state_detail.state,
-    )
-    .await?;
-    db::update_turn_state_changes(pool, turn_id, &applied).await?;
-    db::invalidate_scene_summaries_from(pool, game_id, turn.sort_order).await?;
-
-    if game.step_mode {
-        db::update_turn_phase(pool, turn_id, "resolved_pause").await?;
-        db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
-        db::touch_game(pool, game_id).await?;
-        return Ok(());
-    }
-
-    stream_turn_prose(pool, job_id, job, settings, token, game_id, turn_id).await
-}
-
-async fn run_turn_prose(
-    pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
-) -> AppResult<()> {
-    let game_id = job.game_id.unwrap_or(0);
-    let turn_id = job.turn_id.unwrap_or(0);
-    stream_turn_prose(pool, job_id, job, settings, token, game_id, turn_id).await
-}
-
-async fn stream_turn_prose(
-    pool: &SqlitePool,
-    job_id: i64,
-    job: &Job,
-    settings: &Settings,
-    token: &CancellationToken,
-    game_id: i64,
-    turn_id: i64,
-) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
-    if token.is_cancelled() {
-        return cancel_turn_job(pool, job).await;
-    }
-
-    db::update_turn_phase(pool, turn_id, "prose").await?;
-    let detail = db::get_game_detail(pool, game_id).await?;
-    let turn = db::get_turn(pool, game_id, turn_id).await?;
-    let messages = build_prose_messages(
-        &detail.game,
-        &detail,
-        &turn,
-        &turn.checks,
-        &job.guidance_notes,
-        settings,
-    );
-
-    let prose_model = model_for_phase(&detail.game, settings, GameModelPhase::Prose);
-    let mut stream = stream_chat_completion(
-        &inference,
-        &prose_model,
-        &messages,
-        settings.temperature,
-        settings.top_p,
-        settings.max_tokens,
-    )
-    .await?;
-
-    let mut accumulated = String::new();
-    while let Some(token_result) = stream.next().await {
-        if token.is_cancelled() {
-            return cancel_turn_job(pool, job).await;
-        }
-        match token_result {
-            Ok(piece) => {
-                accumulated.push_str(&piece);
-                db::update_turn_prose(pool, turn_id, &accumulated).await?;
-                db::touch_game(pool, game_id).await?;
-            }
-            Err(err) => {
-                db::complete_job(
-                    pool,
-                    job_id,
-                    dreamwell_types::JobStatus::Failed,
-                    Some(err.to_string()),
-                )
-                .await?;
-                db::update_turn_phase(pool, turn_id, "failed").await?;
-                return Ok(());
-            }
-        }
-    }
-
-    if accumulated.trim().is_empty() {
-        db::complete_job(
-            pool,
-            job_id,
-            dreamwell_types::JobStatus::Failed,
-            Some("model returned no prose".to_string()),
-        )
-        .await?;
-        db::update_turn_phase(pool, turn_id, "failed").await?;
-        return Ok(());
-    }
-
-    db::update_turn_phase(pool, turn_id, "done").await?;
-    db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
-    db::touch_game(pool, game_id).await?;
-    maybe_enqueue_scene_summarize(pool, game_id).await?;
-    Ok(())
-}
-
 pub fn validate_declared_check(
     check: &DeclaredCheck,
     pc: &dreamwell_types::GameActor,
@@ -551,14 +210,6 @@ pub fn validate_declared_check(
         stakes: check.stakes.clone(),
         justification: check.justification.clone(),
     }
-}
-
-async fn cancel_turn_job(pool: &SqlitePool, job: &Job) -> AppResult<()> {
-    db::complete_job(pool, job.id, dreamwell_types::JobStatus::Cancelled, None).await?;
-    if let Some(turn_id) = job.turn_id {
-        db::update_turn_phase(pool, turn_id, "failed").await?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

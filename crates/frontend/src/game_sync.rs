@@ -42,7 +42,7 @@ mod tests {
     fn sample_job() -> Job {
         Job {
             id: 1,
-            job_type: JobType::GameTurnCheck,
+            job_type: JobType::GameTurnStructuredAgent,
             status: JobStatus::Running,
             chat_id: None,
             message_id: None,

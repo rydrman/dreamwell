@@ -1,10 +1,8 @@
-use dreamwell_types::{ElementInstances, Game, MechanicalData, MechanicalResult};
+use dreamwell_types::{ElementInstances, Game, MechanicalResult};
 use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
-use crate::game_mechanics::{
-    execute_board_move, execute_card_draw, execute_dice_roll, resolve_deck_from_tags,
-};
+use crate::game_mechanics::{execute_board_move, execute_card_draw, execute_dice_roll};
 use crate::inference::ToolCall;
 
 /// Mechanical tools with descriptions tuned for the inline prose agent.
@@ -12,22 +10,19 @@ pub fn inline_mechanical_tool_specs() -> Vec<Value> {
     vec![
         tool_spec(
             "roll_dice",
-            "Roll the die a drawn card's effect requires, AFTER the player has chosen the card's required targets/options. \
-             Do NOT use for board movement — board_move rolls the move die automatically.",
+            "Roll dice using a dice expression (e.g. 1d6, 2d6). Returns the individual rolls and total.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "dice_expr": { "type": "string", "description": "Dice expression such as 1d6 or 2d6" },
-                    "label": { "type": "string", "description": "Short label for this roll (e.g. card effect name)" }
+                    "label": { "type": "string", "description": "Short label for this roll (e.g. card effect, encounter)" }
                 },
                 "required": ["dice_expr"]
             }),
         ),
         tool_spec(
             "board_move",
-            "Begin a NEW game turn by advancing the active player: rolls the board move die and moves the piece (never call roll_dice first for the move). \
-             Call AT MOST ONCE per turn, and ONLY when no previously drawn card is still awaiting the PC's choice or effect roll. \
-             Do NOT call this to resolve a card the player just answered — finish that card first.",
+            "Advance an actor on a board: rolls the board's move die, updates position, and returns from/to space plus space tags.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -38,15 +33,14 @@ pub fn inline_mechanical_tool_specs() -> Vec<Value> {
         ),
         tool_spec(
             "draw_card",
-            "Draw the card for the space just landed on (deck inferred from the space tag when deck_id is omitted). Call once, right after board_move. \
-             Do NOT draw a new card while a previously drawn card's effect is still unresolved. \
-             If the returned card text says Choose/Name and the player did not specify, call ask_pc_decision before resolving the effect.",
+            "Draw the top card from a named deck. Returns canonical card id, name, and text.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "deck_id": { "type": "string" },
-                    "consume": { "type": "boolean" }
-                }
+                    "deck_id": { "type": "string", "description": "Deck element id to draw from" },
+                    "consume": { "type": "boolean", "description": "Whether to remove the card from the draw pile (default true)" }
+                },
+                "required": ["deck_id"]
             }),
         ),
     ]
@@ -93,7 +87,7 @@ pub fn inline_prose_tool_specs() -> Vec<Value> {
 fn ask_pc_decision_spec() -> Value {
     tool_spec(
         "ask_pc_decision",
-        "Pause and ask the player a concrete decision question when a card or the scene requires a choice the player has not made (e.g. which target or option the card or rule requires). Ends the turn immediately — do not narrate the PC's choice or continue past the question.",
+        "Pause and ask the player a concrete decision question when a card or the scene requires a choice the player has not made. Ends the turn immediately — do not narrate the PC's choice or continue past the question.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -122,8 +116,6 @@ pub struct ToolSessionState {
     pub game: Game,
     pub instances: ElementInstances,
     pub mechanical_results: Vec<MechanicalResult>,
-    pub last_space_tags: Vec<String>,
-    pub last_card_requires_roll: bool,
 }
 
 impl ToolSessionState {
@@ -133,8 +125,6 @@ impl ToolSessionState {
             game,
             instances,
             mechanical_results: Vec::new(),
-            last_space_tags: Vec::new(),
-            last_card_requires_roll: false,
         }
     }
 
@@ -162,11 +152,6 @@ pub async fn handle_mechanical_tool_call(
     match call.name.as_str() {
         "roll_dice" => {
             let dice_expr = args["dice_expr"].as_str().unwrap_or("1d6");
-            if is_redundant_board_move_roll(state, dice_expr) {
-                return Ok(error_result(
-                    "board_move rolls the move die automatically — do not call roll_dice for board movement; call board_move instead",
-                ));
-            }
             let label = args["label"].as_str().unwrap_or("roll").to_string();
             let Some(mut result) = execute_dice_roll(dice_expr, &label) else {
                 return Ok(error_result("invalid dice expression"));
@@ -189,24 +174,16 @@ pub async fn handle_mechanical_tool_call(
             let Some(mut result) = execute_board_move(board, &mut state.instances, &actor) else {
                 return Ok(error_result("board move failed"));
             };
-            if let MechanicalData::BoardMove { space_tags, .. } = &result.data {
-                state.last_space_tags = space_tags.clone();
-            }
             result.sort_order = state.mechanical_results.len() as i64;
             let payload = mechanical_result_json(&result);
             state.mechanical_results.push(result);
             Ok(payload)
         }
         "draw_card" => {
-            let consume = args["consume"].as_bool().unwrap_or(true);
-            let deck_id = if let Some(id) = args["deck_id"].as_str() {
-                id.to_string()
-            } else {
-                resolve_deck_from_tags(&state.last_space_tags, &state.game.game_elements)
-                    .ok_or_else(|| {
-                        AppError::bad_request("could not resolve deck from space tags")
-                    })?
+            let Some(deck_id) = args["deck_id"].as_str() else {
+                return Ok(error_result("deck_id is required"));
             };
+            let consume = args["consume"].as_bool().unwrap_or(true);
             let deck = state
                 .game
                 .game_elements
@@ -217,25 +194,8 @@ pub async fn handle_mechanical_tool_call(
             let Some(mut result) = execute_card_draw(deck, &mut state.instances, consume) else {
                 return Ok(error_result("deck empty or draw failed"));
             };
-            if let MechanicalData::CardDraw { text, .. } = &result.data {
-                state.last_card_requires_roll =
-                    text.contains("roll one die") || text.contains("roll a six-sided die");
-            }
             result.sort_order = state.mechanical_results.len() as i64;
-            let mut payload = mechanical_result_json(&result);
-            if let MechanicalData::CardDraw { text, .. } = &result.data {
-                let needs_choice = card_text_needs_pc_choice(text);
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.insert("requires_roll".into(), state.last_card_requires_roll.into());
-                    obj.insert("needs_pc_choice".into(), needs_choice.into());
-                    if needs_choice {
-                        obj.insert(
-                            "hint".into(),
-                            "Card requires the PC to choose targets/options — call ask_pc_decision before roll_dice or apply_state_changes unless the player action already specified the choice".into(),
-                        );
-                    }
-                }
-            }
+            let payload = mechanical_result_json(&result);
             state.mechanical_results.push(result);
             Ok(payload)
         }
@@ -259,24 +219,6 @@ pub fn parse_state_change_args(call: &ToolCall) -> Vec<dreamwell_types::StateCha
 
 fn mechanical_result_json(result: &MechanicalResult) -> Value {
     serde_json::to_value(result).unwrap_or_else(|_| serde_json::json!({ "ok": true }))
-}
-
-fn card_text_needs_pc_choice(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    lower.contains("choose") || lower.contains("name a ")
-}
-
-/// Reject roll_dice when it duplicates the board move die (board_move rolls internally).
-fn is_redundant_board_move_roll(state: &ToolSessionState, dice_expr: &str) -> bool {
-    if state.last_card_requires_roll {
-        return false;
-    }
-    state
-        .game
-        .game_elements
-        .boards
-        .iter()
-        .any(|board| board.move_dice.eq_ignore_ascii_case(dice_expr))
 }
 
 fn error_result(message: &str) -> Value {
@@ -310,7 +252,7 @@ mod tests {
                     spaces: 80,
                     move_dice: "1d6".into(),
                     tag_rules: vec![],
-                    default_tag: "transformation".into(),
+                    default_tag: "space".into(),
                 }],
                 ..Default::default()
             },
@@ -332,38 +274,33 @@ mod tests {
         ToolSessionState::new(game)
     }
 
-    #[test]
-    fn redundant_move_roll_blocked_before_card() {
-        let state = sample_state();
-        assert!(is_redundant_board_move_roll(&state, "1d6"));
-    }
-
-    #[test]
-    fn card_effect_roll_allowed_after_requires_roll_card() {
-        let mut state = sample_state();
-        state.last_card_requires_roll = true;
-        assert!(!is_redundant_board_move_roll(&state, "1d6"));
-    }
-
-    #[test]
-    fn grow_card_needs_pc_choice() {
-        assert!(card_text_needs_pc_choice(
-            "Choose a player and a body part, then roll one die."
-        ));
-    }
-
     #[tokio::test]
-    async fn roll_dice_rejects_move_die_before_card() {
+    async fn draw_card_requires_deck_id() {
         let mut state = sample_state();
         let call = ToolCall {
             id: "t1".into(),
-            name: "roll_dice".into(),
-            arguments: r#"{"dice_expr":"1d6","label":"first move"}"#.into(),
+            name: "draw_card".into(),
+            arguments: r#"{}"#.into(),
         };
         let result = handle_mechanical_tool_call(&mut state, &call)
             .await
             .unwrap();
         assert!(result.get("error").is_some());
         assert!(state.mechanical_results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn roll_dice_executes() {
+        let mut state = sample_state();
+        let call = ToolCall {
+            id: "t1".into(),
+            name: "roll_dice".into(),
+            arguments: r#"{"dice_expr":"1d6","label":"test"}"#.into(),
+        };
+        let result = handle_mechanical_tool_call(&mut state, &call)
+            .await
+            .unwrap();
+        assert!(result.get("error").is_none());
+        assert_eq!(state.mechanical_results.len(), 1);
     }
 }

@@ -485,11 +485,7 @@ async fn run_job(
         JobType::StoryBeatProseRecheck => {
             run_story_beat_prose_recheck_handler(pool, job_id, &job, &settings, token).await
         }
-        JobType::GameTurnCheck
-        | JobType::GameTurnResolve
-        | JobType::GameTurnScenePlan
-        | JobType::GameTurnStructuredAgent
-        | JobType::GameTurnProse
+        JobType::GameTurnStructuredAgent
         | JobType::GameSceneSummarize
         | JobType::GameProseRecheck
         | JobType::GameStateRecheck => {
@@ -550,11 +546,7 @@ async fn cancel_job_record(pool: &SqlitePool, job: &Job) -> AppResult<()> {
         | JobType::StoryBeatProseRecheck
         | JobType::GameProseRecheck
         | JobType::GameStateRecheck
-        | JobType::GameTurnCheck
-        | JobType::GameTurnResolve
-        | JobType::GameTurnScenePlan
         | JobType::GameTurnStructuredAgent
-        | JobType::GameTurnProse
         | JobType::GameSceneSummarize => {}
     }
     Ok(())
@@ -599,11 +591,7 @@ async fn fail_job(
         | JobType::StoryBeatMechanical
         | JobType::StoryBeatVariableRecheck
         | JobType::StoryBeatProseRecheck
-        | JobType::GameTurnCheck
-        | JobType::GameTurnResolve
-        | JobType::GameTurnScenePlan
-        | JobType::GameTurnStructuredAgent
-        | JobType::GameTurnProse => {
+        | JobType::GameTurnStructuredAgent => {
             if let Some(turn_id) = job.turn_id {
                 let _ = db::update_turn_phase(pool, turn_id, "failed").await;
             }
