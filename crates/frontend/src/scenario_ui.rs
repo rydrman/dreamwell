@@ -5,6 +5,10 @@ use yew::prelude::*;
 
 use crate::api;
 use crate::game_presets_ui::GmTonePresetPicker;
+use crate::scenario_state_ui::{
+    editable_character_state_to_saved, editable_tracked_var_to_saved, EditableCharacterStateDef,
+    EditableTrackedVarDef,
+};
 
 #[derive(Properties, PartialEq)]
 pub struct ScenariosPageProps {
@@ -230,6 +234,13 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
                         }
                         return;
                     }
+                    let validation_error = draft.validate();
+                    if let Some(message) = validation_error {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&message);
+                        }
+                        return;
+                    }
                     let payload = draft.to_create();
                     let editing_id_val = *editing_id;
                     let scenarios = scenarios.clone();
@@ -261,6 +272,71 @@ fn scenario_panel(props: &ScenarioPanelProps) -> Html {
     }
 }
 
+#[derive(Clone, PartialEq, Default)]
+pub(crate) struct DraftScenarioNpc {
+    pub name: String,
+    pub content: String,
+    pub keywords: Vec<String>,
+    pub traits: HashMap<String, i64>,
+    pub initial_state: Vec<EditableCharacterStateDef>,
+}
+
+impl DraftScenarioNpc {
+    fn from_saved(npc: &ScenarioNpc) -> Self {
+        Self {
+            name: npc.name.clone(),
+            content: npc.content.clone(),
+            keywords: npc.keywords.clone(),
+            traits: npc.traits.clone(),
+            initial_state: EditableCharacterStateDef::from_saved_vec(&npc.initial_state),
+        }
+    }
+
+    pub(crate) fn to_saved(&self, label: &str) -> Result<ScenarioNpc, String> {
+        Ok(ScenarioNpc {
+            name: self.name.clone(),
+            content: self.content.clone(),
+            keywords: self.keywords.clone(),
+            traits: self.traits.clone(),
+            initial_state: editable_character_state_to_saved(&self.initial_state, label)?,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Default)]
+pub(crate) struct DraftPcOption {
+    pub name: String,
+    pub description: String,
+    pub traits: HashMap<String, i64>,
+    pub portrait_url: Option<String>,
+    pub setup_vars: Vec<SetupVarChoice>,
+    pub initial_state: Vec<EditableCharacterStateDef>,
+}
+
+impl DraftPcOption {
+    fn from_saved(pc: &PcOption) -> Self {
+        Self {
+            name: pc.name.clone(),
+            description: pc.description.clone(),
+            traits: pc.traits.clone(),
+            portrait_url: pc.portrait_url.clone(),
+            setup_vars: pc.setup_vars.clone(),
+            initial_state: EditableCharacterStateDef::from_saved_vec(&pc.initial_state),
+        }
+    }
+
+    pub(crate) fn to_saved(&self, label: &str) -> Result<PcOption, String> {
+        Ok(PcOption {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            traits: self.traits.clone(),
+            portrait_url: self.portrait_url.clone(),
+            setup_vars: self.setup_vars.clone(),
+            initial_state: editable_character_state_to_saved(&self.initial_state, label)?,
+        })
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct ScenarioDraft {
     pub(crate) title: String,
@@ -271,15 +347,15 @@ pub(crate) struct ScenarioDraft {
     pub(crate) opening_guidance: String,
     pub(crate) pc_name: String,
     pub(crate) pc_description: String,
-    pub(crate) pc_initial_state: Vec<CharacterStateDef>,
+    pub(crate) pc_initial_state: Vec<EditableCharacterStateDef>,
     pub(crate) trait_rows: Vec<(String, i64)>,
     pub(crate) objective: String,
     pub(crate) setup_text: String,
     pub(crate) rules_blocks: Vec<RulesBlock>,
-    pub(crate) cast: Vec<ScenarioNpc>,
+    pub(crate) cast: Vec<DraftScenarioNpc>,
     pub(crate) trait_defs: Vec<TraitDef>,
-    pub(crate) pc_options: Vec<PcOption>,
-    pub(crate) state_schema: Vec<TrackedVarDef>,
+    pub(crate) pc_options: Vec<DraftPcOption>,
+    pub(crate) state_schema: Vec<EditableTrackedVarDef>,
     pub(crate) content_flags: ContentFlags,
     pub(crate) win_condition: Option<WinCondition>,
     pub(crate) scenario_triggers: Vec<ScenarioTrigger>,
@@ -337,11 +413,15 @@ impl ScenarioDraft {
         } else {
             scenario.trait_defs.iter().map(|t| t.name.clone()).collect()
         };
-        let mut pc_options = scenario.pc_options.clone();
+        let mut pc_options: Vec<DraftPcOption> = scenario
+            .pc_options
+            .iter()
+            .map(DraftPcOption::from_saved)
+            .collect();
         for pc in &mut pc_options {
             ensure_trait_keys(&mut pc.traits, &columns);
         }
-        let mut cast = scenario.cast.clone();
+        let mut cast: Vec<DraftScenarioNpc> = scenario.cast.iter().map(DraftScenarioNpc::from_saved).collect();
         for npc in &mut cast {
             ensure_trait_keys(&mut npc.traits, &columns);
         }
@@ -354,7 +434,7 @@ impl ScenarioDraft {
             opening_guidance: scenario.opening_guidance.clone(),
             pc_name: scenario.pc_name.clone(),
             pc_description: scenario.pc_description.clone(),
-            pc_initial_state: scenario.pc_initial_state.clone(),
+            pc_initial_state: EditableCharacterStateDef::from_saved_vec(&scenario.pc_initial_state),
             trait_rows,
             objective: scenario.objective.clone(),
             setup_text: scenario.setup_text.clone(),
@@ -362,7 +442,7 @@ impl ScenarioDraft {
             cast,
             trait_defs: scenario.trait_defs.clone(),
             pc_options,
-            state_schema: scenario.state_schema.clone(),
+            state_schema: EditableTrackedVarDef::from_saved_vec(&scenario.state_schema),
             content_flags: scenario.content_flags.clone(),
             win_condition: scenario.win_condition.clone(),
             scenario_triggers: scenario.scenario_triggers.clone(),
@@ -383,6 +463,38 @@ impl ScenarioDraft {
         traits
     }
 
+    fn validate(&self) -> Option<String> {
+        if let Err(err) =
+            editable_character_state_to_saved(&self.pc_initial_state, "Default PC state")
+        {
+            return Some(err);
+        }
+        if let Err(err) = editable_tracked_var_to_saved(&self.state_schema, "World state schema") {
+            return Some(err);
+        }
+        for (index, npc) in self.cast.iter().enumerate() {
+            let label = if npc.name.trim().is_empty() {
+                format!("Cast entry {}", index + 1)
+            } else {
+                format!("Cast entry \"{}\"", npc.name.trim())
+            };
+            if let Err(err) = editable_character_state_to_saved(&npc.initial_state, &label) {
+                return Some(err);
+            }
+        }
+        for (index, pc) in self.pc_options.iter().enumerate() {
+            let label = if pc.name.trim().is_empty() {
+                format!("PC option {}", index + 1)
+            } else {
+                format!("PC option \"{}\"", pc.name.trim())
+            };
+            if let Err(err) = editable_character_state_to_saved(&pc.initial_state, &label) {
+                return Some(err);
+            }
+        }
+        None
+    }
+
     fn to_create(&self) -> ScenarioCreate {
         ScenarioCreate {
             title: self.title.trim().to_string(),
@@ -393,16 +505,47 @@ impl ScenarioDraft {
             opening_guidance: self.opening_guidance.clone(),
             pc_name: self.pc_name.clone(),
             pc_description: self.pc_description.clone(),
-            pc_initial_state: self.pc_initial_state.clone(),
+            pc_initial_state: editable_character_state_to_saved(
+                &self.pc_initial_state,
+                "Default PC state",
+            )
+            .unwrap_or_default(),
             traits: self.traits_map(),
             character_id: None,
             objective: self.objective.clone(),
             setup_text: self.setup_text.clone(),
             rules_blocks: self.rules_blocks.clone(),
-            cast: self.cast.clone(),
+            cast: self
+                .cast
+                .iter()
+                .enumerate()
+                .map(|(index, npc)| {
+                    let label = if npc.name.trim().is_empty() {
+                        format!("Cast entry {}", index + 1)
+                    } else {
+                        format!("Cast entry \"{}\"", npc.name.trim())
+                    };
+                    npc.to_saved(&label)
+                })
+                .collect::<Result<_, _>>()
+                .unwrap_or_default(),
             trait_defs: self.trait_defs.clone(),
-            pc_options: self.pc_options.clone(),
-            state_schema: self.state_schema.clone(),
+            pc_options: self
+                .pc_options
+                .iter()
+                .enumerate()
+                .map(|(index, pc)| {
+                    let label = if pc.name.trim().is_empty() {
+                        format!("PC option {}", index + 1)
+                    } else {
+                        format!("PC option \"{}\"", pc.name.trim())
+                    };
+                    pc.to_saved(&label)
+                })
+                .collect::<Result<_, _>>()
+                .unwrap_or_default(),
+            state_schema: editable_tracked_var_to_saved(&self.state_schema, "World state schema")
+                .unwrap_or_default(),
             win_condition: self.win_condition.clone(),
             content_flags: self.content_flags.clone(),
             source_meta: self.source_meta.clone(),
@@ -421,16 +564,50 @@ impl ScenarioDraft {
             opening_guidance: Some(self.opening_guidance.clone()),
             pc_name: Some(self.pc_name.clone()),
             pc_description: Some(self.pc_description.clone()),
-            pc_initial_state: Some(self.pc_initial_state.clone()),
+            pc_initial_state: Some(
+                editable_character_state_to_saved(&self.pc_initial_state, "Default PC state")
+                    .unwrap_or_default(),
+            ),
             traits: Some(self.traits_map()),
             character_id: None,
             objective: Some(self.objective.clone()),
             setup_text: Some(self.setup_text.clone()),
             rules_blocks: Some(self.rules_blocks.clone()),
-            cast: Some(self.cast.clone()),
+            cast: Some(
+                self.cast
+                    .iter()
+                    .enumerate()
+                    .map(|(index, npc)| {
+                        let label = if npc.name.trim().is_empty() {
+                            format!("Cast entry {}", index + 1)
+                        } else {
+                            format!("Cast entry \"{}\"", npc.name.trim())
+                        };
+                        npc.to_saved(&label)
+                    })
+                    .collect::<Result<_, _>>()
+                    .unwrap_or_default(),
+            ),
             trait_defs: Some(self.trait_defs.clone()),
-            pc_options: Some(self.pc_options.clone()),
-            state_schema: Some(self.state_schema.clone()),
+            pc_options: Some(
+                self.pc_options
+                    .iter()
+                    .enumerate()
+                    .map(|(index, pc)| {
+                        let label = if pc.name.trim().is_empty() {
+                            format!("PC option {}", index + 1)
+                        } else {
+                            format!("PC option \"{}\"", pc.name.trim())
+                        };
+                        pc.to_saved(&label)
+                    })
+                    .collect::<Result<_, _>>()
+                    .unwrap_or_default(),
+            ),
+            state_schema: Some(
+                editable_tracked_var_to_saved(&self.state_schema, "World state schema")
+                    .unwrap_or_default(),
+            ),
             win_condition: Some(self.win_condition.clone()),
             content_flags: Some(self.content_flags.clone()),
             source_meta: Some(self.source_meta.clone()),

@@ -19,6 +19,7 @@ mod queue_ui;
 mod resume_policy;
 mod router;
 mod scenario_editors;
+mod scenario_state_ui;
 mod scenario_ui;
 mod sidebar;
 mod sse_client;
