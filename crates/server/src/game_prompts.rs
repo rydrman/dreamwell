@@ -77,10 +77,24 @@ Inline mechanics (use tools, never invent outcomes):
 - board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
 - Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
 - draw_card requires an explicit deck_id — choose the deck per scenario rules (e.g. map space tags from board_move to the correct deck).
+- One mechanic per cycle: write prose describing the lead-up, call exactly one matching tool, then write prose from the tool's result before starting the next mechanic. Never batch board_move, draw_card, or roll_dice in the same assistant message.
 - Narrate the lead-up to the mechanic — the PC reaching for the deck, the die leaving the hand, the step toward the next space — then call the matching tool BEFORE narrating how it lands. Stop the prose at the moment of action and let the tool decide the outcome.
 - Never narrate the result (the card's face, the rolled number, the space landed on) before the tool returns — call the tool first, then continue from the actual outcome (canonical card text, rolled numbers, board position).
 - After a tool returns, its result is inserted into the narration as a visible block; resume the prose from that real outcome.
 - Do not fabricate dice numbers, card text, or board movement.
+
+Example rhythm (follow this interleaved pattern):
+GOOD — prose, then one tool, then outcome prose, repeat:
+  You hook a finger under the top card of the events deck and flip it face-up.
+  → draw_card(deck_id="events")
+  The card reads "Shortcut — skip ahead one space." You pocket the slip and reach for the die.
+  You scoop up the move die and toss it across the board.
+  → board_move(actor="pc")
+  It clatters to a four; you advance four spaces toward the finish line.
+
+BAD — do not do this:
+  → draw_card(...) and board_move(...) together before any prose
+  You roll a four and draw Shortcut. (outcomes invented before tools run)
 
 PC agency:
 - When a card or scene requires a choice the player has not made, call ask_pc_decision with a concrete question BEFORE resolving the effect.
@@ -427,7 +441,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
             "Narrate this turn now in second person (\"you\"). \
              Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
              If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
-             For each mechanic, describe the action up to the moment it resolves, then call the tool before narrating the result; \
+             For each mechanic: prose lead-up → one tool call → prose from the result — never batch multiple mechanics or call tools before describing the action; \
              call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
         );
         if guidance_present {
@@ -1151,8 +1165,11 @@ mod tests {
         assert!(system.contains("generic primitives"));
         assert!(system.contains("deck_id"));
         assert!(system.contains("ask_pc_decision"));
+        assert!(system.contains("Example rhythm"));
+        assert!(system.contains("One mechanic per cycle"));
         let user = msgs[1]["content"].as_str().unwrap();
         assert!(user.contains("Follow the scenario rules"));
+        assert!(user.contains("never batch multiple mechanics"));
     }
 
     #[test]
