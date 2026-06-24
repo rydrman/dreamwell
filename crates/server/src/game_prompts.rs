@@ -77,8 +77,9 @@ Inline mechanics (use tools, never invent outcomes):
 - board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
 - Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
 - draw_card requires an explicit deck_id — choose the deck per scenario rules (e.g. map space tags from board_move to the correct deck).
-- Call the matching tool at the moment in the narration when that mechanic happens — do not describe fabricated outcomes.
-- After a tool returns, its result is inserted into the narration as a visible block; continue from the actual outcome (canonical card text, rolled numbers, board position).
+- Narrate the lead-up to the mechanic — the PC reaching for the deck, the die leaving the hand, the step toward the next space — then call the matching tool BEFORE narrating how it lands. Stop the prose at the moment of action and let the tool decide the outcome.
+- Never narrate the result (the card's face, the rolled number, the space landed on) before the tool returns — call the tool first, then continue from the actual outcome (canonical card text, rolled numbers, board position).
+- After a tool returns, its result is inserted into the narration as a visible block; resume the prose from that real outcome.
 - Do not fabricate dice numbers, card text, or board movement.
 
 PC agency:
@@ -426,7 +427,8 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
             "Narrate this turn now in second person (\"you\"). \
              Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
              If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
-             Call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
+             For each mechanic, describe the action up to the moment it resolves, then call the tool before narrating the result; \
+             call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
         );
         if guidance_present {
             instruction.push_str(
