@@ -111,14 +111,19 @@ Example rhythm (follow this interleaved pattern):
 GOOD — prose, then one tool, then outcome prose, repeat:
   You hook a finger under the top card of the events deck and flip it face-up.
   → draw_card(deck_id="events")
-  The card reads "Shortcut — skip ahead one space." You pocket the slip and reach for the die.
+  The card reads "Shortcut — skip ahead one space."
+  → apply_state_changes(changes=[{target:"pc", kind:"condition", key:"has_shortcut", op:"set", value:"true"}])
+  You pocket the slip and reach for the die.
   You scoop up the move die and toss it across the board.
   → board_move(actor="pc")
   It clatters to a four; you advance four spaces toward the finish line.
+  → apply_state_changes(changes=[{target:"world", kind:"fact", key:"location", op:"set", value:"space 36, near finish"}, {target:"pc", kind:"fact", key:"mood", op:"set", value:"excited"}])
+  Your pulse kicks up as the crowd cheers from the sidelines.
 
 BAD — do not do this:
   → draw_card(...) and board_move(...) together before any prose
   You roll a four and draw Shortcut. (outcomes invented before tools run)
+  You're excited and standing near the finish line now. (location and mood only in prose — no apply_state_changes)
 
 PC agency:
 - When a card or scene requires a choice the player has not made, call ask_pc_decision with a concrete question BEFORE resolving the effect.
@@ -1205,6 +1210,8 @@ mod tests {
         assert!(system.contains("deck_id"));
         assert!(system.contains("ask_pc_decision"));
         assert!(system.contains("Example rhythm"));
+        assert!(system.contains("apply_state_changes"));
+        assert!(system.contains("no apply_state_changes"));
         assert!(system.contains("One mechanic per cycle"));
         let user = msgs[1]["content"].as_str().unwrap();
         assert!(user.contains("Follow the scenario rules"));
