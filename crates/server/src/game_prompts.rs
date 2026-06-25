@@ -101,13 +101,15 @@ How to narrate:
 
 Inline mechanics (use tools, never invent outcomes):
 - board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
+- For movement on a board, use board_move — it rolls the board's move die for you and returns the result. Do NOT call roll_dice to move a piece, and never pair roll_dice with board_move for the same step (that double-rolls). Reserve roll_dice for dice the scenario calls for outside of board movement (card effects, damage, encounter or skill rolls).
 - Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
 - draw_card requires an explicit deck_id — choose the deck per scenario rules (e.g. map space tags from board_move to the correct deck).
-- One mechanic per cycle: write prose describing the lead-up, call exactly one matching tool, then write prose from the tool's result before starting the next mechanic. Never batch board_move, draw_card, or roll_dice in the same assistant message.
-- Narrate the lead-up to the mechanic — the PC reaching for the deck, the die leaving the hand, the step toward the next space — then call the matching tool BEFORE narrating how it lands. Stop the prose at the moment of action and let the tool decide the outcome.
-- Never narrate the result (the card's face, the rolled number, the space landed on) before the tool returns — call the tool first, then continue from the actual outcome (canonical card text, rolled numbers, board position).
+- One mechanic per cycle: write lead-up prose (no outcome), call exactly one matching tool, then write outcome prose from the tool's actual result before starting the next mechanic. Never batch board_move, draw_card, or roll_dice in the same assistant message.
+- "Lead-up prose" stops at the moment of action — the PC reaching for the deck, the die leaving the hand, the step toward the next space. It must NOT state, hint at, or commit to any outcome (no die face, no number of spaces, no card name). End the lead-up mid-action and let the tool decide.
+- The tool is the only source of the outcome. Call it FIRST, then read its returned result, then narrate using exactly those numbers/text. The number you narrate must match the number the tool returned — never write the result in prose and then call the tool, and never change the tool's result when you narrate it.
+- Never narrate the result (the card's face, the rolled number, the space landed on) before the tool returns.
 - After a tool returns, its result is inserted into the narration as a visible block; resume the prose from that real outcome.
-- Do not fabricate dice numbers, card text, or board movement.
+- Do not fabricate dice numbers, card text, or board movement, and do not pre-decide them in the lead-up.
 
 Tool call syntax (embed calls in prose — use this exact format):
 - call:tool_name{key:value,key2:value2}
@@ -115,15 +117,18 @@ Tool call syntax (embed calls in prose — use this exact format):
 - Quote string values that contain spaces or commas: call:set_fact{target:world,key:location,value:"space 36, near finish"}
 
 Example rhythm (follow this interleaved pattern):
-GOOD — prose, then one tool, then outcome prose, repeat:
-  You hook a finger under the top card of the events deck and flip it face-up.
+GOOD — lead-up prose that stops before the outcome, then one tool, then outcome prose from the tool's actual result, repeat:
+  You hook a finger under the top card of the events deck and flip it face-up.   (lead-up stops before naming the card)
   call:draw_card{deck_id:events}
-  The card reads "Shortcut — skip ahead one space."
-  call:set_condition{target:pc,key:has_shortcut,value:true}
-  You pocket the slip and reach for the die.
-  You scoop up the move die and toss it across the board.
+  The card reads "Nerve test — roll 1d6; on a 4+ you keep your composure."   (outcome prose uses the tool's returned card text)
+  call:set_condition{target:pc,key:facing_nerve_test,value:true}
+  You weigh the die in your palm, then let it tumble across the felt.   (lead-up stops before naming any number)
+  call:roll_dice{dice_expr:1d6,label:nerve test}
+  It settles on a five — your composure holds.   (outcome prose uses the number roll_dice returned — nothing was committed before the call)
+  You pocket the slip and step up to take your move.
+  You scoop up the board's move die and toss it across the board.   (lead-up stops before naming how far you go — board_move rolls and moves)
   call:board_move{actor:pc}
-  It clatters to a four; you advance four spaces toward the finish line.
+  It carries you four spaces up to the gap near the finish line.   (outcome prose uses board_move's returned roll and position)
   call:set_fact{target:world,key:location,value:"space 36, near finish"}
   call:set_fact{target:pc,key:mood,value:excited}
   call:adjust_resource{target:Sophie,key:arousal,delta:2}
@@ -131,7 +136,10 @@ GOOD — prose, then one tool, then outcome prose, repeat:
 
 BAD — do not do this:
   call:draw_card{deck_id:events}call:board_move{actor:pc} together before any prose
-  You roll a four and draw Shortcut. (outcomes invented before tools run)
+  You roll a four and draw Nerve test. (outcomes invented before tools run)
+  call:roll_dice{dice_expr:1d6,label:move}call:board_move{actor:pc} (roll_dice + board_move for the same step double-rolls — board_move rolls the move die itself)
+  The die tumbles to a four. call:roll_dice{dice_expr:1d6,label:nerve test} (number stated in prose BEFORE the tool runs — and the tool may return a different number)
+  It settles on a four; call:roll_dice returns 6 (prose number must MATCH the tool result, never contradict it)
   adjust_resource(target="Sophie", key="arousal", delta=2) (parentheses syntax — not parsed)
   You're excited and standing near the finish line now. (location and mood only in prose — no set_fact call)
 
@@ -497,7 +505,8 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
             "Narrate this turn now in second person (\"you\"). \
              Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
              If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
-             For each mechanic: prose lead-up → one tool call → prose from the result — never batch multiple mechanics or call tools before describing the action; \
+             For each mechanic: lead-up prose that stops before any outcome → one tool call → outcome prose using the number/text the tool returned. \
+             Never state a die face, space count, or card name before its tool runs, and never let your prose contradict the tool's result; never batch multiple mechanics; \
              call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
         );
         if guidance_present {
