@@ -8,6 +8,8 @@ mod error;
 mod game_mechanics;
 mod game_prompts;
 mod game_prose_recheck;
+#[cfg(test)]
+mod game_repro;
 mod game_resolution;
 mod game_state;
 mod game_state_recheck;
