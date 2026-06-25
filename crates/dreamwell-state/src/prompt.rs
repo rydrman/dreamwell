@@ -25,22 +25,24 @@ pub const STATE_TARGET_RULES: &str = state_target_rules_text!();
 macro_rules! state_kind_rules_text {
     () => {
         r#"State kind rules (one slot per target+key — pick the right kind once and keep it):
+- Pick by the value's shape, not the topic:
+  - Text or a label (excited, tavern, green, has_key, allied) → fact (or condition if it clears soon)
+  - A number with a maximum (3/5 stress, 2/4 countdown) → resource or clock
 - fact (DEFAULT): durable text attribute — location, mood, inventory, traits, relationships, quest stage, appearance. Use set/remove with value strings. When unsure, use fact.
-- condition: ONLY ephemeral status tags expected to clear soon (hidden, bleeding, inspired) — not for durable mood, location, or inventory.
-- resource: ONLY when the key already appears as (resource): N/M in current state OR the schema defines it as resource. Numeric pool with max (stress 2/5, hit points). Never use resource for text attributes.
-- clock: ONLY when the key already appears as (clock): N/M OR the schema defines it as clock. Stepped progress toward an outcome — not a substitute for facts.
+- condition: ephemeral status tags expected to clear soon (hidden, bleeding, inspired) — not durable mood, location, or inventory.
+- resource: a numeric track with a ceiling — stress 2/5, hit points, supply. Use only when the value is a count with a max; never for a text attribute.
+- clock: numeric progress in segments toward an outcome — countdown 2/4, investigation clock.
+- Keep the kind stable: if a key already shows in current state as (resource)/(clock)/(fact)/(condition), keep using that same kind — do not flip a text fact into a resource or vice versa.
 
 BAD kind picks:
 - resource/clock for mood, location, shirt_color, or any text attribute
-- adjust_resource on a key not already tracked as (resource)
+- changing a key's kind away from what current state already shows
 
 GOOD:
 - fact: mood=excited, location=tavern, shirt_color=green
-- resource: stress +1 when stress is already (resource): 2/5"#
+- resource: stress +1 (a counted track with a max)"#
     };
 }
-
-pub const STATE_KIND_RULES: &str = state_kind_rules_text!();
 
 pub const STATE_CHANGE_RULES: &str = concat!(
     r#"State change rules:
@@ -78,10 +80,9 @@ pub const PLAN_BEAT_RULES: &str = r#"Plan beat rules:
 - Use specific nouns and verbs from the conversation; prefer staging bullets the prose can follow in order
 - BAD (too generic): "Respond to the user", "Stay in character", "Answer the question", "Continue the conversation", "React appropriately"
 - GOOD (specific): "Answer whether the cellar door is still locked and mention the key on the windowsill", "Have the character agree to meet at the bridge at dusk", "Describe the smell of rain on the coat they asked about"
-- One primary beat per turn — resolve the player's immediate action, not a montage of follow-on events
-- Typically 1–3 beats for a normal reply; one beat when the user message is simple
+- Typically 3–6 beats for a normal reply; fewer when the user message is simple
 - Do not plan future turns, unprompted plot twists, or beats that ignore what the user just said
-- State changes should capture durable facts the beats establish — prefer set_fact and named actor targets; use resource/clock only for keys already numeric in state"#;
+- State changes should capture durable facts the beats establish — prefer set_fact and named actor targets; use resource/clock only for genuinely numeric tracks (a count with a max), one attribute per key"#;
 
 pub const RECHECK_SYSTEM_PROMPT: &str = r#"You review prose against typed session state.
 
@@ -95,7 +96,7 @@ Rules:
 - Output ONLY valid JSON matching the schema
 
 When adding or correcting entries:
-- Default to kind=fact for durable text attributes; use resource/clock only when the key is already numeric in state
+- Default to kind=fact for durable text attributes; use resource/clock only for genuinely numeric tracks (a count with a max), and keep a key's existing kind stable
 - Prefer actor targets ("pc" or a named NPC) for facts about a specific person — not world
 - One atomic attribute per key; split packed world entries onto the right actor
 - Use short snake_case keys; values hold only the attribute, not full sentences"#;
@@ -110,7 +111,7 @@ mod tests {
         assert!(STATE_CHANGE_PROMPT.contains("shirt_color"));
         assert!(STATE_CHANGE_PROMPT.contains("Prefer actor targets"));
         assert!(STATE_CHANGE_PROMPT.contains("fact (DEFAULT)"));
-        assert!(STATE_CHANGE_PROMPT.contains("Never use resource for text"));
+        assert!(STATE_CHANGE_PROMPT.contains("never for a text attribute"));
     }
 
     #[test]

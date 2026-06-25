@@ -11,7 +11,7 @@ pub use apply::{
 pub use format::{build_state_block, build_state_block_annotated};
 pub use prompt::{
     PLAN_BEAT_RULES, RECHECK_SYSTEM_PROMPT, STATE_CHANGE_PROMPT, STATE_CHANGE_RULES,
-    STATE_KIND_RULES, STATE_TARGET_RULES,
+    STATE_TARGET_RULES,
 };
 pub use resolve::{
     normalize_target, resolve_actor_id, should_vivify_actor, skill_modifier, validate_skill,
