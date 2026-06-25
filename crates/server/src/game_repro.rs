@@ -39,9 +39,9 @@ const MODEL: &str = "llmfan46/gemma-4-31B-it-qat-q4_0-unquantized-uncensored-her
 const BASE_URL: &str = "https://api.featherless.ai/v1";
 
 fn api_key() -> String {
-    std::env::var("FEATHERLESS_API_KEY").unwrap_or_else(|_| {
-        "rc_8ed7051d5a085e92e40ed92bec64b64e859b5ab24323593546cac55ee0cfb03d".to_string()
-    })
+    // Live harness only — set FEATHERLESS_API_KEY when running the `#[ignore]`d tests.
+    // Never hard-code a key here; these tests are skipped in CI.
+    std::env::var("FEATHERLESS_API_KEY").unwrap_or_default()
 }
 
 fn inference_config() -> InferenceConfig {
