@@ -1432,18 +1432,22 @@ pub struct GameStreamPayload {
 /// LLM output for Phase 1 — declare checks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeclareChecksResponse {
-    #[serde(default)]
+    #[serde(default, alias = "check", alias = "dramatic_checks", alias = "rolls")]
     pub checks: Vec<DeclaredCheck>,
-    #[serde(default)]
+    #[serde(default, alias = "reason", alias = "no_checks_reason")]
     pub no_check_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeclaredCheck {
+    #[serde(alias = "name", alias = "title", alias = "check_label")]
     pub label: String,
+    #[serde(alias = "trait", alias = "trait_name", alias = "skill_name")]
     pub skill: String,
+    #[serde(alias = "mod", alias = "mod_value", alias = "bonus")]
     pub modifier: i64,
     pub stakes: String,
+    #[serde(alias = "reason", alias = "rationale")]
     pub justification: String,
 }
 

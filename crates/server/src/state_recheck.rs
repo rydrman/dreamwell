@@ -58,6 +58,7 @@ pub async fn run_chat_state_recheck_job(
         Some(job_id),
         None,
         None,
+        None,
     )
     .await?;
     if !response.state_changes.is_empty() {
@@ -105,6 +106,7 @@ pub async fn run_story_state_recheck_job(
             .max(1),
         &tokio_util::sync::CancellationToken::new(),
         Some(job_id),
+        None,
         None,
         None,
     )

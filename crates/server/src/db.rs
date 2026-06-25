@@ -1247,6 +1247,7 @@ pub async fn chat_completion_json_for_connection<T>(
     job_id: Option<i64>,
     message_id: Option<i64>,
     model_override: Option<&str>,
+    repair_hint: Option<&str>,
 ) -> AppResult<T>
 where
     T: serde::de::DeserializeOwned,
@@ -1261,6 +1262,7 @@ where
         job_id,
         message_id,
         model_override,
+        repair_hint,
     )
     .await
 }

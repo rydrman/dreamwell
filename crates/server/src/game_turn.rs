@@ -7,7 +7,9 @@ use tokio_util::sync::CancellationToken;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::game_prompts::{build_declare_checks_messages, declare_checks_schema};
+use crate::game_prompts::{
+    build_declare_checks_messages, declare_checks_repair_hint, declare_checks_schema,
+};
 use crate::game_resolution::{clamp_modifier, roll_dice};
 use crate::game_state::{skill_modifier, validate_skill};
 
@@ -165,6 +167,7 @@ pub async fn declare_and_roll_checks(
         Some(job_id),
         None,
         model_override.as_deref(),
+        Some(declare_checks_repair_hint()),
     )
     .await?;
 
@@ -302,5 +305,24 @@ mod tests {
         };
         let validated = validate_declared_check(&check, &pc, &sample_game());
         assert_eq!(validated.modifier, -3);
+    }
+
+    #[test]
+    fn declare_checks_response_accepts_common_field_aliases() {
+        let raw = r#"{
+            "dramatic_checks": [{
+                "name": "Pick lock",
+                "trait": "Finesse",
+                "mod": 1,
+                "stakes": "Alarm",
+                "rationale": "Ticking clock"
+            }]
+        }"#;
+        let parsed: DeclareChecksResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.checks.len(), 1);
+        assert_eq!(parsed.checks[0].label, "Pick lock");
+        assert_eq!(parsed.checks[0].skill, "Finesse");
+        assert_eq!(parsed.checks[0].modifier, 1);
+        assert_eq!(parsed.checks[0].justification, "Ticking clock");
     }
 }

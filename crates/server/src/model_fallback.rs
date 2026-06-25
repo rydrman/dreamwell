@@ -265,6 +265,7 @@ pub async fn chat_completion_json_with_connection_fallback<T>(
     job_id: Option<i64>,
     message_id: Option<i64>,
     model_override: Option<&str>,
+    repair_hint: Option<&str>,
 ) -> AppResult<T>
 where
     T: serde::de::DeserializeOwned,
@@ -290,6 +291,7 @@ where
             max_attempts,
             token,
             &mut learned,
+            repair_hint,
         )
         .await
         {

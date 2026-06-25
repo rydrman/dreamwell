@@ -930,6 +930,9 @@ async fn chat_completion_with_json_format_fallback(
 ///
 /// When `learned_strategy` is set and the connection preference is [`JsonFormatStrategy::Auto`],
 /// the caller should persist the learned value for that connection.
+///
+/// `repair_hint` is appended to repair-turn user messages so the model sees the expected
+/// field names after a parse failure (useful when the API schema constraint is weak).
 #[allow(clippy::too_many_arguments)]
 pub async fn chat_completion_json<T>(
     config: &InferenceConfig,
@@ -942,6 +945,7 @@ pub async fn chat_completion_json<T>(
     max_attempts: u32,
     token: &tokio_util::sync::CancellationToken,
     learned_strategy: &mut Option<JsonFormatStrategy>,
+    repair_hint: Option<&str>,
 ) -> AppResult<T>
 where
     T: serde::de::DeserializeOwned,
@@ -990,9 +994,7 @@ where
                     }));
                     attempt_messages.push(serde_json::json!({
                         "role": "user",
-                        "content": format!(
-                            "Your previous response was not valid JSON: {last_error}. Reply with ONLY corrected JSON."
-                        )
+                        "content": json_repair_user_message(&last_error, repair_hint)
                     }));
                 }
             }
@@ -1004,6 +1006,13 @@ where
         attempts,
         max_tokens,
     )))
+}
+
+fn json_repair_user_message(parse_error: &str, repair_hint: Option<&str>) -> String {
+    let hint = repair_hint.map(|h| format!("\n\n{h}")).unwrap_or_default();
+    format!(
+        "Your previous response was not valid JSON: {parse_error}.{hint}\n\nReply with ONLY corrected JSON — no prose, no markdown fences."
+    )
 }
 
 fn format_json_parse_failure(
@@ -1146,6 +1155,20 @@ mod tests {
         let raw = "x".repeat(5_000);
         let msg = format_json_parse_failure("invalid", &raw, 1, 768);
         assert!(msg.contains("[truncated for display, 5000 bytes total]"));
+    }
+
+    #[test]
+    fn json_repair_user_message_includes_hint_when_provided() {
+        let msg = json_repair_user_message("missing field `label`", Some("use checks array"));
+        assert!(msg.contains("missing field `label`"));
+        assert!(msg.contains("use checks array"));
+        assert!(msg.contains("no prose"));
+    }
+
+    #[test]
+    fn json_repair_user_message_omits_hint_when_none() {
+        let msg = json_repair_user_message("EOF", None);
+        assert!(!msg.contains("Required JSON"));
     }
 
     #[test]

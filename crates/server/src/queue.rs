@@ -769,6 +769,7 @@ async fn run_chat_typed_generation_attempt(
         Some(job_id),
         Some(message_id),
         None,
+        None,
     )
     .await
     {
@@ -1405,6 +1406,7 @@ async fn run_story_typed_beat_prose(
         generation_max_retries(),
         token,
         Some(job_id),
+        None,
         None,
         None,
     )

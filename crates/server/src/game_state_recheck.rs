@@ -117,6 +117,7 @@ pub async fn run_turn_state_recheck_job(
         Some(job_id),
         None,
         model_override.as_deref(),
+        None,
     )
     .await?;
 
