@@ -27,11 +27,11 @@ pub use scenario_export::{
     ScenarioExport, SCENARIO_EXPORT_FORMAT,
 };
 pub use scenario_iw::{
-    merge_character_state, merge_game_state_schema, CharacterStateDef, ContentFlags,
-    GameTurnSystemRoll, GenerateCharacterStateRequest, GenerateCharacterStateResponse,
-    GenerateCharacterStateTarget, PcOption, RulesBlock, ScenarioNpc, ScenarioTrigger,
-    SetupVarChoice, SourceMeta, StateScope, SystemRollRequest, TrackedVarDef, TraitDef,
-    TriggerCondition, TriggerEffect, TurnPlan, WinCondition,
+    merge_character_state, merge_game_state_schema, normalize_target, CharacterStateDef,
+    ContentFlags, GameTurnSystemRoll, GenerateCharacterStateRequest,
+    GenerateCharacterStateResponse, GenerateCharacterStateTarget, PcOption, RulesBlock,
+    ScenarioNpc, ScenarioTrigger, SetupVarChoice, SourceMeta, SystemRollRequest, TrackedVarDef,
+    TraitDef, TriggerCondition, TriggerEffect, TurnPlan, WinCondition,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

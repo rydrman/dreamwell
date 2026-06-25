@@ -6,7 +6,7 @@ use dreamwell_types::{
     Game, GameActor, GameActorUpdate, GameCreate, GameDetail, GameElementsConfig, GameScene,
     GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck, GameTurnSystemRoll, GameUpdate,
     Job, JobType, MacroContext, MechanicalResult, ResolutionSystem, RulesBlock, ScenarioTrigger,
-    StateKind, StateScope, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnObservability,
+    StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnObservability,
 };
 use sqlx::SqlitePool;
 
@@ -257,7 +257,7 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
     let pc_schema_keys: std::collections::HashSet<&str> = payload
         .state_schema
         .iter()
-        .filter(|def| def.scope == StateScope::Pc)
+        .filter(|def| def.target.trim().eq_ignore_ascii_case("pc"))
         .map(|def| def.key.as_str())
         .collect();
     for (key, current, max) in [("health", 5, 5), ("stress", 0, 5)] {
@@ -344,25 +344,26 @@ async fn seed_scenario_state(
             .unwrap_or_else(|| def.initial_value.clone());
         let num_value = def.initial_num.or_else(|| value.parse::<i64>().ok());
         let kind = state_kind_str(def.kind);
-        let actor_id = match def.scope {
-            StateScope::World => None,
-            StateScope::Pc => Some(pc_actor_id),
-            StateScope::Npc => {
-                let name = def.actor_name.as_deref().unwrap_or("").trim();
-                if name.is_empty() {
-                    None
-                } else {
-                    sqlx::query_scalar(
-                        "SELECT id FROM game_actors WHERE game_id = ?1 AND role = 'npc' AND name = ?2 LIMIT 1",
-                    )
-                    .bind(game_id)
-                    .bind(name)
-                    .fetch_optional(pool)
-                    .await?
-                }
-            }
+        let target = def.target.trim();
+        let (actor_id, target_is_named_actor) = if target.is_empty()
+            || target.eq_ignore_ascii_case("world")
+        {
+            (None, false)
+        } else if target.eq_ignore_ascii_case("pc") || target.eq_ignore_ascii_case("user") {
+            (Some(pc_actor_id), true)
+        } else {
+            let resolved: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM game_actors WHERE game_id = ?1 AND role = 'npc' AND name = ?2 LIMIT 1",
+            )
+            .bind(game_id)
+            .bind(target)
+            .fetch_optional(pool)
+            .await?;
+            (resolved, true)
         };
-        if def.scope == StateScope::Npc && actor_id.is_none() {
+        // A target that names a specific actor we couldn't resolve is skipped rather
+        // than silently leaking onto world scope.
+        if target_is_named_actor && actor_id.is_none() {
             continue;
         }
         if matches!(def.kind, StateKind::Resource | StateKind::Clock) {
@@ -1777,7 +1778,7 @@ struct SceneRow {
 
 #[cfg(test)]
 mod tests {
-    use dreamwell_types::{GameCreate, ScenarioNpc, StateKind, StateScope, TrackedVarDef};
+    use dreamwell_types::{GameCreate, ScenarioNpc, StateKind, TrackedVarDef};
 
     use super::*;
 
@@ -1825,14 +1826,14 @@ mod tests {
                 TrackedVarDef {
                     key: "Leader_Position".into(),
                     kind: StateKind::Resource,
-                    scope: StateScope::World,
+                    target: "world".into(),
                     initial_num: Some(3),
                     ..Default::default()
                 },
                 TrackedVarDef {
                     key: "health".into(),
                     kind: StateKind::Resource,
-                    scope: StateScope::Pc,
+                    target: "pc".into(),
                     initial_num: Some(8),
                     initial_max: Some(10),
                     ..Default::default()
@@ -1873,7 +1874,7 @@ mod tests {
             state_schema: vec![TrackedVarDef {
                 key: "health".into(),
                 kind: StateKind::Resource,
-                scope: StateScope::Pc,
+                target: "pc".into(),
                 initial_num: Some(3),
                 initial_max: Some(3),
                 ..Default::default()
@@ -1982,8 +1983,7 @@ mod tests {
             state_schema: vec![TrackedVarDef {
                 key: "alertness".into(),
                 kind: StateKind::Clock,
-                scope: StateScope::Npc,
-                actor_name: Some("Guard".into()),
+                target: "Guard".into(),
                 initial_num: Some(2),
                 initial_max: Some(4),
                 ..Default::default()

@@ -1,6 +1,20 @@
+use std::collections::HashMap;
+
 use dreamwell_types::{SessionActor, StateEntry, StateKind};
 
 pub fn build_state_block(state: &[StateEntry], actors: &[SessionActor]) -> String {
+    build_state_block_annotated(state, actors, &HashMap::new())
+}
+
+/// Like [`build_state_block`], but appends an authoring note (e.g. a scenario var's
+/// update hint) to each entry whose `(actor_id, key)` is present in `annotations`.
+/// This lets scenario-authored metadata ride alongside the live value instead of
+/// being presented as a separate "schema" block.
+pub fn build_state_block_annotated(
+    state: &[StateEntry],
+    actors: &[SessionActor],
+    annotations: &HashMap<(Option<i64>, String), String>,
+) -> String {
     let mut lines = Vec::new();
     for actor in actors {
         let actor_state: Vec<_> = state
@@ -22,36 +36,48 @@ pub fn build_state_block(state: &[StateEntry], actors: &[SessionActor]) -> Strin
                 .collect();
             lines.push(format!("Skills: {}", skills.join(", ")));
         }
-        append_state_entries(&mut lines, &actor_state);
+        append_state_entries(&mut lines, &actor_state, annotations);
     }
     let world_state: Vec<_> = state.iter().filter(|e| e.actor_id.is_none()).collect();
     if !world_state.is_empty() {
         lines.push("## World".to_string());
-        append_state_entries(&mut lines, &world_state);
+        append_state_entries(&mut lines, &world_state, annotations);
     }
     lines.join("\n")
 }
 
-fn append_state_entries(lines: &mut Vec<String>, entries: &[&StateEntry]) {
+fn append_state_entries(
+    lines: &mut Vec<String>,
+    entries: &[&StateEntry],
+    annotations: &HashMap<(Option<i64>, String), String>,
+) {
     for entry in entries {
-        match entry.kind {
+        let mut line = match entry.kind {
             StateKind::Resource => {
                 let current = entry.num_value.unwrap_or(0);
                 let max = entry.max_value.unwrap_or(current);
-                lines.push(format!("- {} (resource): {}/{}", entry.key, current, max));
+                format!("- {} (resource): {}/{}", entry.key, current, max)
             }
             StateKind::Clock => {
                 let current = entry.num_value.unwrap_or(0);
                 let segments = entry.max_value.unwrap_or(4);
-                lines.push(format!("- {} (clock): {}/{}", entry.key, current, segments));
+                format!("- {} (clock): {}/{}", entry.key, current, segments)
             }
             StateKind::Condition => {
-                lines.push(format!("- {} (condition): {}", entry.key, entry.value));
+                format!("- {} (condition): {}", entry.key, entry.value)
             }
             StateKind::Fact => {
-                lines.push(format!("- {} (fact): {}", entry.key, entry.value));
+                format!("- {} (fact): {}", entry.key, entry.value)
             }
+        };
+        if let Some(note) = annotations
+            .get(&(entry.actor_id, entry.key.clone()))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            line.push_str(&format!(" [{note}]"));
         }
+        lines.push(line);
     }
 }
 

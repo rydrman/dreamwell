@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use dreamwell_state::{
-    build_state_block as state_build_block, plan_revert_changes, plan_state_changes,
-    state_kind_str, EntryMutation, RevertMutation,
+    build_state_block as state_build_block,
+    build_state_block_annotated as state_build_block_annotated, plan_revert_changes,
+    plan_state_changes, state_kind_str, EntryMutation, RevertMutation,
 };
 use dreamwell_types::{AppliedStateChange, GameActor, GameStateEntry, StateChangeRequest};
 use sqlx::SqlitePool;
@@ -13,6 +14,15 @@ pub use dreamwell_state::{skill_modifier, validate_skill};
 
 pub fn build_state_block(state: &[GameStateEntry], actors: &[GameActor]) -> String {
     state_build_block(state, actors)
+}
+
+/// State block with per-entry authoring notes keyed by `(actor_id, key)`.
+pub fn build_state_block_annotated(
+    state: &[GameStateEntry],
+    actors: &[GameActor],
+    annotations: &HashMap<(Option<i64>, String), String>,
+) -> String {
+    state_build_block_annotated(state, actors, annotations)
 }
 
 pub async fn apply_state_changes(

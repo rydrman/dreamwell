@@ -30,12 +30,13 @@ pub struct CharacterStateDef {
 }
 
 impl CharacterStateDef {
-    pub fn to_tracked_var(&self, scope: StateScope, actor_name: Option<&str>) -> TrackedVarDef {
+    /// Promote per-character initial state into a tracked var bound to a runtime
+    /// `target` ("pc", "world", or an NPC name).
+    pub fn to_tracked_var(&self, target: &str) -> TrackedVarDef {
         TrackedVarDef {
             key: self.key.clone(),
             kind: self.kind,
-            scope,
-            actor_name: actor_name.map(str::to_string),
+            target: target.to_string(),
             description: self.description.clone(),
             initial_value: self.initial_value.clone(),
             initial_num: self.initial_num,
@@ -98,21 +99,40 @@ pub struct GenerateCharacterStateResponse {
 }
 
 /// Merge world-level schema with per-character initial state for game creation.
+/// Every entry becomes a tracked var bound to a runtime target ("world", "pc", or
+/// an NPC name) — there is no separate scope axis.
 pub fn merge_game_state_schema(
     base: &[TrackedVarDef],
     pc_state: &[CharacterStateDef],
     invited_cast: &[ScenarioNpc],
 ) -> Vec<TrackedVarDef> {
-    let mut out = base.to_vec();
+    let mut out: Vec<TrackedVarDef> = base
+        .iter()
+        .cloned()
+        .map(|mut def| {
+            def.target = normalize_target(&def.target);
+            def
+        })
+        .collect();
     for def in pc_state {
-        out.push(def.to_tracked_var(StateScope::Pc, None));
+        out.push(def.to_tracked_var("pc"));
     }
     for npc in invited_cast {
         for def in &npc.initial_state {
-            out.push(def.to_tracked_var(StateScope::Npc, Some(npc.name.as_str())));
+            out.push(def.to_tracked_var(npc.name.trim()));
         }
     }
     out
+}
+
+/// Normalize a tracked-var target: empty/blank becomes "world".
+pub fn normalize_target(target: &str) -> String {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        "world".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -155,24 +175,18 @@ pub struct TraitDef {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StateScope {
-    #[default]
-    World,
-    Pc,
-    Npc,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// A scenario-authored tracked value. Conceptually this is just initial state plus
+/// authoring metadata: at game creation each def is seeded as a live state entry on
+/// its `target` ("world", "pc", or an NPC name). There is no separate schema/scope
+/// concept at runtime — `target` matches the runtime entry and the state tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TrackedVarDefWire")]
 pub struct TrackedVarDef {
     pub key: String,
     pub kind: StateKind,
-    #[serde(default)]
-    pub scope: StateScope,
-    /// NPC name when `scope` is `Npc`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub actor_name: Option<String>,
+    /// Runtime target: "world", "pc", or an NPC name.
+    #[serde(default = "default_target")]
+    pub target: String,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -185,6 +199,83 @@ pub struct TrackedVarDef {
     pub visibility: String,
     #[serde(default)]
     pub update_hints: String,
+}
+
+fn default_target() -> String {
+    "world".to_string()
+}
+
+impl Default for TrackedVarDef {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            kind: StateKind::default(),
+            target: default_target(),
+            description: String::new(),
+            initial_value: String::new(),
+            initial_num: None,
+            initial_max: None,
+            visibility: String::new(),
+            update_hints: String::new(),
+        }
+    }
+}
+
+/// Wire form used only for deserialization so we can read both the new `target`
+/// field and the legacy `scope`/`actor_name` pair from older saved scenarios/games.
+#[derive(Deserialize)]
+struct TrackedVarDefWire {
+    key: String,
+    kind: StateKind,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    actor_name: Option<String>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    initial_value: String,
+    #[serde(default)]
+    initial_num: Option<i64>,
+    #[serde(default)]
+    initial_max: Option<i64>,
+    #[serde(default)]
+    visibility: String,
+    #[serde(default)]
+    update_hints: String,
+}
+
+impl From<TrackedVarDefWire> for TrackedVarDef {
+    fn from(wire: TrackedVarDefWire) -> Self {
+        let target = wire
+            .target
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.trim().to_string())
+            .unwrap_or_else(|| match wire.scope.as_deref() {
+                Some("pc") => "pc".to_string(),
+                Some("npc") => wire
+                    .actor_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "world".to_string()),
+                _ => "world".to_string(),
+            });
+        Self {
+            key: wire.key,
+            kind: wire.kind,
+            target,
+            description: wire.description,
+            initial_value: wire.initial_value,
+            initial_num: wire.initial_num,
+            initial_max: wire.initial_max,
+            visibility: wire.visibility,
+            update_hints: wire.update_hints,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -313,7 +404,7 @@ mod tests {
         let base = vec![TrackedVarDef {
             key: "weather".into(),
             kind: StateKind::Fact,
-            scope: StateScope::World,
+            target: "world".into(),
             initial_value: "clear".into(),
             ..Default::default()
         }];
@@ -337,8 +428,35 @@ mod tests {
         }];
         let merged = merge_game_state_schema(&base, &pc_state, &invited_cast);
         assert_eq!(merged.len(), 3);
-        assert_eq!(merged[1].scope, StateScope::Pc);
-        assert_eq!(merged[2].scope, StateScope::Npc);
-        assert_eq!(merged[2].actor_name.as_deref(), Some("Guard"));
+        assert_eq!(merged[0].target, "world");
+        assert_eq!(merged[1].target, "pc");
+        assert_eq!(merged[2].target, "Guard");
+    }
+
+    #[test]
+    fn tracked_var_def_reads_legacy_scope_and_actor_name() {
+        let pc: TrackedVarDef = serde_json::from_value(serde_json::json!({
+            "key": "resolve", "kind": "resource", "scope": "pc"
+        }))
+        .unwrap();
+        assert_eq!(pc.target, "pc");
+
+        let npc: TrackedVarDef = serde_json::from_value(serde_json::json!({
+            "key": "alertness", "kind": "clock", "scope": "npc", "actor_name": "Guard"
+        }))
+        .unwrap();
+        assert_eq!(npc.target, "Guard");
+
+        let world: TrackedVarDef = serde_json::from_value(serde_json::json!({
+            "key": "weather", "kind": "fact"
+        }))
+        .unwrap();
+        assert_eq!(world.target, "world");
+
+        let explicit: TrackedVarDef = serde_json::from_value(serde_json::json!({
+            "key": "mood", "kind": "fact", "target": "Maya"
+        }))
+        .unwrap();
+        assert_eq!(explicit.target, "Maya");
     }
 }

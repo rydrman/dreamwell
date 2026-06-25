@@ -1,7 +1,7 @@
 use dreamwell_state::STATE_CHANGE_RULES;
 use dreamwell_types::{
     CharacterStateDef, GenerateCharacterStateRequest, GenerateCharacterStateResponse, Settings,
-    StateKind, StateScope,
+    StateKind,
 };
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -93,7 +93,10 @@ fn format_traits(traits: &std::collections::HashMap<String, i64>) -> String {
 fn format_world_schema(schema: &[dreamwell_types::TrackedVarDef]) -> String {
     let world: Vec<_> = schema
         .iter()
-        .filter(|def| def.scope == StateScope::World)
+        .filter(|def| {
+            let target = def.target.trim();
+            target.is_empty() || target.eq_ignore_ascii_case("world")
+        })
         .collect();
     if world.is_empty() {
         return String::from("(none defined)");
@@ -257,7 +260,7 @@ mod tests {
             state_schema: vec![TrackedVarDef {
                 key: "alarm".into(),
                 kind: StateKind::Clock,
-                scope: StateScope::World,
+                target: "world".into(),
                 ..Default::default()
             }],
             cast: vec![dreamwell_types::ScenarioNpc {
