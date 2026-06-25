@@ -128,7 +128,7 @@ pub fn simple_state_tool_specs() -> Vec<Value> {
     vec![
         text_state_tool(
             "set_fact",
-            "Record or update a durable tracked fact (location, inventory item, NPC trait, quest stage). Call whenever narration establishes or changes a lasting fact — the tool is the source of truth, not the prose.",
+            "Default for most state updates. Record or update a durable text fact (location, mood, inventory, traits, quest stage). Call whenever narration establishes or changes a lasting attribute — the tool is the source of truth, not the prose.",
         ),
         clear_state_tool(
             "clear_fact",
@@ -136,7 +136,7 @@ pub fn simple_state_tool_specs() -> Vec<Value> {
         ),
         text_state_tool(
             "set_condition",
-            "Record or update a temporary status that will likely clear soon (hidden, bleeding, suspicious, inspired).",
+            "Record or update an ephemeral status expected to clear soon (hidden, bleeding, suspicious, inspired) — not durable mood, location, or inventory (use set_fact for those).",
         ),
         clear_state_tool(
             "clear_condition",
@@ -144,19 +144,19 @@ pub fn simple_state_tool_specs() -> Vec<Value> {
         ),
         numeric_state_tool(
             "adjust_resource",
-            "Change a numeric resource track by a relative amount (e.g. stress +1, hit points -2). Values clamp to 0..max.",
+            "Change a numeric resource track (a count with a max, e.g. stress 2/5, hit points) by a relative amount. Numeric tracks only — never for text attributes like mood or location. If the key already exists, it must already be a resource.",
             "delta",
             "Signed amount to add (negative to subtract), e.g. 1 or -2.",
         ),
         numeric_state_tool(
             "set_resource",
-            "Set a numeric resource track to an exact value (e.g. supply = 3). Values clamp to 0..max.",
+            "Set a numeric resource track (a count with a max) to an exact value (e.g. supply = 3). Numeric tracks only — not text attributes.",
             "value",
             "The exact value to set the resource to.",
         ),
         numeric_state_tool(
             "advance_clock",
-            "Advance (or rewind) a segmented progress clock by a relative number of segments (e.g. investigation +1).",
+            "Advance (or rewind) a segmented progress clock (numeric progress toward an outcome, e.g. investigation 2/4) by a relative number of segments.",
             "delta",
             "Signed number of segments to add (negative to rewind), e.g. 1 or -1.",
         ),

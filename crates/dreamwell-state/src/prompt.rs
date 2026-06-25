@@ -1,4 +1,6 @@
-pub const STATE_TARGET_RULES: &str = r#"State target rules:
+macro_rules! state_target_rules_text {
+    () => {
+        r#"State target rules:
 - "pc" (or "user"): the player character ONLY — their clothing, mood, inventory, injuries, held items
 - "world": scene facts not owned by one person — location, weather, time, room layout, institution/quest stage
 - Named character (e.g. "Maya", "Ryan"): NPCs — use the character's name as target; unknown names auto-create an NPC actor
@@ -14,9 +16,36 @@ GOOD (actor-scoped, atomic):
 - target=Ryan, key=shirt_color, value=green
 - target=pc, key=mood, value=irritated
 - target=world, key=location, value=tavern common room
-- target=Maya, key=has_cellar_key, value=true"#;
+- target=Maya, key=has_cellar_key, value=true"#
+    };
+}
 
-pub const STATE_CHANGE_RULES: &str = r#"State change rules:
+pub const STATE_TARGET_RULES: &str = state_target_rules_text!();
+
+macro_rules! state_kind_rules_text {
+    () => {
+        r#"State kind rules (one slot per target+key — pick the right kind once and keep it):
+- Pick by the value's shape, not the topic:
+  - Text or a label (excited, tavern, green, has_key, allied) → fact (or condition if it clears soon)
+  - A number with a maximum (3/5 stress, 2/4 countdown) → resource or clock
+- fact (DEFAULT): durable text attribute — location, mood, inventory, traits, relationships, quest stage, appearance. Use set/remove with value strings. When unsure, use fact.
+- condition: ephemeral status tags expected to clear soon (hidden, bleeding, inspired) — not durable mood, location, or inventory.
+- resource: a numeric track with a ceiling — stress 2/5, hit points, supply. Use only when the value is a count with a max; never for a text attribute.
+- clock: numeric progress in segments toward an outcome — countdown 2/4, investigation clock.
+- Keep the kind stable: if a key already shows in current state as (resource)/(clock)/(fact)/(condition), keep using that same kind — do not flip a text fact into a resource or vice versa.
+
+BAD kind picks:
+- resource/clock for mood, location, shirt_color, or any text attribute
+- changing a key's kind away from what current state already shows
+
+GOOD:
+- fact: mood=excited, location=tavern, shirt_color=green
+- resource: stress +1 (a counted track with a max)"#
+    };
+}
+
+pub const STATE_CHANGE_RULES: &str = concat!(
+    r#"State change rules:
 - kind: resource|condition|fact|clock; op: set|add|remove
 - One atomic scalar per (target, key) — keys are unique per target regardless of kind
 - Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
@@ -24,13 +53,12 @@ pub const STATE_CHANGE_RULES: &str = r#"State change rules:
 - Resource/clock use numeric delta or set values; conditions/facts use value strings
 - Resource and clock values clamp to 0..max
 
-State kind rules (one slot per target+key — pick the right kind once and keep it):
-- resource: numeric track with a max (stress 2/5, hit points, supply). Use op add/set/remove with delta or numeric value.
-- clock: numeric progress track in segments (countdown 2/4, investigation clock). Same ops as resource; defaults to 4 segments unless schema says otherwise.
-- fact: durable text attribute (location=tavern, shirt_color=green, has_key=true). Use op set/remove with value strings.
-- condition: temporary or status text tag (bleeding, hidden, suspicious). Same storage as fact; use when the value is likely to clear soon."#;
+"#,
+    state_kind_rules_text!()
+);
 
-pub const STATE_CHANGE_PROMPT: &str = r#"State change rules:
+pub const STATE_CHANGE_PROMPT: &str = concat!(
+    r#"State change rules:
 - target: "pc" for the player character, "world" for global scope, or a named NPC
 - kind: resource|condition|fact|clock; op: set|add|remove
 - One atomic scalar per (target, key) — keys are unique per target regardless of kind
@@ -40,28 +68,11 @@ pub const STATE_CHANGE_PROMPT: &str = r#"State change rules:
 - Resource/clock use numeric delta or set values; conditions/facts use value strings
 - Resource and clock values clamp to 0..max
 
-State kind rules (one slot per target+key — pick the right kind once and keep it):
-- resource: numeric track with a max (stress 2/5, hit points, supply). Use op add/set/remove with delta or numeric value.
-- clock: numeric progress track in segments (countdown 2/4, investigation clock). Same ops as resource; defaults to 4 segments unless schema says otherwise.
-- fact: durable text attribute (location=tavern, shirt_color=green, has_key=true). Use op set/remove with value strings.
-- condition: temporary or status text tag (bleeding, hidden, suspicious). Same storage as fact; use when the value is likely to clear soon.
-
-State target rules:
-- "pc" (or "user"): the player character ONLY — their clothing, mood, inventory, injuries, held items
-- "world": scene facts not owned by one person — location, weather, time, room layout, institution/quest stage
-- Named character (e.g. "Maya", "Ryan"): NPCs — use the character's name as target; unknown names auto-create an NPC actor
-- Do NOT store one character's attributes on world
-- Do NOT pack multiple people or attributes into one key/value
-
-BAD targeting / packing:
-- target=world, key=clothing_state, value="Ryan's shirt is green"
-- target=world, key=characters, value="Ryan is angry and Maya has a key"
-
-GOOD (actor-scoped, atomic):
-- target=Ryan, key=shirt_color, value=green
-- target=pc, key=mood, value=irritated
-- target=world, key=location, value=tavern common room
-- target=Maya, key=has_cellar_key, value=true"#;
+"#,
+    state_kind_rules_text!(),
+    "\n\n",
+    state_target_rules_text!()
+);
 
 pub const PLAN_BEAT_RULES: &str = r#"Plan beat rules:
 - Each beat is one concrete thing THIS output must cover — not a reusable template for any turn
@@ -71,7 +82,7 @@ pub const PLAN_BEAT_RULES: &str = r#"Plan beat rules:
 - GOOD (specific): "Answer whether the cellar door is still locked and mention the key on the windowsill", "Have the character agree to meet at the bridge at dusk", "Describe the smell of rain on the coat they asked about"
 - Typically 3–6 beats for a normal reply; fewer when the user message is simple
 - Do not plan future turns, unprompted plot twists, or beats that ignore what the user just said
-- State changes should capture durable facts/resources the beats establish — prefer named actor targets for character-specific facts, one attribute per key"#;
+- State changes should capture durable facts the beats establish — prefer set_fact and named actor targets; use resource/clock only for genuinely numeric tracks (a count with a max), one attribute per key"#;
 
 pub const RECHECK_SYSTEM_PROMPT: &str = r#"You review prose against typed session state.
 
@@ -85,6 +96,7 @@ Rules:
 - Output ONLY valid JSON matching the schema
 
 When adding or correcting entries:
+- Default to kind=fact for durable text attributes; use resource/clock only for genuinely numeric tracks (a count with a max), and keep a key's existing kind stable
 - Prefer actor targets ("pc" or a named NPC) for facts about a specific person — not world
 - One atomic attribute per key; split packed world entries onto the right actor
 - Use short snake_case keys; values hold only the attribute, not full sentences"#;
@@ -98,7 +110,8 @@ mod tests {
         assert!(STATE_CHANGE_PROMPT.contains("clothing_state"));
         assert!(STATE_CHANGE_PROMPT.contains("shirt_color"));
         assert!(STATE_CHANGE_PROMPT.contains("Prefer actor targets"));
-        assert!(STATE_CHANGE_PROMPT.contains("numeric track with a max"));
+        assert!(STATE_CHANGE_PROMPT.contains("fact (DEFAULT)"));
+        assert!(STATE_CHANGE_PROMPT.contains("never for a text attribute"));
     }
 
     #[test]
