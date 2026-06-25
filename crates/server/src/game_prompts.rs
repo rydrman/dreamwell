@@ -109,23 +109,30 @@ Inline mechanics (use tools, never invent outcomes):
 - After a tool returns, its result is inserted into the narration as a visible block; resume the prose from that real outcome.
 - Do not fabricate dice numbers, card text, or board movement.
 
+Tool call syntax (embed calls in prose — use this exact format):
+- call:tool_name{key:value,key2:value2}
+- Do NOT use function-call parentheses like draw_card(deck_id="events") — those are not parsed.
+- Quote string values that contain spaces or commas: call:set_fact{target:world,key:location,value:"space 36, near finish"}
+
 Example rhythm (follow this interleaved pattern):
 GOOD — prose, then one tool, then outcome prose, repeat:
   You hook a finger under the top card of the events deck and flip it face-up.
-  → draw_card(deck_id="events")
+  call:draw_card{deck_id:events}
   The card reads "Shortcut — skip ahead one space."
-  → set_condition(target="pc", key="has_shortcut", value="true")
+  call:set_condition{target:pc,key:has_shortcut,value:true}
   You pocket the slip and reach for the die.
   You scoop up the move die and toss it across the board.
-  → board_move(actor="pc")
+  call:board_move{actor:pc}
   It clatters to a four; you advance four spaces toward the finish line.
-  → set_fact(target="world", key="location", value="space 36, near finish")
-  → set_fact(target="pc", key="mood", value="excited")
+  call:set_fact{target:world,key:location,value:"space 36, near finish"}
+  call:set_fact{target:pc,key:mood,value:excited}
+  call:adjust_resource{target:Sophie,key:arousal,delta:2}
   Your pulse kicks up as the crowd cheers from the sidelines.
 
 BAD — do not do this:
-  → draw_card(...) and board_move(...) together before any prose
+  call:draw_card{deck_id:events}call:board_move{actor:pc} together before any prose
   You roll a four and draw Shortcut. (outcomes invented before tools run)
+  adjust_resource(target="Sophie", key="arousal", delta=2) (parentheses syntax — not parsed)
   You're excited and standing near the finish line now. (location and mood only in prose — no set_fact call)
 
 PC agency:
@@ -133,10 +140,10 @@ PC agency:
 - Do not pick targets, options, or strategic decisions for the PC.
 
 Tracked state (use the dedicated state tools — one attribute per call):
-- set_fact(target, key, value) / clear_fact(target, key): durable facts (location, inventory, NPC traits, quest stage).
-- set_condition(target, key, value) / clear_condition(target, key): temporary statuses that clear soon (hidden, bleeding, inspired).
-- adjust_resource(target, key, delta) / set_resource(target, key, value): numeric tracks (stress +1, supply = 3); values clamp to 0..max.
-- advance_clock(target, key, delta) / set_clock(target, key, value): segmented progress clocks.
+- call:set_fact{target,key,value} / call:clear_fact{target,key}: durable facts (location, inventory, NPC traits, quest stage).
+- call:set_condition{target,key,value} / call:clear_condition{target,key}: temporary statuses that clear soon (hidden, bleeding, inspired).
+- call:adjust_resource{target,key,delta} / call:set_resource{target,key,value}: numeric tracks (stress +1, supply = 3); values clamp to 0..max.
+- call:advance_clock{target,key,delta} / call:set_clock{target,key,value}: segmented progress clocks.
 - target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
 - When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
 
@@ -1263,10 +1270,11 @@ mod tests {
         assert!(system.contains("deck_id"));
         assert!(system.contains("ask_pc_decision"));
         assert!(system.contains("Example rhythm"));
-        assert!(system.contains("set_fact"));
-        assert!(system.contains("set_condition"));
-        assert!(system.contains("adjust_resource"));
+        assert!(system.contains("call:set_fact"));
+        assert!(system.contains("call:set_condition"));
+        assert!(system.contains("call:adjust_resource"));
         assert!(system.contains("no set_fact call"));
+        assert!(system.contains("parentheses syntax"));
         assert!(system.contains("One mechanic per cycle"));
         let user = msgs[1]["content"].as_str().unwrap();
         assert!(user.contains("Follow the scenario rules"));
