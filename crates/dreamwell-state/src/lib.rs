@@ -8,7 +8,7 @@ pub use apply::{
     plan_revert_changes, plan_state_changes, state_kind_str, ApplyPlan, EntryMutation,
     RevertMutation, VivifyActor,
 };
-pub use format::build_state_block;
+pub use format::{build_state_block, build_state_block_annotated};
 pub use prompt::{
     PLAN_BEAT_RULES, RECHECK_SYSTEM_PROMPT, STATE_CHANGE_PROMPT, STATE_CHANGE_RULES,
     STATE_TARGET_RULES,

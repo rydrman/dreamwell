@@ -1,12 +1,14 @@
-use dreamwell_state::{state_kind_str, STATE_CHANGE_PROMPT};
+use std::collections::HashMap;
+
+use dreamwell_state::{resolve_actor_id, STATE_TARGET_RULES};
 use dreamwell_types::{
     substitute_macros, Game, GameActor, GameDetail, GameScene, GameTurn, GameTurnCheck,
-    MacroContext, Settings, PROSE_CHECK_MARKER_OPEN, PROSE_INLINE_MARKER_CLOSE,
+    MacroContext, Settings, TrackedVarDef, PROSE_CHECK_MARKER_OPEN, PROSE_INLINE_MARKER_CLOSE,
     PROSE_MECH_MARKER_OPEN, PROSE_STATE_MARKER_OPEN,
 };
 use serde_json::json;
 
-use crate::game_state::build_state_block;
+use crate::game_state::{build_state_block, build_state_block_annotated};
 
 /// Layered turn context for game prompts: long-term summary, compact recent beats,
 /// and verbatim recent prose (newest-first within each tier's budget).
@@ -111,22 +113,32 @@ Example rhythm (follow this interleaved pattern):
 GOOD — prose, then one tool, then outcome prose, repeat:
   You hook a finger under the top card of the events deck and flip it face-up.
   → draw_card(deck_id="events")
-  The card reads "Shortcut — skip ahead one space." You pocket the slip and reach for the die.
+  The card reads "Shortcut — skip ahead one space."
+  → set_condition(target="pc", key="has_shortcut", value="true")
+  You pocket the slip and reach for the die.
   You scoop up the move die and toss it across the board.
   → board_move(actor="pc")
   It clatters to a four; you advance four spaces toward the finish line.
+  → set_fact(target="world", key="location", value="space 36, near finish")
+  → set_fact(target="pc", key="mood", value="excited")
+  Your pulse kicks up as the crowd cheers from the sidelines.
 
 BAD — do not do this:
   → draw_card(...) and board_move(...) together before any prose
   You roll a four and draw Shortcut. (outcomes invented before tools run)
+  You're excited and standing near the finish line now. (location and mood only in prose — no set_fact call)
 
 PC agency:
 - When a card or scene requires a choice the player has not made, call ask_pc_decision with a concrete question BEFORE resolving the effect.
 - Do not pick targets, options, or strategic decisions for the PC.
 
-Tracked state (apply_state_changes tool):
-- When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call apply_state_changes — do not only mention them in prose.
-- The tool is the source of truth, not the prose alone.
+Tracked state (use the dedicated state tools — one attribute per call):
+- set_fact(target, key, value) / clear_fact(target, key): durable facts (location, inventory, NPC traits, quest stage).
+- set_condition(target, key, value) / clear_condition(target, key): temporary statuses that clear soon (hidden, bleeding, inspired).
+- adjust_resource(target, key, delta) / set_resource(target, key, value): numeric tracks (stress +1, supply = 3); values clamp to 0..max.
+- advance_clock(target, key, delta) / set_clock(target, key, value): segmented progress clocks.
+- target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
+- When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
 
 Ending the turn:
 - When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
@@ -426,14 +438,18 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
 
     push_section(&mut body, &build_characters_block(&detail.actors));
 
-    let state_block = build_state_block(&detail.state, &detail.actors);
+    // Scenario-authored vars are seeded as live state entries, so present a single
+    // "Current state" view; fold each var's update hint inline rather than repeating
+    // the values in a separate schema block.
+    let state_block = if phase == TurnPromptPhase::ProseInline {
+        let hints = state_hint_annotations(&game.state_schema, &detail.actors);
+        build_state_block_annotated(&detail.state, &detail.actors, &hints)
+    } else {
+        build_state_block(&detail.state, &detail.actors)
+    };
     push_section(&mut body, &format!("Current state:\n{state_block}"));
 
     if phase == TurnPromptPhase::ProseInline {
-        let schema = format_tracked_state_schema(&game.state_schema);
-        if !schema.is_empty() {
-            push_section(&mut body, &schema);
-        }
         let elements = format_game_elements_context(game);
         if !elements.is_empty() {
             push_section(&mut body, &elements);
@@ -560,37 +576,43 @@ fn format_game_elements_context(game: &Game) -> String {
     lines.join("\n")
 }
 
-fn format_tracked_state_schema(schema: &[dreamwell_types::TrackedVarDef]) -> String {
-    if schema.is_empty() {
-        return String::new();
+/// Build per-entry authoring notes (scenario var description + update hint), keyed by
+/// `(actor_id, key)`, so they can be folded into the live "Current state" block.
+fn state_hint_annotations(
+    schema: &[TrackedVarDef],
+    actors: &[GameActor],
+) -> HashMap<(Option<i64>, String), String> {
+    let mut annotations = HashMap::new();
+    for def in schema {
+        let note = tracked_var_note(def);
+        if note.is_empty() {
+            continue;
+        }
+        let target = def.target.trim();
+        let actor_id = if target.is_empty() || target.eq_ignore_ascii_case("world") {
+            None
+        } else {
+            match resolve_actor_id(target, actors) {
+                Some(id) => Some(id),
+                // Declared for an actor that isn't in this game — skip rather than
+                // attaching the hint to a world entry with the same key.
+                None => continue,
+            }
+        };
+        annotations.insert((actor_id, def.key.clone()), note);
     }
-    let lines: Vec<String> = schema
-        .iter()
-        .map(|def| {
-            let scope = match def.scope {
-                dreamwell_types::StateScope::World => "world",
-                dreamwell_types::StateScope::Pc => "pc",
-                dreamwell_types::StateScope::Npc => "npc",
-            };
-            let mut line = format!("- {} ({}, {})", def.key, state_kind_str(def.kind), scope);
-            if def.scope == dreamwell_types::StateScope::Npc {
-                if let Some(name) = def.actor_name.as_deref().filter(|n| !n.trim().is_empty()) {
-                    line.push_str(&format!(" [{name}]"));
-                }
-            }
-            if !def.description.trim().is_empty() {
-                line.push_str(&format!(": {}", def.description.trim()));
-            }
-            if !def.update_hints.trim().is_empty() {
-                line.push_str(&format!(" [hint: {}]", def.update_hints.trim()));
-            }
-            line
-        })
-        .collect();
-    format!(
-        "Tracked state schema (use apply_state_changes to update these):\n{}",
-        lines.join("\n")
-    )
+    annotations
+}
+
+fn tracked_var_note(def: &TrackedVarDef) -> String {
+    let description = def.description.trim();
+    let hint = def.update_hints.trim();
+    match (description.is_empty(), hint.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => description.to_string(),
+        (true, false) => format!("update: {hint}"),
+        (false, false) => format!("{description}; update: {hint}"),
+    }
 }
 
 pub fn build_declare_checks_messages(
@@ -644,7 +666,7 @@ pub fn build_inline_prose_agent_messages(
         json!({
             "role": "system",
             "content": format!(
-                "{}\n\n{STATE_CHANGE_PROMPT}",
+                "{}\n\n{STATE_TARGET_RULES}",
                 game_system_prompt(INLINE_PROSE_AGENT_SYSTEM)
             ),
         }),
@@ -1193,6 +1215,42 @@ mod tests {
     }
 
     #[test]
+    fn scenario_var_hints_fold_into_current_state_not_a_schema_block() {
+        let mut game = sample_game();
+        game.state_schema = vec![dreamwell_types::TrackedVarDef {
+            key: "alarm".into(),
+            kind: dreamwell_types::StateKind::Clock,
+            target: "world".into(),
+            description: "Guard alarm".into(),
+            update_hints: "raise when the PC is seen".into(),
+            ..Default::default()
+        }];
+        let mut detail = sample_detail(game.clone());
+        detail.state = vec![dreamwell_types::GameStateEntry {
+            id: 1,
+            game_id: game.id,
+            actor_id: None,
+            kind: dreamwell_types::StateKind::Clock,
+            key: "alarm".into(),
+            value: String::new(),
+            num_value: Some(1),
+            max_value: Some(4),
+            source_turn: -1,
+            updated_at: Utc::now(),
+        }];
+        let turn = sample_turn();
+        let messages =
+            build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &test_settings());
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("Current state:"));
+        assert!(
+            user.contains("- alarm (clock): 1/4 [Guard alarm; update: raise when the PC is seen]")
+        );
+        // No separate schema block — the var rides alongside the live value.
+        assert!(!user.contains("Tracked state schema"));
+    }
+
+    #[test]
     fn inline_prose_system_describes_generic_primitives() {
         let game = sample_game();
         let detail = sample_detail(game.clone());
@@ -1205,6 +1263,10 @@ mod tests {
         assert!(system.contains("deck_id"));
         assert!(system.contains("ask_pc_decision"));
         assert!(system.contains("Example rhythm"));
+        assert!(system.contains("set_fact"));
+        assert!(system.contains("set_condition"));
+        assert!(system.contains("adjust_resource"));
+        assert!(system.contains("no set_fact call"));
         assert!(system.contains("One mechanic per cycle"));
         let user = msgs[1]["content"].as_str().unwrap();
         assert!(user.contains("Follow the scenario rules"));

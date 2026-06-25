@@ -1,4 +1,4 @@
-use dreamwell_types::{CharacterStateDef, StateKind, StateScope, TrackedVarDef};
+use dreamwell_types::{normalize_target, CharacterStateDef, StateKind, TrackedVarDef};
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -68,17 +68,34 @@ pub struct EditableCharacterStateDef {
 }
 
 /// World/schema editor row — same unset-type behavior as character state.
-#[derive(Clone, PartialEq, Default)]
+/// `target` is a runtime target ("world" or "pc"); blank is treated as "world".
+#[derive(Clone, PartialEq)]
 pub struct EditableTrackedVarDef {
     pub key: String,
     pub kind: Option<StateKind>,
-    pub scope: StateScope,
+    pub target: String,
     pub description: String,
     pub initial_value: String,
     pub initial_num: Option<i64>,
     pub initial_max: Option<i64>,
     pub visibility: String,
     pub update_hints: String,
+}
+
+impl Default for EditableTrackedVarDef {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            kind: None,
+            target: "world".to_string(),
+            description: String::new(),
+            initial_value: String::new(),
+            initial_num: None,
+            initial_max: None,
+            visibility: String::new(),
+            update_hints: String::new(),
+        }
+    }
 }
 
 impl EditableCharacterStateDef {
@@ -140,7 +157,7 @@ impl EditableCharacterStateDef {
         match update {
             ScenarioStateFieldUpdate::Key(value) => self.key = value,
             ScenarioStateFieldUpdate::Kind(kind) => self.set_kind(kind),
-            ScenarioStateFieldUpdate::Scope(_) => {}
+            ScenarioStateFieldUpdate::Target(_) => {}
             ScenarioStateFieldUpdate::Description(value) => self.description = value,
             ScenarioStateFieldUpdate::InitialValue(value) => self.initial_value = value,
             ScenarioStateFieldUpdate::InitialNum(value) => self.initial_num = value,
@@ -160,7 +177,7 @@ impl EditableCharacterStateDef {
             initial_max: self.initial_max,
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
-            scope: None,
+            target: None,
         }
     }
 }
@@ -170,7 +187,7 @@ impl EditableTrackedVarDef {
         Self {
             key: def.key.clone(),
             kind: Some(def.kind),
-            scope: def.scope,
+            target: normalize_target(&def.target),
             description: def.description.clone(),
             initial_value: def.initial_value.clone(),
             initial_num: def.initial_num,
@@ -197,8 +214,7 @@ impl EditableTrackedVarDef {
         Ok(Some(TrackedVarDef {
             key: self.key.trim().to_string(),
             kind,
-            scope: self.scope,
-            actor_name: None,
+            target: normalize_target(&self.target),
             description: self.description.clone(),
             initial_value: self.initial_value.clone(),
             initial_num: self.initial_num,
@@ -227,7 +243,7 @@ impl EditableTrackedVarDef {
         match update {
             ScenarioStateFieldUpdate::Key(value) => self.key = value,
             ScenarioStateFieldUpdate::Kind(kind) => self.set_kind(kind),
-            ScenarioStateFieldUpdate::Scope(value) => self.scope = value,
+            ScenarioStateFieldUpdate::Target(value) => self.target = value,
             ScenarioStateFieldUpdate::Description(value) => self.description = value,
             ScenarioStateFieldUpdate::InitialValue(value) => self.initial_value = value,
             ScenarioStateFieldUpdate::InitialNum(value) => self.initial_num = value,
@@ -247,7 +263,7 @@ impl EditableTrackedVarDef {
             initial_max: self.initial_max,
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
-            scope: Some(self.scope),
+            target: Some(normalize_target(&self.target)),
         }
     }
 }
@@ -308,14 +324,16 @@ pub struct ScenarioStateDefView {
     pub initial_max: Option<i64>,
     pub visibility: String,
     pub update_hints: String,
-    pub scope: Option<StateScope>,
+    /// `Some(target)` shows the world/PC target selector (tracked-var editor);
+    /// `None` hides it (per-character state, which is implicitly that character).
+    pub target: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
 pub enum ScenarioStateFieldUpdate {
     Key(String),
     Kind(StateKind),
-    Scope(StateScope),
+    Target(String),
     Description(String),
     InitialValue(String),
     InitialNum(Option<i64>),
@@ -369,24 +387,21 @@ fn kind_select(selected: Option<StateKind>, on_change: Callback<StateKind>) -> H
     }
 }
 
-fn scope_select(scope: StateScope, on_change: Callback<StateScope>) -> Html {
+fn target_select(target: &str, on_change: Callback<String>) -> Html {
+    let is_pc = target.eq_ignore_ascii_case("pc");
     html! {
         <label class="field field-inline">
-            <span class="muted">{"Scope"}</span>
+            <span class="muted">{"Target"}</span>
             <select
                 class="input"
                 onchange={Callback::from(move |e: Event| {
                     let select: web_sys::HtmlSelectElement = e.target_unchecked_into();
-                    let parsed = if select.value() == "pc" {
-                        StateScope::Pc
-                    } else {
-                        StateScope::World
-                    };
-                    on_change.emit(parsed);
+                    let value = if select.value() == "pc" { "pc" } else { "world" };
+                    on_change.emit(value.to_string());
                 })}
             >
-                <option value="world" selected={scope == StateScope::World}>{"World"}</option>
-                <option value="pc" selected={scope == StateScope::Pc}>{"Player character"}</option>
+                <option value="world" selected={!is_pc}>{"World"}</option>
+                <option value="pc" selected={is_pc}>{"Player character"}</option>
             </select>
         </label>
     }
@@ -454,10 +469,10 @@ pub fn scenario_state_def_editor(props: &ScenarioStateDefEditorProps) -> Html {
                     Callback::from(move |value: String| on_update.emit(ScenarioStateFieldUpdate::Key(value)))
                 }) }
                 { kind_select(view.kind, on_kind) }
-                if let Some(scope) = view.scope {
-                    { scope_select(scope, {
+                if let Some(target) = &view.target {
+                    { target_select(target, {
                         let on_update = on_update.clone();
-                        Callback::from(move |value: StateScope| on_update.emit(ScenarioStateFieldUpdate::Scope(value)))
+                        Callback::from(move |value: String| on_update.emit(ScenarioStateFieldUpdate::Target(value)))
                     }) }
                 }
                 <button type="button" class="btn secondary btn-compact" onclick={props.on_remove.reform(|_| ())}>

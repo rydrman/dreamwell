@@ -46,32 +46,127 @@ pub fn inline_mechanical_tool_specs() -> Vec<Value> {
     ]
 }
 
-fn apply_state_changes_spec() -> Value {
+/// Convenience state tools (one per intent) that each map to a single
+/// `StateChangeRequest`. They keep the kind/op implicit in the tool name so the
+/// inline prose agent only ever supplies target/key/value — far simpler than the
+/// batch `apply_state_changes` blob.
+pub const SIMPLE_STATE_TOOLS: &[&str] = &[
+    "set_fact",
+    "clear_fact",
+    "set_condition",
+    "clear_condition",
+    "adjust_resource",
+    "set_resource",
+    "advance_clock",
+    "set_clock",
+];
+
+const STATE_TARGET_DESC: &str =
+    "Who the value belongs to: \"pc\" for the player character, \"world\" for scene-wide facts, or an NPC's name. An unknown name auto-creates that NPC.";
+
+fn state_target_key_props(value_prop: Value) -> Value {
+    let mut props = serde_json::json!({
+        "target": { "type": "string", "description": STATE_TARGET_DESC },
+        "key": { "type": "string", "description": "Short snake_case attribute name (e.g. location, mood, shirt_color) — one attribute only." }
+    });
+    if let (Value::Object(props_map), Value::Object(value_map)) = (&mut props, value_prop) {
+        for (k, v) in value_map {
+            props_map.insert(k, v);
+        }
+    }
+    props
+}
+
+fn text_state_tool(name: &str, description: &str) -> Value {
     tool_spec(
-        "apply_state_changes",
-        "Record durable tracked state updates for this turn — including the resolved outcome of a card or mechanic effect, as well as location, mood, inventory, NPC facts, resources, and clocks. Call whenever narration establishes or changes any tracked value — use the changes array with target/kind/key/op/value per STATE_CHANGE_PROMPT.",
+        name,
+        description,
         serde_json::json!({
             "type": "object",
-            "properties": {
-                "changes": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "target": { "type": "string" },
-                            "kind": { "type": "string" },
-                            "key": { "type": "string" },
-                            "op": { "type": "string" },
-                            "value": { "type": ["string", "null"] },
-                            "delta": { "type": ["integer", "null"] }
-                        },
-                        "required": ["target", "kind", "key", "op"]
-                    }
-                }
-            },
-            "required": ["changes"]
+            "properties": state_target_key_props(serde_json::json!({
+                "value": { "type": "string", "description": "The attribute's new value — just the value itself (e.g. \"tavern\", \"green\"), not a full sentence." }
+            })),
+            "required": ["target", "key", "value"]
         }),
     )
+}
+
+fn clear_state_tool(name: &str, description: &str) -> Value {
+    tool_spec(
+        name,
+        description,
+        serde_json::json!({
+            "type": "object",
+            "properties": state_target_key_props(serde_json::json!({})),
+            "required": ["target", "key"]
+        }),
+    )
+}
+
+fn numeric_state_tool(
+    name: &str,
+    description: &str,
+    amount_field: &str,
+    amount_desc: &str,
+) -> Value {
+    let value_prop = serde_json::json!({
+        amount_field: { "type": "integer", "description": amount_desc }
+    });
+    tool_spec(
+        name,
+        description,
+        serde_json::json!({
+            "type": "object",
+            "properties": state_target_key_props(value_prop),
+            "required": ["target", "key", amount_field]
+        }),
+    )
+}
+
+/// Specs for the simple per-intent state tools offered to the inline prose agent.
+pub fn simple_state_tool_specs() -> Vec<Value> {
+    vec![
+        text_state_tool(
+            "set_fact",
+            "Record or update a durable tracked fact (location, inventory item, NPC trait, quest stage). Call whenever narration establishes or changes a lasting fact — the tool is the source of truth, not the prose.",
+        ),
+        clear_state_tool(
+            "clear_fact",
+            "Remove a durable fact that is no longer true (an item is dropped, a location is left behind).",
+        ),
+        text_state_tool(
+            "set_condition",
+            "Record or update a temporary status that will likely clear soon (hidden, bleeding, suspicious, inspired).",
+        ),
+        clear_state_tool(
+            "clear_condition",
+            "Remove a temporary status once it ends (no longer hidden, bleeding stops).",
+        ),
+        numeric_state_tool(
+            "adjust_resource",
+            "Change a numeric resource track by a relative amount (e.g. stress +1, hit points -2). Values clamp to 0..max.",
+            "delta",
+            "Signed amount to add (negative to subtract), e.g. 1 or -2.",
+        ),
+        numeric_state_tool(
+            "set_resource",
+            "Set a numeric resource track to an exact value (e.g. supply = 3). Values clamp to 0..max.",
+            "value",
+            "The exact value to set the resource to.",
+        ),
+        numeric_state_tool(
+            "advance_clock",
+            "Advance (or rewind) a segmented progress clock by a relative number of segments (e.g. investigation +1).",
+            "delta",
+            "Signed number of segments to add (negative to rewind), e.g. 1 or -1.",
+        ),
+        numeric_state_tool(
+            "set_clock",
+            "Set a segmented progress clock to an exact number of filled segments.",
+            "value",
+            "The exact number of filled segments to set.",
+        ),
+    ]
 }
 
 /// Tools for the single-pass inline-prose agent: scenario mechanics fired inline plus
@@ -79,7 +174,7 @@ fn apply_state_changes_spec() -> Value {
 /// so check tools are intentionally excluded here.
 pub fn inline_prose_tool_specs() -> Vec<Value> {
     let mut tools = inline_mechanical_tool_specs();
-    tools.push(apply_state_changes_spec());
+    tools.extend(simple_state_tool_specs());
     tools.push(ask_pc_decision_spec());
     tools
 }
@@ -203,6 +298,21 @@ pub async fn handle_mechanical_tool_call(
     }
 }
 
+/// Whether a tool name updates tracked state (either the batch tool or one of the
+/// simple per-intent convenience tools).
+pub fn is_state_tool(name: &str) -> bool {
+    name == "apply_state_changes" || SIMPLE_STATE_TOOLS.contains(&name)
+}
+
+/// Parse any state tool call into validated state-change requests. Handles both the
+/// batch `apply_state_changes` array and the simple per-intent tools (set_fact, etc).
+pub fn parse_state_tool_call(call: &ToolCall) -> Vec<dreamwell_types::StateChangeRequest> {
+    if call.name == "apply_state_changes" {
+        return parse_state_change_args(call);
+    }
+    parse_simple_state_tool(call).into_iter().collect()
+}
+
 /// Parse `apply_state_changes` tool arguments into validated state-change requests.
 pub fn parse_state_change_args(call: &ToolCall) -> Vec<dreamwell_types::StateChangeRequest> {
     let args: Value =
@@ -215,6 +325,67 @@ pub fn parse_state_change_args(call: &ToolCall) -> Vec<dreamwell_types::StateCha
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Translate a simple per-intent state tool call (set_fact, adjust_resource, …) into
+/// a single `StateChangeRequest`. Returns `None` for unknown tools or missing key.
+fn parse_simple_state_tool(call: &ToolCall) -> Option<dreamwell_types::StateChangeRequest> {
+    use dreamwell_types::{StateChangeRequest, StateKind, StateOp};
+
+    let args: Value =
+        serde_json::from_str(&call.arguments).unwrap_or(Value::Object(Default::default()));
+    let target = args
+        .get("target")
+        .and_then(value_as_string)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "world".to_string());
+    let key = args
+        .get("key")
+        .and_then(value_as_string)
+        .filter(|s| !s.trim().is_empty())?;
+    let value = args.get("value").and_then(value_as_string);
+    let delta_field = args.get("delta").and_then(value_as_i64);
+    let value_as_num = args.get("value").and_then(value_as_i64);
+
+    let request = |kind: StateKind, op: StateOp, value: Option<String>, delta: Option<i64>| {
+        Some(StateChangeRequest {
+            target: target.clone(),
+            kind,
+            key: key.clone(),
+            op,
+            value,
+            delta,
+        })
+    };
+
+    match call.name.as_str() {
+        "set_fact" => request(StateKind::Fact, StateOp::Set, value, None),
+        "clear_fact" => request(StateKind::Fact, StateOp::Remove, None, None),
+        "set_condition" => request(StateKind::Condition, StateOp::Set, value, None),
+        "clear_condition" => request(StateKind::Condition, StateOp::Remove, None, None),
+        "adjust_resource" => request(StateKind::Resource, StateOp::Add, None, delta_field),
+        "set_resource" => request(StateKind::Resource, StateOp::Set, None, value_as_num),
+        "advance_clock" => request(StateKind::Clock, StateOp::Add, None, delta_field),
+        "set_clock" => request(StateKind::Clock, StateOp::Set, None, value_as_num),
+        _ => None,
+    }
+}
+
+fn value_as_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn value_as_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 fn mechanical_result_json(result: &MechanicalResult) -> Value {
@@ -302,5 +473,129 @@ mod tests {
             .unwrap();
         assert!(result.get("error").is_none());
         assert_eq!(state.mechanical_results.len(), 1);
+    }
+
+    fn state_call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "s1".into(),
+            name: name.into(),
+            arguments: args.to_string(),
+        }
+    }
+
+    #[test]
+    fn inline_specs_offer_simple_tools_and_hide_batch() {
+        let names: Vec<String> = inline_prose_tool_specs()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+            .collect();
+        for tool in SIMPLE_STATE_TOOLS {
+            assert!(names.iter().any(|n| n == tool), "missing tool {tool}");
+        }
+        assert!(!names.iter().any(|n| n == "apply_state_changes"));
+        assert!(names.iter().any(|n| n == "ask_pc_decision"));
+    }
+
+    #[test]
+    fn is_state_tool_recognizes_simple_and_batch() {
+        assert!(is_state_tool("apply_state_changes"));
+        assert!(is_state_tool("set_fact"));
+        assert!(is_state_tool("advance_clock"));
+        assert!(!is_state_tool("roll_dice"));
+    }
+
+    #[test]
+    fn set_fact_maps_to_fact_set_request() {
+        use dreamwell_types::{StateKind, StateOp};
+        let call = state_call(
+            "set_fact",
+            serde_json::json!({ "target": "world", "key": "location", "value": "tavern" }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].target, "world");
+        assert_eq!(reqs[0].kind, StateKind::Fact);
+        assert_eq!(reqs[0].op, StateOp::Set);
+        assert_eq!(reqs[0].key, "location");
+        assert_eq!(reqs[0].value.as_deref(), Some("tavern"));
+    }
+
+    #[test]
+    fn clear_condition_maps_to_condition_remove() {
+        use dreamwell_types::{StateKind, StateOp};
+        let call = state_call(
+            "clear_condition",
+            serde_json::json!({ "target": "pc", "key": "hidden" }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].kind, StateKind::Condition);
+        assert_eq!(reqs[0].op, StateOp::Remove);
+        assert!(reqs[0].value.is_none());
+    }
+
+    #[test]
+    fn adjust_resource_carries_signed_delta() {
+        use dreamwell_types::{StateKind, StateOp};
+        let call = state_call(
+            "adjust_resource",
+            serde_json::json!({ "target": "pc", "key": "stress", "delta": -2 }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs[0].kind, StateKind::Resource);
+        assert_eq!(reqs[0].op, StateOp::Add);
+        assert_eq!(reqs[0].delta, Some(-2));
+    }
+
+    #[test]
+    fn set_resource_reads_value_as_numeric_delta() {
+        use dreamwell_types::StateOp;
+        let call = state_call(
+            "set_resource",
+            serde_json::json!({ "target": "pc", "key": "supply", "value": 3 }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs[0].op, StateOp::Set);
+        assert_eq!(reqs[0].delta, Some(3));
+    }
+
+    #[test]
+    fn set_clock_accepts_stringified_number() {
+        use dreamwell_types::StateKind;
+        let call = state_call(
+            "set_clock",
+            serde_json::json!({ "target": "world", "key": "alarm", "value": "2" }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs[0].kind, StateKind::Clock);
+        assert_eq!(reqs[0].delta, Some(2));
+    }
+
+    #[test]
+    fn simple_tool_defaults_target_to_world_and_drops_empty_key() {
+        let call = state_call("set_fact", serde_json::json!({ "value": "noon" }));
+        assert!(parse_state_tool_call(&call).is_empty());
+
+        let call = state_call(
+            "set_fact",
+            serde_json::json!({ "key": "time", "value": "noon" }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs[0].target, "world");
+    }
+
+    #[test]
+    fn batch_tool_still_parses_changes_array() {
+        let call = state_call(
+            "apply_state_changes",
+            serde_json::json!({
+                "changes": [
+                    { "target": "pc", "kind": "fact", "key": "mood", "op": "set", "value": "calm" }
+                ]
+            }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].key, "mood");
     }
 }

@@ -560,10 +560,7 @@ fn state_schema_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
             <button type="button" class="btn secondary" onclick={{
                 let draft = draft.clone();
                 Callback::from(move |_| mutate_draft(&draft, |d| {
-                    d.state_schema.push(EditableTrackedVarDef {
-                        scope: StateScope::World,
-                        ..EditableTrackedVarDef::default()
-                    });
+                    d.state_schema.push(EditableTrackedVarDef::default());
                 }))
             }}>{"Add state variable"}</button>
         </details>
