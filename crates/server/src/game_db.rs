@@ -960,6 +960,21 @@ pub async fn prepare_continue_turn(
     ))
 }
 
+/// Whether the most recent turn can be regenerated or retried (mirrors game UI affordances).
+fn turn_can_be_regenerated(turn: &GameTurn) -> bool {
+    if turn.is_opening {
+        return false;
+    }
+    if turn.phase == "done" {
+        return !turn.prose.trim().is_empty();
+    }
+    if turn.phase == "failed" {
+        return true;
+    }
+    // Stuck mid-pipeline (e.g. checks/prose) after a cancelled or crashed job.
+    turn.phase != "pending" && !turn.phase.ends_with("_pause")
+}
+
 pub async fn prepare_regenerate_turn(
     pool: &SqlitePool,
     game_id: i64,
@@ -984,14 +999,17 @@ pub async fn prepare_regenerate_turn(
     if turn.is_opening {
         return Err(AppError::bad_request("Opening scene cannot be regenerated"));
     }
-    if turn.phase != "done" {
+    if !turn_can_be_regenerated(&turn) {
+        if turn.phase == "done" {
+            return Err(AppError::bad_request(
+                "Turn has no generated response to regenerate",
+            ));
+        }
+        if turn.phase == "pending" {
+            return Err(AppError::bad_request("Turn is still generating"));
+        }
         return Err(AppError::bad_request(
-            "Only completed generated responses can be regenerated",
-        ));
-    }
-    if turn.prose.trim().is_empty() {
-        return Err(AppError::bad_request(
-            "Turn has no generated response to regenerate",
+            "Only completed, failed, or stuck turns can be retried",
         ));
     }
     if has_active_turn_job(pool, turn_id).await? {
@@ -1986,5 +2004,79 @@ mod tests {
         assert_eq!(actor_id, Some(guard_id));
         assert_eq!(num, Some(2));
         assert_eq!(max, Some(4));
+    }
+
+    #[test]
+    fn turn_can_be_regenerated_matches_ui_retry_affordances() {
+        let now = chrono::Utc::now();
+        let base = || GameTurn {
+            id: 1,
+            game_id: 1,
+            sort_order: 1,
+            player_action: "act".into(),
+            guidance_notes: String::new(),
+            phase: String::new(),
+            scene_beats: Vec::new(),
+            prose: String::new(),
+            thought_content: String::new(),
+            thought_duration_ms: None,
+            thought_in_progress: false,
+            state_changes: Vec::new(),
+            checks: Vec::new(),
+            system_rolls: Vec::new(),
+            plan: None,
+            mechanical_results: Vec::new(),
+            observability: TurnObservability::default(),
+            is_opening: false,
+            generation_error: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let mut turn = base();
+        turn.phase = "done".into();
+        turn.prose = "The door creaks.".into();
+        assert!(turn_can_be_regenerated(&turn));
+
+        turn.prose.clear();
+        assert!(!turn_can_be_regenerated(&turn));
+
+        turn.phase = "failed".into();
+        assert!(turn_can_be_regenerated(&turn));
+
+        turn.phase = "prose".into();
+        assert!(turn_can_be_regenerated(&turn));
+
+        turn.phase = "pending".into();
+        assert!(!turn_can_be_regenerated(&turn));
+
+        turn.phase = "checks_pause".into();
+        assert!(!turn_can_be_regenerated(&turn));
+    }
+
+    #[tokio::test]
+    async fn prepare_regenerate_turn_allows_failed_last_turn() {
+        let pool = test_pool().await;
+        let detail = create_game(&pool, GameCreate::default())
+            .await
+            .expect("create");
+        let game_id = detail.game.id;
+        let now = chrono::Utc::now().to_rfc3339();
+        let turn_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, is_opening, created_at, updated_at) VALUES (?1,1,'look around','','failed',0,?2,?2) RETURNING id",
+        )
+        .bind(game_id)
+        .bind(&now)
+        .fetch_one(&pool)
+        .await
+        .expect("turn");
+
+        let job = prepare_regenerate_turn(&pool, game_id, turn_id)
+            .await
+            .expect("regenerate");
+        assert_eq!(job.job_type, JobType::GameTurnStructuredAgent);
+
+        let turn = get_turn(&pool, game_id, turn_id).await.expect("turn");
+        assert_eq!(turn.phase, "pending");
     }
 }
