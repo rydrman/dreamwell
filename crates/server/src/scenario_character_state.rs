@@ -15,12 +15,13 @@ use crate::model_fallback::has_inference_provider;
 const GENERATE_CHARACTER_STATE_SYSTEM: &str = r#"You design initial typed game state for one character in a tabletop RPG scenario.
 
 Each state entry tracks one durable attribute the GM can update during play:
-- resource: numeric pool with current/max (health, stress, ammo)
-- clock: progress tracker with segments filled over time (suspicion, countdown)
-- condition: boolean-ish flag or short status label (hidden, hostile, armed)
-- fact: short textual truth (employer, secret_goal, last_seen_location)
+- fact (DEFAULT): short textual truth — mood, role, employer, secret_goal, last_seen_location, inventory items
+- condition: ephemeral status only (hidden, hostile, armed) — clears when resolved
+- resource: numeric pool with current/max — ONLY when the scenario truly needs a depletable track (health, stress, ammo)
+- clock: progress tracker with segments — ONLY when the scenario needs stepped countdown/progress (suspicion, alarm)
 
 Rules:
+- Prefer fact for most attributes; use resource/clock sparingly and only when numeric tracking is essential
 - Use snake_case keys; one atomic attribute per key
 - Prefer 3–8 entries that matter at scenario start
 - Match the scenario genre, stakes, and tone

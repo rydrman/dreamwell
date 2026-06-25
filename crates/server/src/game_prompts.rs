@@ -99,6 +99,11 @@ How to narrate:
 - Prefer plain action and dialogue over lyrical description and stacked metaphors unless GM style calls for richer prose.
 - Honor any resolved check tiers already rolled for this turn — a fail must not read as unqualified success.
 
+Turn scope (one beat):
+- Resolve exactly one story beat — the direct consequence of the player's stated action (plus any mandatory pending effect listed above).
+- Do not chain multiple beats: no extra arrivals, scene changes, time skips, or follow-on mechanics beyond what this action requires.
+- Stop at the next natural decision point; leave subsequent beats for future turns.
+
 Inline mechanics (use tools, never invent outcomes):
 - board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
 - Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
@@ -115,35 +120,32 @@ Tool call syntax (embed calls in prose — use this exact format):
 - Quote string values that contain spaces or commas: call:set_fact{target:world,key:location,value:"space 36, near finish"}
 
 Example rhythm (follow this interleaved pattern):
-GOOD — prose, then one tool, then outcome prose, repeat:
-  You hook a finger under the top card of the events deck and flip it face-up.
-  call:draw_card{deck_id:events}
-  The card reads "Shortcut — skip ahead one space."
-  call:set_condition{target:pc,key:has_shortcut,value:true}
-  You pocket the slip and reach for the die.
+GOOD — one beat: prose, then one tool, then outcome prose, then stop:
   You scoop up the move die and toss it across the board.
   call:board_move{actor:pc}
-  It clatters to a four; you advance four spaces toward the finish line.
+  It clatters to a four; you advance toward the finish line.
   call:set_fact{target:world,key:location,value:"space 36, near finish"}
   call:set_fact{target:pc,key:mood,value:excited}
-  call:adjust_resource{target:Sophie,key:arousal,delta:2}
-  Your pulse kicks up as the crowd cheers from the sidelines.
+  The crowd cheers from the sidelines — your next move is up to you.
 
 BAD — do not do this:
   call:draw_card{deck_id:events}call:board_move{actor:pc} together before any prose
   You roll a four and draw Shortcut. (outcomes invented before tools run)
-  adjust_resource(target="Sophie", key="arousal", delta=2) (parentheses syntax — not parsed)
+  adjust_resource(target="pc", key="mood", delta=2) (parentheses syntax — not parsed; mood is a fact, not a resource)
+  call:adjust_resource{target:pc,key:mood,delta:1} (mood/location/traits are facts — use set_fact)
   You're excited and standing near the finish line now. (location and mood only in prose — no set_fact call)
+  Then you draw another card, move again, and meet a stranger. (multiple beats in one turn)
 
 PC agency:
 - When a card or scene requires a choice the player has not made, call ask_pc_decision with a concrete question BEFORE resolving the effect.
 - Do not pick targets, options, or strategic decisions for the PC.
 
 Tracked state (use the dedicated state tools — one attribute per call):
-- call:set_fact{target,key,value} / call:clear_fact{target,key}: durable facts (location, inventory, NPC traits, quest stage).
-- call:set_condition{target,key,value} / call:clear_condition{target,key}: temporary statuses that clear soon (hidden, bleeding, inspired).
-- call:adjust_resource{target,key,delta} / call:set_resource{target,key,value}: numeric tracks (stress +1, supply = 3); values clamp to 0..max.
-- call:advance_clock{target,key,delta} / call:set_clock{target,key,value}: segmented progress clocks.
+- DEFAULT to set_fact for durable attributes: location, mood, inventory, traits, relationships, quest stage, appearance. When unsure, use set_fact — not adjust_resource.
+- call:set_fact{target,key,value} / call:clear_fact{target,key}: durable text facts (see above).
+- call:set_condition{target,key,value} / call:clear_condition{target,key}: ephemeral statuses only (hidden, bleeding, inspired) — not durable mood or location.
+- call:adjust_resource{target,key,delta} / call:set_resource{target,key,value}: ONLY for keys already shown as (resource): N/M in current state.
+- call:advance_clock{target,key,delta} / call:set_clock{target,key,value}: ONLY for keys already shown as (clock): N/M in current state.
 - target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
 - When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
 
@@ -495,6 +497,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         let guidance_present = !effective_turn_guidance(turn, guidance).is_empty();
         let mut instruction = String::from(
             "Narrate this turn now in second person (\"you\"). \
+             Resolve one beat — the direct consequence of the player's action — then stop; do not chain multiple story beats. \
              Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
              If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
              For each mechanic: prose lead-up → one tool call → prose from the result — never batch multiple mechanics or call tools before describing the action; \
@@ -1274,6 +1277,8 @@ mod tests {
         assert!(system.contains("call:set_condition"));
         assert!(system.contains("call:adjust_resource"));
         assert!(system.contains("no set_fact call"));
+        assert!(system.contains("one beat"));
+        assert!(system.contains("DEFAULT to set_fact"));
         assert!(system.contains("parentheses syntax"));
         assert!(system.contains("One mechanic per cycle"));
         let user = msgs[1]["content"].as_str().unwrap();
