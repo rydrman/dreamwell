@@ -77,12 +77,9 @@ fn turn_text_to_restore_on_rewind(
         let turn = &turns[turn_idx];
         Some((turn.player_action.clone(), turn.guidance_notes.clone()))
     } else {
-        turns.get(turn_idx + 1).map(|turn| {
-            (
-                turn.player_action.clone(),
-                turn.guidance_notes.clone(),
-            )
-        })
+        turns
+            .get(turn_idx + 1)
+            .map(|turn| (turn.player_action.clone(), turn.guidance_notes.clone()))
     }
 }
 
@@ -275,9 +272,9 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 if !confirm_rewind_turns(delete_count, include_turn) {
                     return;
                 }
-                let restore_text = (*detail).as_ref().and_then(|d| {
-                    turn_text_to_restore_on_rewind(&d.turns, turn_id, include_turn)
-                });
+                let restore_text = (*detail)
+                    .as_ref()
+                    .and_then(|d| turn_text_to_restore_on_rewind(&d.turns, turn_id, include_turn));
                 let detail = detail.clone();
                 let action_input = action_input.clone();
                 let guidance_input = guidance_input.clone();
