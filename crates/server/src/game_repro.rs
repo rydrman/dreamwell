@@ -22,7 +22,7 @@ use dreamwell_types::{
 
 use crate::game_prompts::{
     build_inline_prose_agent_messages, build_mechanics_agent_messages,
-    build_prose_narration_messages,
+    build_prose_narration_messages, ensure_inline_mech_markers,
 };
 use crate::game_tools::{
     handle_mechanical_tool_call, inline_prose_tool_specs, is_state_tool,
@@ -692,9 +692,11 @@ async fn run_repro_turn_two_pass(
     }
 
     let (_, cleaned) = salvage_bare_tool_calls(&prose, Some(&prose_defs));
+    let mut final_prose = strip_residual_call_syntax(&cleaned);
+    ensure_inline_mech_markers(&mut final_prose, &session.mechanical_results);
     ReproTurn {
         events,
-        final_prose: strip_residual_call_syntax(&cleaned),
+        final_prose,
     }
 }
 
@@ -720,6 +722,15 @@ fn print_transcript(label: &str, turn: &ReproTurn) {
         }
     }
     println!("  --- final prose ---\n{}", turn.final_prose.trim());
+    let marker_count = turn
+        .final_prose
+        .matches(dreamwell_types::PROSE_MECH_MARKER_OPEN)
+        .count();
+    if marker_count > 0 {
+        println!("  >>> {marker_count} inline mech marker(s) in final prose");
+    } else {
+        println!("  >>> no inline mech markers in final prose");
+    }
 }
 
 fn combat_scenario() -> (Game, GameDetail, GameTurn) {
