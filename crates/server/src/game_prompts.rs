@@ -81,6 +81,9 @@ pub fn declare_checks_repair_hint() -> &'static str {
 - Do not use alternate key names like trait, name, mod, or dramatic_checks"#
 }
 
+/// Legacy single-pass inline-prose system prompt. Kept for the reproduction harness
+/// and prompt tests that document why the two-pass mechanics→prose split replaced it.
+#[cfg(test)]
 const INLINE_PROSE_AGENT_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose that resolves the player's action and moves the scene forward, calling tools inline to fire any real game mechanic.
 
 POV (overrides GM style):
@@ -170,6 +173,68 @@ Ending the turn:
 - When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
 - Narrate up to the next decision point, then stop — do not narrate the PC's next choice for them.
 - Plain prose and tool calls only — no JSON, no meta commentary, no headers."#;
+
+const MECHANICS_AGENT_SYSTEM: &str = r#"You are the rules engine for ONE turn of a tabletop scenario. Your ONLY job is to resolve the mechanical steps the player's action triggers by calling tools. You do NOT narrate — a separate narrator writes the prose afterward from the results you produce.
+
+Hard rules:
+- Output tool calls ONLY. Write NO prose, NO narration, NO commentary, and NO outcome numbers in text.
+- Call board_move, draw_card, and roll_dice exactly as the scenario rules require, ONE step at a time, and wait for each tool's real returned result before deciding the next call.
+- Never state or guess an outcome — the tool decides it. React only to the tool's actual returned result.
+- For movement on a board use board_move (it rolls the move die for you and advances the piece). Never call roll_dice to move a piece, and never pair roll_dice with board_move for the same step (that double-rolls). Use roll_dice only for dice the rules call for outside board movement (card effects, damage, encounter or skill rolls).
+- A card's fixed effect (e.g. "move forward 2 spaces") is NOT a new die roll — apply it as state, do not board_move again for it. Only call board_move / roll_dice when the rules actually call for a die.
+- draw_card needs an explicit deck_id chosen per the scenario rules.
+- Resolve only the mechanics for THIS player action (and any pending effect listed above), then STOP. Do not start a new beat, extra move, or extra draw the player did not take.
+- If the player must make a choice before a mechanic can resolve, call ask_pc_decision with a concrete question and stop.
+- When every required mechanic is resolved (or none is needed at all), reply with exactly the word DONE and call no tool.
+
+Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
+- Do NOT use parentheses like board_move(actor="pc") — those are not parsed.
+- Quote string values that contain spaces or commas."#;
+
+const PROSE_NARRATE_SYSTEM: &str = r#"You are the narrator for ONE turn of a tabletop scenario. The turn's mechanical outcomes have ALREADY been rolled and resolved for you — they are listed under "Resolved mechanics (canonical)" in the user message.
+
+Your primary output is PROSE:
+- ALWAYS begin your response with the narrative prose for this turn — at least one full paragraph of second-person narration. Never start with a tool call.
+- Write the complete narration FIRST. Only AFTER the prose is written may you call state tools to record what changed. Never produce a turn that is only tool calls with no prose.
+- Tool calls are secondary bookkeeping; the player reads the prose, so it must always be present and describe everything that happened.
+
+POV (overrides GM style):
+- Always narrate the PC in second person: "you"/"your" — NEVER "I"/"my"/"me" for the PC, even if GM style says first person.
+- NPCs and their dialogue use third person or quoted speech as usual.
+
+Use the resolved results, never invent new ones:
+- The canonical outcomes are fixed. Do NOT invent, change, re-roll, re-draw, or add any dice roll, card draw, or board move.
+- If that section says there were no mechanics, this is pure narration with no dice/cards/moves.
+- Honor any resolved check tiers already rolled — a fail must not read as an unqualified success.
+
+Inline outcome blocks (presentation — the UI renders the real result):
+- Each resolved mechanic in "Resolved mechanics (canonical)" has a reference marker like ⟦mech:0⟧. Embed that marker EXACTLY at the point in the narration where that outcome should appear.
+- Rhythm: write lead-up prose that stops before the outcome (reaching for the card, the die leaving your hand), insert the marker, then write reaction prose that follows from whatever the block shows — without restating the die face, card name, card text, or landing space in your own words.
+- The marker is the only place the player sees the rolled number or drawn card; do not duplicate those facts in surrounding prose.
+- Use each listed marker exactly once, in story order matching the canonical list.
+- Dramatic checks rolled before this turn may already be anchored with ⟦check:N⟧ at the start — narrate from those tiers without contradicting them.
+
+How to narrate:
+- Narrate the world, NPCs, environment, and the consequences of the player's stated action and GM guidance, in second person.
+- Follow GM style and scenario rules for pacing, length, and detail. Prefer plain action and dialogue over stacked metaphors unless GM style calls for richer prose.
+
+Turn scope (one beat):
+- Advance the story by ONE beat — resolve the player's stated action (using the resolved mechanics) and then stop.
+- Do NOT invent extra beats: no new arrivals, scene changes, time skips, or unprompted follow-on actions the player did not take.
+
+Tracked state (use the dedicated state tools — one attribute per call):
+- When the narration establishes or changes a durable fact (location, mood, inventory, traits, relationships, quest stage) OR applies a resolved card/mechanic effect, call the matching state tool — do not only mention it in prose. The tool is the source of truth.
+- DEFAULT to set_fact for durable text attributes. Use set_condition for ephemeral statuses (hidden, bleeding); adjust_resource/set_resource for numeric tracks with a max; advance_clock/set_clock for progress clocks.
+- Keep a key's kind stable: if current state already shows a key as (fact)/(resource)/(clock)/(condition), keep using the matching tool.
+- target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
+
+Ending the turn:
+- When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
+- Plain prose and state/ask tool calls only — no JSON, no headers, no meta commentary.
+
+Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
+- Do NOT use parentheses like set_fact(key="mood") — those are not parsed.
+- Quote string values that contain spaces or commas: call:set_fact{target:world,key:location,value:"space 36, near finish"}"#;
 
 const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
 - The player action is the PC's intent when present. GM guidance is mandatory direction from the human running the game — not optional flavor.
@@ -302,8 +367,21 @@ fn append_characters_section(body: &mut String, actors: &[GameActor]) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnPromptPhase {
     DeclareChecks,
-    /// Single-pass narration that calls scenario mechanic tools inline (structured engine mode).
+    /// Single-pass narration that calls scenario mechanic tools inline (legacy; test-only).
+    #[cfg(test)]
     ProseInline,
+    /// Mechanics-resolution pass: roll/draw/move via tools only, no prose.
+    MechanicsResolve,
+    /// Narration pass: write prose from the already-resolved mechanics (no outcome tools).
+    ProseNarrate,
+}
+
+impl TurnPromptPhase {
+    /// Whether this phase is a "prose-context" phase that needs game elements,
+    /// resolved checks, annotated state, and the pending card-in-play hint.
+    fn is_prose_context(self) -> bool {
+        !matches!(self, TurnPromptPhase::DeclareChecks)
+    }
 }
 
 /// Inputs shared by every turn-pipeline prompt builder.
@@ -315,6 +393,8 @@ struct TurnPromptInputs<'a> {
     guidance: &'a str,
     settings: &'a Settings,
     ctx: &'a MacroContext<'a>,
+    /// Canonical mechanics already resolved this turn (only set for `ProseNarrate`).
+    resolved_mechanics: &'a [dreamwell_types::MechanicalResult],
 }
 
 /// Generous guardrail for total scenario-rules size. History has its own
@@ -424,9 +504,10 @@ fn history_context_for_phase(
     ctx: &MacroContext<'_>,
 ) -> String {
     let budget = turn_context_budget(settings);
-    let (budget, min_recent_prose) = match phase {
-        TurnPromptPhase::ProseInline => (budget, 1),
-        TurnPromptPhase::DeclareChecks => (budget, 0),
+    let min_recent_prose = if phase == TurnPromptPhase::DeclareChecks {
+        0
+    } else {
+        1
     };
     let tiers = build_turn_context_tiers_with_budget(
         &detail.turns,
@@ -449,6 +530,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         guidance,
         settings,
         ctx,
+        resolved_mechanics,
     } = inputs;
 
     // Ordered stable → volatile so the leading scenario rules + characters form
@@ -467,7 +549,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
     // Scenario-authored vars are seeded as live state entries, so present a single
     // "Current state" view; fold each var's update hint inline rather than repeating
     // the values in a separate schema block.
-    let state_block = if phase == TurnPromptPhase::ProseInline {
+    let state_block = if phase.is_prose_context() {
         let hints = state_hint_annotations(&game.state_schema, &detail.actors);
         build_state_block_annotated(&detail.state, &detail.actors, &hints)
     } else {
@@ -475,7 +557,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
     };
     push_section(&mut body, &format!("Current state:\n{state_block}"));
 
-    if phase == TurnPromptPhase::ProseInline {
+    if phase.is_prose_context() {
         let elements = format_game_elements_context(game);
         if !elements.is_empty() {
             push_section(&mut body, &elements);
@@ -491,7 +573,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         push_section(&mut body, &mechanics);
     }
 
-    if phase == TurnPromptPhase::ProseInline {
+    if phase.is_prose_context() {
         let checks_text = format_resolved_checks(checks);
         push_section(&mut body, &format!("Resolved checks:\n{checks_text}"));
         if let Some(section) = card_in_play_section(detail, turn) {
@@ -499,37 +581,145 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         }
     }
 
-    append_turn_direction(&mut body, turn, guidance);
-
-    if phase == TurnPromptPhase::DeclareChecks {
+    if phase == TurnPromptPhase::ProseNarrate {
         push_section(
             &mut body,
-            "Decide whether this action needs dramatic checks. \
-             Respond with JSON only — use the exact field names from the system message \
-             (checks, label, skill, modifier, stakes, justification, no_check_reason).",
+            &format_resolved_mechanics_block(resolved_mechanics),
         );
     }
 
-    if phase == TurnPromptPhase::ProseInline {
-        let guidance_present = !effective_turn_guidance(turn, guidance).is_empty();
-        let mut instruction = String::from(
-            "Narrate this turn now in second person (\"you\"). \
-             Advance one beat — fully resolve the player's action and the mechanics it requires — then stop; do not invent extra story beats. \
-             Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
-             If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
-             For each mechanic: lead-up prose that stops before any outcome → one tool call → outcome prose using the number/text the tool returned. \
-             Never state a die face, space count, or card name before its tool runs, and never let your prose contradict the tool's result; never batch multiple mechanics; \
-             call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
-        );
-        if guidance_present {
-            instruction.push_str(
-                " If GM guidance is present above, it is mandatory human direction — the turn must visibly follow it.",
+    append_turn_direction(&mut body, turn, guidance);
+
+    let guidance_present = !effective_turn_guidance(turn, guidance).is_empty();
+    match phase {
+        TurnPromptPhase::DeclareChecks => {
+            push_section(
+                &mut body,
+                "Decide whether this action needs dramatic checks. \
+                 Respond with JSON only — use the exact field names from the system message \
+                 (checks, label, skill, modifier, stakes, justification, no_check_reason).",
             );
         }
-        push_section(&mut body, &instruction);
+        TurnPromptPhase::MechanicsResolve => {
+            let mut instruction = String::from(
+                "Resolve this turn's mechanics now. Tool calls ONLY — write no prose. \
+                 Follow the scenario rules for turn sequencing and which mechanic applies. \
+                 If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
+                 Call one mechanic tool at a time and wait for its real result before the next. \
+                 A card's fixed move/effect is applied as state by the narrator — do not board_move or roll_dice for it. \
+                 When all required mechanics are resolved (or none are needed), reply with exactly DONE and call no tool. \
+                 Use ask_pc_decision if the player must choose before a mechanic can resolve.",
+            );
+            if guidance_present {
+                instruction.push_str(
+                    " If GM guidance is present above, it is mandatory human direction — resolve the mechanics it calls for.",
+                );
+            }
+            push_section(&mut body, &instruction);
+        }
+        TurnPromptPhase::ProseNarrate => {
+            let mut instruction = String::from(
+                "Narrate this turn now in second person (\"you\") using the resolved mechanics above. \
+                 Begin with the narrative prose — write the full narration FIRST (at least a paragraph); do not start with a tool call or end the turn without prose. \
+                 Embed each ⟦mech:N⟧ marker from the canonical list at the point in the story where that outcome belongs; do not restate die faces, card names, or landing spaces in prose — the marker block shows them. \
+                 Advance one beat — resolve the player's action and the resolved mechanics — then stop; do not invent extra beats. \
+                 AFTER the prose, call the tracked-state tools for durable changes the narration establishes, and stop with ask_pc_decision only when the PC owes a choice.",
+            );
+            if guidance_present {
+                instruction.push_str(
+                    " If GM guidance is present above, it is mandatory human direction — the turn must visibly follow it.",
+                );
+            }
+            push_section(&mut body, &instruction);
+        }
+        #[cfg(test)]
+        TurnPromptPhase::ProseInline => {
+            let mut instruction = String::from(
+                "Narrate this turn now in second person (\"you\"). \
+                 Advance one beat — fully resolve the player's action and the mechanics it requires — then stop; do not invent extra story beats. \
+                 Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
+                 If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
+                 For each mechanic: lead-up prose that stops before any outcome → one tool call → outcome prose using the number/text the tool returned. \
+                 Never state a die face, space count, or card name before its tool runs, and never let your prose contradict the tool's result; never batch multiple mechanics; \
+                 call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
+            );
+            if guidance_present {
+                instruction.push_str(
+                    " If GM guidance is present above, it is mandatory human direction — the turn must visibly follow it.",
+                );
+            }
+            push_section(&mut body, &instruction);
+        }
     }
 
     body
+}
+
+/// Format the canonical resolved mechanics for the narration pass so the narrator
+/// reuses the exact rolled numbers, drawn cards, and board spaces.
+fn format_resolved_mechanics_block(results: &[dreamwell_types::MechanicalResult]) -> String {
+    use dreamwell_types::MechanicalData;
+    if results.is_empty() {
+        return "Resolved mechanics (canonical):\n(none — pure narration this turn; do not invent any dice, cards, or moves)".to_string();
+    }
+    let lines: Vec<String> = results
+        .iter()
+        .map(|r| {
+            let marker = dreamwell_types::prose_mech_marker(r.sort_order);
+            match &r.data {
+                MechanicalData::DiceRoll {
+                    dice_expr,
+                    rolls,
+                    total,
+                } => {
+                    let label = if r.label.trim().is_empty() {
+                        "Dice".to_string()
+                    } else {
+                        r.label.trim().to_string()
+                    };
+                    format!(
+                        "- {marker} {label} ({dice_expr}): rolled {rolls:?} = {total}"
+                    )
+                }
+                MechanicalData::BoardMove {
+                    actor,
+                    roll,
+                    from_space,
+                    to_space,
+                    space_tags,
+                    ..
+                } => format!(
+                    "- {marker} Board move: {actor} rolled {roll}, moved space {from_space} → {to_space} (tags: {})",
+                    space_tags.join(", ")
+                ),
+                MechanicalData::CardDraw {
+                    name,
+                    text,
+                    deck_id,
+                    ..
+                } => format!("- {marker} Card drawn from {deck_id}: {name} — {text}"),
+            }
+        })
+        .collect();
+    format!("Resolved mechanics (canonical):\n{}", lines.join("\n"))
+}
+
+/// Ensure every resolved mechanic has its inline marker in the prose. The model is
+/// prompted to place markers, but weak models may omit them — append any missing ones
+/// in canonical order so the UI can still render outcomes inline.
+pub(crate) fn ensure_inline_mech_markers(
+    prose: &mut String,
+    results: &[dreamwell_types::MechanicalResult],
+) {
+    for result in results {
+        let marker = dreamwell_types::prose_mech_marker(result.sort_order);
+        if !prose.contains(&marker) {
+            if !prose.is_empty() {
+                prose.push_str("\n\n");
+            }
+            prose.push_str(&marker);
+        }
+    }
 }
 
 /// When the immediately previous turn ended on a freshly drawn card whose effect was
@@ -659,6 +849,7 @@ pub fn build_declare_checks_messages(
         guidance,
         settings,
         ctx: &ctx,
+        resolved_mechanics: &[],
     };
     let body = build_cumulative_turn_body(TurnPromptPhase::DeclareChecks, &inputs);
     let user = user_message_with_scenario(game, &body, &ctx);
@@ -668,8 +859,75 @@ pub fn build_declare_checks_messages(
     ]
 }
 
-/// Messages for the single-pass inline-prose tool agent (structured engine mode):
-/// the model narrates and calls scenario mechanic tools inline.
+/// Messages for the mechanics-resolution pass: the model resolves dice/board/card
+/// mechanics by calling tools only (no prose), so every outcome is server-decided
+/// before any narration is written.
+pub fn build_mechanics_agent_messages(
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    checks: &[GameTurnCheck],
+    guidance: &str,
+    settings: &Settings,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
+    let inputs = TurnPromptInputs {
+        game,
+        detail,
+        turn,
+        checks,
+        guidance,
+        settings,
+        ctx: &ctx,
+        resolved_mechanics: &[],
+    };
+    let body = build_cumulative_turn_body(TurnPromptPhase::MechanicsResolve, &inputs);
+    let user = user_message_with_scenario(game, &body, &ctx);
+    vec![
+        json!({ "role": "system", "content": game_system_prompt(MECHANICS_AGENT_SYSTEM) }),
+        json!({ "role": "user", "content": user }),
+    ]
+}
+
+/// Messages for the narration pass: the model writes prose from the already-resolved
+/// mechanics (passed in `resolved_mechanics`) and may only call state / ask tools.
+pub fn build_prose_narration_messages(
+    game: &Game,
+    detail: &GameDetail,
+    turn: &GameTurn,
+    checks: &[GameTurnCheck],
+    resolved_mechanics: &[dreamwell_types::MechanicalResult],
+    guidance: &str,
+    settings: &Settings,
+) -> Vec<serde_json::Value> {
+    let ctx = MacroContext::from_game_detail_and_settings(detail, settings);
+    let inputs = TurnPromptInputs {
+        game,
+        detail,
+        turn,
+        checks,
+        guidance,
+        settings,
+        ctx: &ctx,
+        resolved_mechanics,
+    };
+    let body = build_cumulative_turn_body(TurnPromptPhase::ProseNarrate, &inputs);
+    let user = user_message_with_scenario(game, &body, &ctx);
+    vec![
+        json!({
+            "role": "system",
+            "content": format!(
+                "{}\n\n{STATE_TARGET_RULES}",
+                game_system_prompt(PROSE_NARRATE_SYSTEM)
+            ),
+        }),
+        json!({ "role": "user", "content": user }),
+    ]
+}
+
+/// Messages for the legacy single-pass inline-prose tool agent. Retained for the
+/// reproduction harness and prompt tests that compare it against the two-pass split.
+#[cfg(test)]
 pub fn build_inline_prose_agent_messages(
     game: &Game,
     detail: &GameDetail,
@@ -687,6 +945,7 @@ pub fn build_inline_prose_agent_messages(
         guidance,
         settings,
         ctx: &ctx,
+        resolved_mechanics: &[],
     };
     let body = build_cumulative_turn_body(TurnPromptPhase::ProseInline, &inputs);
     let user = user_message_with_scenario(game, &body, &ctx);
@@ -1276,6 +1535,116 @@ mod tests {
         );
         // No separate schema block — the var rides alongside the live value.
         assert!(!user.contains("Tracked state schema"));
+    }
+
+    #[test]
+    fn mechanics_pass_is_tools_only_no_prose() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let msgs = build_mechanics_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let system = msgs[0]["content"].as_str().unwrap();
+        assert!(system.contains("rules engine"));
+        assert!(system.contains("Output tool calls ONLY"));
+        assert!(system.contains("reply with exactly the word DONE"));
+        let user = msgs[1]["content"].as_str().unwrap();
+        assert!(user.contains("Tool calls ONLY"));
+        // Mechanics pass still carries the scenario context for tool sequencing.
+        assert!(user.contains("Current state:"));
+    }
+
+    #[test]
+    fn prose_pass_includes_resolved_mechanics_and_forbids_rerolling() {
+        use dreamwell_types::{MechanicalData, MechanicalKind, MechanicalResult};
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let resolved = vec![
+            MechanicalResult {
+                kind: MechanicalKind::DiceRoll,
+                label: "attack roll".into(),
+                data: MechanicalData::DiceRoll {
+                    dice_expr: "1d6".into(),
+                    rolls: vec![5],
+                    total: 5,
+                },
+                sort_order: 0,
+            },
+            MechanicalResult {
+                kind: MechanicalKind::CardDraw,
+                label: "draw".into(),
+                data: MechanicalData::CardDraw {
+                    deck_id: "events".into(),
+                    card_id: "events:1".into(),
+                    name: "Boost".into(),
+                    text: "Move forward 2 extra spaces.".into(),
+                    consumed: true,
+                },
+                sort_order: 1,
+            },
+        ];
+        let msgs =
+            build_prose_narration_messages(&game, &detail, &turn, &[], &resolved, "", &settings);
+        let system = msgs[0]["content"].as_str().unwrap();
+        assert!(system.contains("ALREADY been rolled"));
+        assert!(system.contains("begin your response with the narrative prose"));
+        assert!(system.contains("⟦mech:0⟧"));
+        assert!(system.contains("Do NOT invent, change, re-roll"));
+        let user = msgs[1]["content"].as_str().unwrap();
+        assert!(user.contains("Resolved mechanics (canonical):"));
+        assert!(user.contains("⟦mech:0⟧ attack roll (1d6): rolled [5] = 5"));
+        assert!(user.contains("⟦mech:1⟧ Card drawn from events: Boost"));
+        assert!(user.contains("Embed each ⟦mech:N⟧ marker"));
+    }
+
+    #[test]
+    fn ensure_inline_mech_markers_appends_missing_in_order() {
+        use dreamwell_types::{MechanicalData, MechanicalKind, MechanicalResult};
+        let results = vec![
+            MechanicalResult {
+                kind: MechanicalKind::DiceRoll,
+                label: "roll".into(),
+                data: MechanicalData::DiceRoll {
+                    dice_expr: "1d6".into(),
+                    rolls: vec![3],
+                    total: 3,
+                },
+                sort_order: 0,
+            },
+            MechanicalResult {
+                kind: MechanicalKind::DiceRoll,
+                label: "roll".into(),
+                data: MechanicalData::DiceRoll {
+                    dice_expr: "1d6".into(),
+                    rolls: vec![6],
+                    total: 6,
+                },
+                sort_order: 1,
+            },
+        ];
+        let mut prose = format!(
+            "You reach for the die.\n\n{}",
+            dreamwell_types::prose_mech_marker(0)
+        );
+        ensure_inline_mech_markers(&mut prose, &results);
+        assert!(prose.contains(&dreamwell_types::prose_mech_marker(0)));
+        assert!(prose.contains(&dreamwell_types::prose_mech_marker(1)));
+        let first = prose.find(&dreamwell_types::prose_mech_marker(0)).unwrap();
+        let second = prose.find(&dreamwell_types::prose_mech_marker(1)).unwrap();
+        assert!(first < second);
+    }
+
+    #[test]
+    fn prose_pass_marks_empty_mechanics_as_pure_narration() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let msgs = build_prose_narration_messages(&game, &detail, &turn, &[], &[], "", &settings);
+        let user = msgs[1]["content"].as_str().unwrap();
+        assert!(user.contains("(none — pure narration this turn"));
     }
 
     #[test]

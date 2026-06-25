@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use dreamwell_types::{AppliedStateChange, EngineMode, Settings, TurnObservability};
+use dreamwell_types::{
+    AppliedStateChange, EngineMode, MechanicalResult, Settings, TurnObservability,
+};
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
 use tokio_util::sync::CancellationToken;
@@ -8,19 +10,29 @@ use tokio_util::sync::CancellationToken;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
-use crate::game_prompts::build_inline_prose_agent_messages;
+use crate::game_prompts::{
+    build_mechanics_agent_messages, build_prose_narration_messages, ensure_inline_mech_markers,
+};
 use crate::game_tools::{
-    handle_mechanical_tool_call, inline_prose_tool_specs, is_state_tool, parse_state_tool_call,
-    ToolSessionState,
+    handle_mechanical_tool_call, is_outcome_tool, is_state_tool, mechanics_agent_tool_specs,
+    parse_state_tool_call, prose_agent_tool_specs, ToolSessionState,
 };
 use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
-use crate::inference::{ToolLoopConfig, ToolStreamChunk};
+use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
 use crate::model_fallback::stream_chat_completion_with_tools_connection_fallback;
 use crate::thoughts::{parse_thought_blocks, thought_timing};
 use crate::tool_stream::{
-    resolve_tool_parser, salvage_bare_tool_calls, tool_definitions_from_specs, JailEvent,
-    ToolStreamJail,
+    resolve_tool_parser, salvage_bare_tool_calls, strip_residual_call_syntax,
+    tool_definitions_from_specs, JailEvent, ToolStreamJail,
 };
+
+/// Outcome of the mechanics-resolution pass.
+struct MechanicsOutcome {
+    llm_calls: u32,
+    tool_calls: u32,
+    /// Set when the model paused for a player decision before mechanics could finish.
+    asked_question: Option<String>,
+}
 
 pub async fn run_tools_structured_phase(
     pool: &SqlitePool,
@@ -42,40 +54,15 @@ pub async fn run_tools_structured_phase(
         declare_and_roll_checks(pool, game_id, turn_id, guidance, settings, token, job_id).await?;
     db::update_turn_phase(pool, turn_id, "rolled").await?;
 
-    // Phase 2 — single narration pass that fires scenario mechanics inline.
     if token.is_cancelled() {
         return Err(AppError::bad_request("cancelled"));
-    }
-    db::update_turn_phase(pool, turn_id, "prose").await?;
-    if settings.thought_blocks_enabled {
-        db::clear_turn_thoughts(pool, turn_id).await?;
     }
     let detail = db::get_game_detail(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
-    let inference = db::get_inference_config(pool).await?;
     let model_override = model_override_for_phase(&game, settings, GameModelPhase::Prose);
-
-    let mut session = ToolSessionState::new(game.clone());
-    let mut messages =
-        build_inline_prose_agent_messages(&game, &detail, &turn, &checks, guidance, settings);
-    let tools = inline_prose_tool_specs();
-    let loop_config = ToolLoopConfig::default();
-
-    let mut prose = String::new();
-    for check in &checks {
-        append_check_marker(&mut prose, check.sort_order);
-    }
-    if !prose.is_empty() {
-        db::update_turn_prose(pool, turn_id, &prose).await?;
-        db::touch_game(pool, game_id).await?;
-    }
-    let mut applied_state: Vec<AppliedStateChange> = Vec::new();
-    let mut llm_calls = 0u32;
-    let mut tool_call_count = 0u32;
-    let mut end_turn_early = false;
     let parser = resolve_tool_parser(
-        &inference.tool_call_parser,
+        &db::get_inference_config(pool).await?.tool_call_parser,
         model_override
             .as_deref()
             .or_else(|| {
@@ -84,8 +71,334 @@ pub async fn run_tools_structured_phase(
             })
             .unwrap_or(""),
     );
+
+    // Phase 2 — resolve every dice/board/card mechanic up front via tool calls only.
+    // Doing this before any narration means the model never narrates a fabricated
+    // result and then contradicts it with a later tool call.
+    db::update_turn_phase(pool, turn_id, "mechanics").await?;
+    let mut session = ToolSessionState::new(game.clone());
+    let mech = run_mechanics_pass(
+        pool,
+        job_id,
+        game_id,
+        turn_id,
+        &game,
+        &detail,
+        &turn,
+        &checks,
+        guidance,
+        settings,
+        model_override.as_deref(),
+        parser,
+        &mut session,
+        token,
+    )
+    .await?;
+
+    if !session.mechanical_results.is_empty() {
+        persist_turn_mechanicals(
+            pool,
+            game_id,
+            turn_id,
+            &game,
+            &session.mechanical_results,
+            &session.instances,
+        )
+        .await?;
+    }
+
+    // Phase 3 — narrate the turn from the canonical mechanics (no outcome tools).
+    if token.is_cancelled() {
+        return Err(AppError::bad_request("cancelled"));
+    }
+    db::update_turn_phase(pool, turn_id, "prose").await?;
+    if settings.thought_blocks_enabled {
+        db::clear_turn_thoughts(pool, turn_id).await?;
+    }
+    let prose = run_prose_pass(
+        pool,
+        job_id,
+        game_id,
+        turn_id,
+        &game,
+        &detail,
+        &turn,
+        &checks,
+        &session.mechanical_results,
+        mech.asked_question.as_deref(),
+        guidance,
+        settings,
+        model_override.as_deref(),
+        parser,
+        token,
+    )
+    .await?;
+
+    if !prose.applied_state.is_empty() {
+        db::update_turn_state_changes(pool, turn_id, &prose.applied_state).await?;
+        db::invalidate_scene_summaries_from(pool, game_id, turn.sort_order).await?;
+    }
+
+    let has_content = if settings.thought_blocks_enabled {
+        let parsed = parse_thought_blocks(&prose.prose);
+        !parsed.reply.trim().is_empty() || !parsed.thought.is_empty()
+    } else {
+        !prose.prose.trim().is_empty()
+    };
+    if !has_content {
+        db::complete_job(
+            pool,
+            job_id,
+            dreamwell_types::JobStatus::Failed,
+            Some("model returned no prose".to_string()),
+        )
+        .await?;
+        db::update_turn_phase(pool, turn_id, "failed").await?;
+        return Ok(());
+    }
+
+    let elapsed = started.elapsed().as_millis() as u64;
+    let llm_calls = mech.llm_calls + prose.llm_calls;
+    let tool_calls = mech.tool_calls + prose.tool_calls;
+    let obs = TurnObservability {
+        engine_mode: EngineMode::ToolsStructured,
+        llm_call_count: llm_calls,
+        tool_call_count: tool_calls,
+        tool_iterations: llm_calls,
+        phase_timings_ms: [("structured".to_string(), elapsed)].into(),
+    };
+    db::merge_turn_observability(pool, turn_id, obs).await?;
+
+    db::update_turn_phase(pool, turn_id, "done").await?;
+    db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+    db::touch_game(pool, game_id).await?;
+    crate::game_summarize::maybe_enqueue_scene_summarize(pool, game_id).await?;
+    Ok(())
+}
+
+/// Resolve all scenario mechanics for the turn by calling the mechanic tools only.
+/// Produces real, server-decided outcomes (collected in `session`) with no prose.
+#[allow(clippy::too_many_arguments)]
+async fn run_mechanics_pass(
+    pool: &SqlitePool,
+    job_id: i64,
+    game_id: i64,
+    turn_id: i64,
+    game: &dreamwell_types::Game,
+    detail: &dreamwell_types::GameDetail,
+    turn: &dreamwell_types::GameTurn,
+    checks: &[dreamwell_types::GameTurnCheck],
+    guidance: &str,
+    settings: &Settings,
+    model_override: Option<&str>,
+    parser: Option<&'static str>,
+    session: &mut ToolSessionState,
+    token: &CancellationToken,
+) -> AppResult<MechanicsOutcome> {
+    let mut messages =
+        build_mechanics_agent_messages(game, detail, turn, checks, guidance, settings);
+    let tools = mechanics_agent_tool_specs();
     let tool_defs = tool_definitions_from_specs(&tools);
-    let mut jail = ToolStreamJail::new(parser);
+    let loop_config = ToolLoopConfig::default();
+
+    let mut llm_calls = 0u32;
+    let mut tool_calls = 0u32;
+    let mut asked_question: Option<String> = None;
+
+    for _ in 0..loop_config.max_iterations {
+        if token.is_cancelled() {
+            return Err(AppError::bad_request("cancelled"));
+        }
+        let mut stream = stream_chat_completion_with_tools_connection_fallback(
+            pool,
+            settings,
+            &messages,
+            &tools,
+            &serde_json::json!("auto"),
+            Some(job_id),
+            None,
+            model_override,
+        )
+        .await?;
+        llm_calls += 1;
+
+        let mut jail = ToolStreamJail::new(parser);
+        let mut iteration_content = String::new();
+        let mut leaked = String::new();
+        let mut pending: Vec<ToolCall> = Vec::new();
+
+        while let Some(chunk_result) = stream.next().await {
+            if token.is_cancelled() {
+                return Err(AppError::bad_request("cancelled"));
+            }
+            match chunk_result? {
+                ToolStreamChunk::Content(token_str) => {
+                    iteration_content.push_str(&token_str);
+                    for event in jail.push(&token_str, Some(&tool_defs)).await? {
+                        match event {
+                            JailEvent::Prose(piece) => leaked.push_str(&piece),
+                            JailEvent::ToolCall(tc) => pending.push(tc),
+                        }
+                    }
+                }
+                ToolStreamChunk::Done {
+                    native_tool_calls, ..
+                } => pending.extend(native_tool_calls),
+            }
+        }
+        for event in jail.finish(Some(&tool_defs)).await? {
+            match event {
+                JailEvent::Prose(piece) => leaked.push_str(&piece),
+                JailEvent::ToolCall(tc) => pending.push(tc),
+            }
+        }
+        // The mechanics pass should emit tool calls only; salvage any that leaked as text.
+        let (salvaged, _) = salvage_bare_tool_calls(&leaked, Some(&tool_defs));
+        for call in salvaged {
+            if !pending
+                .iter()
+                .any(|tc| tc.name == call.name && tc.arguments == call.arguments)
+            {
+                pending.push(call);
+            }
+        }
+
+        if pending.is_empty() {
+            break;
+        }
+
+        let assistant_tool_calls: Vec<serde_json::Value> = pending
+            .iter()
+            .map(|tc| {
+                serde_json::json!({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": { "name": tc.name, "arguments": tc.arguments }
+                })
+            })
+            .collect();
+        messages.push(serde_json::json!({
+            "role": "assistant",
+            "content": if iteration_content.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(iteration_content)
+            },
+            "tool_calls": assistant_tool_calls
+        }));
+
+        let mut stop = false;
+        for tc in pending {
+            tool_calls += 1;
+            let tool_result = if is_outcome_tool(&tc.name) {
+                let before = session.mechanical_results.len();
+                let res = handle_mechanical_tool_call(session, &tc).await?;
+                if session.mechanical_results.len() > before {
+                    flush_turn_mechanicals_streaming(
+                        pool,
+                        game_id,
+                        turn_id,
+                        &session.mechanical_results,
+                        &session.instances,
+                    )
+                    .await?;
+                }
+                res
+            } else if tc.name == "ask_pc_decision" {
+                let args: serde_json::Value = serde_json::from_str(&tc.arguments)
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                let question = args["question"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("What do you do?")
+                    .to_string();
+                asked_question = Some(question);
+                stop = true;
+                serde_json::json!({ "ended": true })
+            } else if is_state_tool(&tc.name) {
+                // State updates belong to the narration pass, once outcomes are known.
+                serde_json::json!({ "deferred": "state is recorded during narration" })
+            } else {
+                serde_json::json!({ "error": format!("unknown tool {}", tc.name) })
+            };
+            messages.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": serde_json::to_string(&tool_result).unwrap_or_else(|_| "{}".to_string())
+            }));
+            if stop {
+                break;
+            }
+        }
+        if stop {
+            break;
+        }
+    }
+
+    Ok(MechanicsOutcome {
+        llm_calls,
+        tool_calls,
+        asked_question,
+    })
+}
+
+/// Result of the narration pass.
+struct ProseOutcome {
+    prose: String,
+    applied_state: Vec<AppliedStateChange>,
+    llm_calls: u32,
+    tool_calls: u32,
+}
+
+/// Narrate the turn from the already-resolved mechanics. Outcome-bearing tools are
+/// not offered and any the model emits anyway are ignored, so the prose can only
+/// reuse the canonical results rather than inventing new ones.
+#[allow(clippy::too_many_arguments)]
+async fn run_prose_pass(
+    pool: &SqlitePool,
+    job_id: i64,
+    game_id: i64,
+    turn_id: i64,
+    game: &dreamwell_types::Game,
+    detail: &dreamwell_types::GameDetail,
+    turn: &dreamwell_types::GameTurn,
+    checks: &[dreamwell_types::GameTurnCheck],
+    resolved_mechanics: &[MechanicalResult],
+    asked_question: Option<&str>,
+    guidance: &str,
+    settings: &Settings,
+    model_override: Option<&str>,
+    parser: Option<&'static str>,
+    token: &CancellationToken,
+) -> AppResult<ProseOutcome> {
+    let mut messages = build_prose_narration_messages(
+        game,
+        detail,
+        turn,
+        checks,
+        resolved_mechanics,
+        guidance,
+        settings,
+    );
+    let tools = prose_agent_tool_specs();
+    let tool_defs = tool_definitions_from_specs(&tools);
+    let loop_config = ToolLoopConfig::default();
+
+    let mut prose = String::new();
+    for check in checks {
+        append_inline_marker(
+            &mut prose,
+            dreamwell_types::prose_check_marker(check.sort_order),
+        );
+    }
+    if !prose.is_empty() {
+        db::update_turn_prose(pool, turn_id, &prose).await?;
+        db::touch_game(pool, game_id).await?;
+    }
+    let mut applied_state: Vec<AppliedStateChange> = Vec::new();
+    let mut llm_calls = 0u32;
+    let mut tool_calls = 0u32;
+    let mut end_turn = false;
     let mut prose_stream = ProseStreamState {
         last_flush: Instant::now(),
         thought_started_at: None,
@@ -104,13 +417,14 @@ pub async fn run_tools_structured_phase(
             &serde_json::json!("auto"),
             Some(job_id),
             None,
-            model_override.as_deref(),
+            model_override,
         )
         .await?;
         llm_calls += 1;
 
+        let mut jail = ToolStreamJail::new(parser);
         let mut iteration_content = String::new();
-        let mut pending_tool_calls = Vec::new();
+        let mut pending: Vec<ToolCall> = Vec::new();
 
         while let Some(chunk_result) = stream.next().await {
             if token.is_cancelled() {
@@ -134,36 +448,36 @@ pub async fn run_tools_structured_phase(
                                 )
                                 .await?;
                             }
-                            JailEvent::ToolCall(tc) => pending_tool_calls.push(tc),
+                            JailEvent::ToolCall(tc) => pending.push(tc),
                         }
                     }
                 }
                 ToolStreamChunk::Done {
                     native_tool_calls, ..
-                } => {
-                    pending_tool_calls.extend(native_tool_calls);
-                }
+                } => pending.extend(native_tool_calls),
             }
         }
-
         for event in jail.finish(Some(&tool_defs)).await? {
             match event {
                 JailEvent::Prose(piece) => prose.push_str(&piece),
-                JailEvent::ToolCall(tc) => pending_tool_calls.push(tc),
+                JailEvent::ToolCall(tc) => pending.push(tc),
             }
         }
         let (salvaged, cleaned_prose) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
         if !salvaged.is_empty() {
             prose = cleaned_prose;
             for call in salvaged {
-                let duplicate = pending_tool_calls
+                if !pending
                     .iter()
-                    .any(|tc| tc.name == call.name && tc.arguments == call.arguments);
-                if !duplicate {
-                    pending_tool_calls.push(call);
+                    .any(|tc| tc.name == call.name && tc.arguments == call.arguments)
+                {
+                    pending.push(call);
                 }
             }
         }
+        // The narration pass must not re-resolve mechanics. Drop any outcome-tool
+        // calls the model emits — the canonical results are already fixed.
+        pending.retain(|tc| !is_outcome_tool(&tc.name));
         flush_prose_throttled(
             pool,
             game_id,
@@ -175,11 +489,11 @@ pub async fn run_tools_structured_phase(
         )
         .await?;
 
-        if pending_tool_calls.is_empty() {
+        if pending.is_empty() {
             break;
         }
 
-        let assistant_tool_calls: Vec<serde_json::Value> = pending_tool_calls
+        let assistant_tool_calls: Vec<serde_json::Value> = pending
             .iter()
             .map(|tc| {
                 serde_json::json!({
@@ -199,82 +513,32 @@ pub async fn run_tools_structured_phase(
             "tool_calls": assistant_tool_calls
         }));
 
-        for tc in pending_tool_calls {
-            tool_call_count += 1;
-            let tool_result = match tc.name.as_str() {
-                "roll_dice" | "board_move" | "draw_card" => {
-                    let before = session.mechanical_results.len();
-                    let res = handle_mechanical_tool_call(&mut session, &tc).await?;
-                    if session.mechanical_results.len() > before {
-                        if let Some(last) = session.mechanical_results.last() {
-                            append_marker(&mut prose, last.sort_order);
-                            flush_turn_mechanicals_streaming(
-                                pool,
-                                game_id,
-                                turn_id,
-                                &session.mechanical_results,
-                                &session.instances,
-                            )
-                            .await?;
-                            flush_prose_throttled(
-                                pool,
-                                game_id,
-                                turn_id,
-                                &prose,
-                                settings,
-                                &mut prose_stream,
-                                true,
-                            )
-                            .await?;
-                        }
-                    }
-                    res
+        for tc in pending {
+            tool_calls += 1;
+            let tool_result = if is_state_tool(&tc.name) {
+                let changes = parse_state_tool_call(&tc);
+                let fresh = db::get_game_detail(pool, game_id).await?;
+                let applied = crate::game_state::apply_state_changes(
+                    pool,
+                    game_id,
+                    turn_id,
+                    &changes,
+                    &fresh.actors,
+                    &fresh.state,
+                )
+                .await?;
+                let count = applied.len();
+                let start_idx = applied_state.len() as i64;
+                applied_state.extend(applied);
+                for offset in 0..count {
+                    append_inline_marker(
+                        &mut prose,
+                        dreamwell_types::prose_state_marker(start_idx + offset as i64),
+                    );
                 }
-                name if is_state_tool(name) => {
-                    let changes = parse_state_tool_call(&tc);
-                    let fresh = db::get_game_detail(pool, game_id).await?;
-                    let applied = crate::game_state::apply_state_changes(
-                        pool,
-                        game_id,
-                        turn_id,
-                        &changes,
-                        &fresh.actors,
-                        &fresh.state,
-                    )
-                    .await?;
-                    let count = applied.len();
-                    let start_idx = applied_state.len() as i64;
-                    applied_state.extend(applied);
-                    for (offset, _) in (0..count).enumerate() {
-                        append_state_marker(&mut prose, start_idx + offset as i64);
-                    }
-                    if !applied_state.is_empty() {
-                        db::update_turn_state_changes(pool, turn_id, &applied_state).await?;
-                        db::touch_game(pool, game_id).await?;
-                        flush_prose_throttled(
-                            pool,
-                            game_id,
-                            turn_id,
-                            &prose,
-                            settings,
-                            &mut prose_stream,
-                            true,
-                        )
-                        .await?;
-                    }
-                    serde_json::json!({ "applied": count })
-                }
-                "ask_pc_decision" => {
-                    let args: serde_json::Value = serde_json::from_str(&tc.arguments)
-                        .unwrap_or(serde_json::Value::Object(Default::default()));
-                    let question = args["question"]
-                        .as_str()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or("What do you do?");
-                    if !prose.is_empty() {
-                        prose.push_str("\n\n");
-                    }
-                    prose.push_str(&format_blockquote(question));
+                if !applied_state.is_empty() {
+                    db::update_turn_state_changes(pool, turn_id, &applied_state).await?;
+                    db::touch_game(pool, game_id).await?;
                     flush_prose_throttled(
                         pool,
                         game_id,
@@ -285,63 +549,58 @@ pub async fn run_tools_structured_phase(
                         true,
                     )
                     .await?;
-                    end_turn_early = true;
-                    serde_json::json!({ "ended": true })
                 }
-                other => serde_json::json!({ "error": format!("unknown tool {other}") }),
+                serde_json::json!({ "applied": count })
+            } else if tc.name == "ask_pc_decision" {
+                let args: serde_json::Value = serde_json::from_str(&tc.arguments)
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                let question = args["question"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("What do you do?");
+                append_question_blockquote(&mut prose, question);
+                flush_prose_throttled(
+                    pool,
+                    game_id,
+                    turn_id,
+                    &prose,
+                    settings,
+                    &mut prose_stream,
+                    true,
+                )
+                .await?;
+                end_turn = true;
+                serde_json::json!({ "ended": true })
+            } else {
+                serde_json::json!({ "error": format!("unknown tool {}", tc.name) })
             };
             messages.push(serde_json::json!({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": serde_json::to_string(&tool_result).unwrap_or_else(|_| "{}".to_string())
             }));
-            if end_turn_early {
+            if end_turn {
                 break;
             }
         }
-        if end_turn_early {
+        if end_turn {
             break;
         }
     }
 
-    // Persist mechanics fired inline (with updated board/deck instances) only.
-    if !session.mechanical_results.is_empty() {
-        persist_turn_mechanicals(
-            pool,
-            game_id,
-            turn_id,
-            &game,
-            &session.mechanical_results,
-            &session.instances,
-        )
-        .await?;
+    // If the mechanics pass paused for a player decision and the narrator did not
+    // already surface a question, append it so the turn ends on the open choice.
+    if let Some(question) = asked_question {
+        if !end_turn && !prose.contains(question) {
+            append_question_blockquote(&mut prose, question);
+        }
     }
 
-    if !applied_state.is_empty() {
-        db::update_turn_state_changes(pool, turn_id, &applied_state).await?;
-        db::invalidate_scene_summaries_from(pool, game_id, turn.sort_order).await?;
-    }
-
-    let (_, cleaned_prose) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
-    prose = cleaned_prose;
-
-    let has_content = if settings.thought_blocks_enabled {
-        let parsed = parse_thought_blocks(&prose);
-        !parsed.reply.trim().is_empty() || !parsed.thought.is_empty()
-    } else {
-        !prose.trim().is_empty()
-    };
-    if !has_content {
-        db::complete_job(
-            pool,
-            job_id,
-            dreamwell_types::JobStatus::Failed,
-            Some("model returned no prose".to_string()),
-        )
-        .await?;
-        db::update_turn_phase(pool, turn_id, "failed").await?;
-        return Ok(());
-    }
+    let (_, cleaned) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
+    // Final safety net: drop any leaked/truncated `call:` tool-call syntax so it
+    // never reaches the player as prose.
+    prose = strip_residual_call_syntax(&cleaned);
+    ensure_inline_mech_markers(&mut prose, resolved_mechanics);
 
     finalize_turn_prose(
         pool,
@@ -354,43 +613,26 @@ pub async fn run_tools_structured_phase(
     )
     .await?;
 
-    let elapsed = started.elapsed().as_millis() as u64;
-    let obs = TurnObservability {
-        engine_mode: EngineMode::ToolsStructured,
-        llm_call_count: llm_calls,
-        tool_call_count,
-        tool_iterations: llm_calls,
-        phase_timings_ms: [("structured".to_string(), elapsed)].into(),
-    };
-    db::merge_turn_observability(pool, turn_id, obs).await?;
-
-    db::update_turn_phase(pool, turn_id, "done").await?;
-    db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
-    db::touch_game(pool, game_id).await?;
-    crate::game_summarize::maybe_enqueue_scene_summarize(pool, game_id).await?;
-    Ok(())
+    Ok(ProseOutcome {
+        prose,
+        applied_state,
+        llm_calls,
+        tool_calls,
+    })
 }
 
-/// Append an inline mechanic-block marker anchoring the result at this point in the prose.
-fn append_marker(prose: &mut String, sort_order: i64) {
+fn append_question_blockquote(prose: &mut String, question: &str) {
     if !prose.is_empty() {
         prose.push_str("\n\n");
     }
-    prose.push_str(&dreamwell_types::prose_mech_marker(sort_order));
+    prose.push_str(&format_blockquote(question));
 }
 
-fn append_state_marker(prose: &mut String, index: i64) {
+fn append_inline_marker(prose: &mut String, marker: String) {
     if !prose.is_empty() {
         prose.push_str("\n\n");
     }
-    prose.push_str(&dreamwell_types::prose_state_marker(index));
-}
-
-fn append_check_marker(prose: &mut String, sort_order: i64) {
-    if !prose.is_empty() {
-        prose.push_str("\n\n");
-    }
-    prose.push_str(&dreamwell_types::prose_check_marker(sort_order));
+    prose.push_str(&marker);
 }
 
 fn format_blockquote(text: &str) -> String {
