@@ -11,7 +11,6 @@
 //! inline-prose tool loop the worker uses, recording the *order* in which prose
 //! and tool calls arrive so we can see whether the model fabricates a dice
 //! result in prose before calling `roll_dice`.
-#![cfg(test)]
 
 use std::collections::HashMap;
 
@@ -21,15 +20,18 @@ use dreamwell_types::{
     GameTurn, GameTurnCheck, JsonFormatStrategy, ResolutionSystem, RulesBlock, Settings,
 };
 
-use crate::game_prompts::build_inline_prose_agent_messages;
+use crate::game_prompts::{
+    build_inline_prose_agent_messages, build_mechanics_agent_messages,
+    build_prose_narration_messages,
+};
 use crate::game_tools::{
-    handle_mechanical_tool_call, inline_prose_tool_specs, is_state_tool, parse_state_tool_call,
-    ToolSessionState,
+    handle_mechanical_tool_call, inline_prose_tool_specs, is_state_tool,
+    mechanics_agent_tool_specs, parse_state_tool_call, prose_agent_tool_specs, ToolSessionState,
 };
 use crate::inference::{InferenceConfig, ToolStreamChunk};
 use crate::tool_stream::{
-    resolve_tool_parser, salvage_bare_tool_calls, tool_definitions_from_specs, JailEvent,
-    ToolStreamJail,
+    resolve_tool_parser, salvage_bare_tool_calls, strip_residual_call_syntax,
+    tool_definitions_from_specs, JailEvent, ToolStreamJail,
 };
 use futures_util::StreamExt;
 
@@ -187,7 +189,11 @@ enum ReproEvent {
     /// Prose committed to the turn (as the user would see it) before this point.
     Prose(String),
     /// A tool call the model emitted, with the result we fed back.
-    ToolCall { name: String, args: String, result: String },
+    ToolCall {
+        name: String,
+        args: String,
+        result: String,
+    },
 }
 
 struct ReproTurn {
@@ -243,9 +249,7 @@ fn outcome_leak_snippet(lead: &str, tool: &str) -> Option<String> {
                 || lower.contains("shows")
                 || lower.contains("die")
         }
-        "board_move" => {
-            lower.contains("space") || lower.contains("step") || lower.contains("move")
-        }
+        "board_move" => lower.contains("space") || lower.contains("step") || lower.contains("move"),
         _ => false,
     };
     if (has_digit || has_number_word) && outcome_hint {
@@ -360,7 +364,9 @@ async fn run_repro_turn(
                         }
                     }
                 }
-                Ok(ToolStreamChunk::Done { native_tool_calls, .. }) => {
+                Ok(ToolStreamChunk::Done {
+                    native_tool_calls, ..
+                }) => {
                     pending.extend(native_tool_calls);
                 }
                 Err(err) => {
@@ -446,83 +452,9 @@ async fn run_repro_turn(
     }
 }
 
-const MECHANICS_PASS_SYSTEM: &str = r#"You are the rules engine for ONE turn of a tabletop scenario. Your ONLY job is to resolve the mechanical steps the player's action triggers by calling tools. You do not narrate.
-
-Hard rules:
-- Output tool calls ONLY. Write NO prose, NO narration, NO commentary, NO numbers in text.
-- Call board_move, draw_card, and roll_dice exactly as the scenario rules require, ONE per step, and wait for each tool's real returned result before deciding the next call.
-- Never state or guess an outcome — the tool decides it. React to the tool's actual result.
-- For movement on a board use board_move (it rolls the move die for you). Never pair roll_dice with board_move for the same move. Use roll_dice only for dice the rules call for outside board movement (card effects, damage, skill rolls).
-- draw_card needs an explicit deck_id chosen per the scenario rules.
-- Resolve only the mechanics for THIS player action / pending effect, then STOP. Do not start a new beat, extra moves, or extra draws the player did not take.
-- If the player must make a choice before a mechanic can resolve, call ask_pc_decision and stop.
-- When every required mechanic is resolved (or none is needed), reply with exactly DONE and call no tool.
-
-Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}"#;
-
-const PROSE_PASS_SYSTEM: &str = r#"You are the narrator for ONE turn of a tabletop scenario. The turn's mechanical outcomes have ALREADY been rolled and resolved — they are listed under "Resolved mechanics (canonical)" in the user message.
-
-Hard rules:
-- Narrate in second person ("you"/"your") for the PC. NPCs use third person.
-- Use the resolved mechanics EXACTLY: the same dice numbers, the same drawn card names/text, the same board spaces. Do NOT invent, change, re-roll, or add any dice roll, card draw, or board move. There is nothing left to roll.
-- If "Resolved mechanics (canonical)" is empty, this is pure narration with no mechanical outcomes.
-- Honor any resolved check tiers — a fail must not read as a clean success.
-- Advance ONE beat: resolve the player's action and the resolved mechanics, then stop. Do not invent new arrivals, scene changes, or follow-on actions.
-- Record durable state with the state tools (set_fact / set_condition / adjust_resource / advance_clock, etc.) — the tool is the source of truth, not the prose. One attribute per call.
-- When the PC owes a choice the player did not make, call ask_pc_decision with a direct question, then stop.
-- Plain prose and state/ask tool calls only — no JSON, no headers, no meta commentary.
-
-Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}"#;
-
-fn tool_named(name: &str) -> Option<serde_json::Value> {
-    inline_prose_tool_specs()
-        .into_iter()
-        .find(|t| t["function"]["name"].as_str() == Some(name))
-}
-
-fn mechanics_pass_tools() -> Vec<serde_json::Value> {
-    let mut tools = crate::game_tools::inline_mechanical_tool_specs();
-    if let Some(ask) = tool_named("ask_pc_decision") {
-        tools.push(ask);
-    }
-    tools
-}
-
-fn prose_pass_tools() -> Vec<serde_json::Value> {
-    let mut tools = crate::game_tools::simple_state_tool_specs();
-    if let Some(ask) = tool_named("ask_pc_decision") {
-        tools.push(ask);
-    }
-    tools
-}
-
-fn format_resolved_mechanics(results: &[dreamwell_types::MechanicalResult]) -> String {
-    use dreamwell_types::MechanicalData;
-    if results.is_empty() {
-        return "Resolved mechanics (canonical):\n(none — pure narration)".to_string();
-    }
-    let lines: Vec<String> = results
-        .iter()
-        .map(|r| match &r.data {
-            MechanicalData::DiceRoll { dice_expr, rolls, total } => {
-                format!("- {} ({dice_expr}): rolled {rolls:?} = {total}", r.label)
-            }
-            MechanicalData::BoardMove { actor, roll, from_space, to_space, space_tags, .. } => {
-                format!(
-                    "- Board move: {actor} rolled {roll}, moved space {from_space} → {to_space} (tags: {})",
-                    space_tags.join(", ")
-                )
-            }
-            MechanicalData::CardDraw { name, text, deck_id, .. } => {
-                format!("- Card drawn from {deck_id}: {name} — {text}")
-            }
-        })
-        .collect();
-    format!("Resolved mechanics (canonical):\n{}", lines.join("\n"))
-}
-
-/// Two-pass turn: resolve all mechanics first (tools only, no prose), then
-/// narrate from the canonical results (no outcome tools offered).
+/// Two-pass turn mirroring the production worker: resolve all mechanics first
+/// (tools only, no prose) via the production mechanics prompt, then narrate from the
+/// canonical results via the production narration prompt (no outcome tools offered).
 async fn run_repro_turn_two_pass(
     game: &Game,
     detail: &GameDetail,
@@ -533,26 +465,33 @@ async fn run_repro_turn_two_pass(
 ) -> ReproTurn {
     let config = inference_config();
     let parser = resolve_tool_parser(&config.tool_call_parser, MODEL);
-    let base = build_inline_prose_agent_messages(game, detail, turn, checks, guidance, settings);
-    let base_user = base[1]["content"].as_str().unwrap_or_default().to_string();
     let mut session = ToolSessionState::new(game.clone());
     let mut events: Vec<ReproEvent> = Vec::new();
 
     // ---- Pass 1: mechanics only ----
-    let mech_tools = mechanics_pass_tools();
+    let mech_tools = mechanics_agent_tool_specs();
     let mech_defs = tool_definitions_from_specs(&mech_tools);
-    let mut mech_messages = vec![
-        serde_json::json!({ "role": "system", "content": MECHANICS_PASS_SYSTEM }),
-        serde_json::json!({ "role": "user", "content": format!("{base_user}\n\nResolve this turn's mechanics now. Tool calls only — no prose.") }),
-    ];
+    let mut mech_messages =
+        build_mechanics_agent_messages(game, detail, turn, checks, guidance, settings);
     let mut asked = false;
     'mech: for _ in 0..10 {
         let mut stream = match crate::inference::stream_chat_completion_with_tools(
-            &config, MODEL, &mech_messages, &mech_tools, &serde_json::json!("auto"),
-            settings.temperature, settings.top_p, settings.max_tokens,
-        ).await {
+            &config,
+            MODEL,
+            &mech_messages,
+            &mech_tools,
+            &serde_json::json!("auto"),
+            settings.temperature,
+            settings.top_p,
+            settings.max_tokens,
+        )
+        .await
+        {
             Ok(s) => s,
-            Err(err) => { eprintln!("mech stream error: {err}"); break; }
+            Err(err) => {
+                eprintln!("mech stream error: {err}");
+                break;
+            }
         };
         let mut jail = ToolStreamJail::new(parser);
         let mut content = String::new();
@@ -569,8 +508,13 @@ async fn run_repro_turn_two_pass(
                         }
                     }
                 }
-                Ok(ToolStreamChunk::Done { native_tool_calls, .. }) => pending.extend(native_tool_calls),
-                Err(err) => { eprintln!("mech chunk error: {err}"); break; }
+                Ok(ToolStreamChunk::Done {
+                    native_tool_calls, ..
+                }) => pending.extend(native_tool_calls),
+                Err(err) => {
+                    eprintln!("mech chunk error: {err}");
+                    break;
+                }
             }
         }
         for ev in jail.finish(Some(&mech_defs)).await.unwrap_or_default() {
@@ -581,12 +525,18 @@ async fn run_repro_turn_two_pass(
         }
         let (salvaged, _) = salvage_bare_tool_calls(&leaked_prose, Some(&mech_defs));
         for c in salvaged {
-            if !pending.iter().any(|tc| tc.name == c.name && tc.arguments == c.arguments) {
+            if !pending
+                .iter()
+                .any(|tc| tc.name == c.name && tc.arguments == c.arguments)
+            {
                 pending.push(c);
             }
         }
         if !leaked_prose.trim().is_empty() {
-            events.push(ReproEvent::Prose(format!("[mech-pass leaked prose] {}", leaked_prose.trim())));
+            events.push(ReproEvent::Prose(format!(
+                "[mech-pass leaked prose] {}",
+                leaked_prose.trim()
+            )));
         }
         if pending.is_empty() {
             break;
@@ -602,32 +552,58 @@ async fn run_repro_turn_two_pass(
         for tc in &pending {
             let result = exec_tool(&mut session, tc).await;
             let result_str = serde_json::to_string(&result).unwrap_or_default();
-            events.push(ReproEvent::ToolCall { name: tc.name.clone(), args: tc.arguments.clone(), result: result_str.clone() });
-            mech_messages.push(serde_json::json!({ "role": "tool", "tool_call_id": tc.id, "content": result_str }));
-            if tc.name == "ask_pc_decision" { asked = true; break 'mech; }
+            events.push(ReproEvent::ToolCall {
+                name: tc.name.clone(),
+                args: tc.arguments.clone(),
+                result: result_str.clone(),
+            });
+            mech_messages.push(
+                serde_json::json!({ "role": "tool", "tool_call_id": tc.id, "content": result_str }),
+            );
+            if tc.name == "ask_pc_decision" {
+                asked = true;
+                break 'mech;
+            }
         }
     }
 
     // ---- Pass 2: prose from canonical results ----
-    let results_block = format_resolved_mechanics(&session.mechanical_results);
-    let prose_tools = prose_pass_tools();
+    let prose_tools = prose_agent_tool_specs();
     let prose_defs = tool_definitions_from_specs(&prose_tools);
-    let mut prose_messages = vec![
-        serde_json::json!({ "role": "system", "content": PROSE_PASS_SYSTEM }),
-        serde_json::json!({ "role": "user", "content": format!("{base_user}\n\n{results_block}\n\nNarrate this turn now using exactly the resolved mechanics above. Do not roll, draw, or move anything — that is already done.") }),
-    ];
+    let mut prose_messages = build_prose_narration_messages(
+        game,
+        detail,
+        turn,
+        checks,
+        &session.mechanical_results,
+        guidance,
+        settings,
+    );
     let mut prose = String::new();
     if asked {
         // The mechanics pass paused for a player choice; surface that as the turn end.
-        events.push(ReproEvent::Prose("[turn paused for ask_pc_decision in mechanics pass]".into()));
+        events.push(ReproEvent::Prose(
+            "[turn paused for ask_pc_decision in mechanics pass]".into(),
+        ));
     }
     for _ in 0..4 {
         let mut stream = match crate::inference::stream_chat_completion_with_tools(
-            &config, MODEL, &prose_messages, &prose_tools, &serde_json::json!("auto"),
-            settings.temperature, settings.top_p, settings.max_tokens,
-        ).await {
+            &config,
+            MODEL,
+            &prose_messages,
+            &prose_tools,
+            &serde_json::json!("auto"),
+            settings.temperature,
+            settings.top_p,
+            settings.max_tokens,
+        )
+        .await
+        {
             Ok(s) => s,
-            Err(err) => { eprintln!("prose stream error: {err}"); break; }
+            Err(err) => {
+                eprintln!("prose stream error: {err}");
+                break;
+            }
         };
         let mut jail = ToolStreamJail::new(parser);
         let mut content = String::new();
@@ -639,18 +615,29 @@ async fn run_repro_turn_two_pass(
                     content.push_str(&tok);
                     for ev in jail.push(&tok, Some(&prose_defs)).await.unwrap_or_default() {
                         match ev {
-                            JailEvent::Prose(p) => { prose.push_str(&p); chunk_prose.push_str(&p); }
+                            JailEvent::Prose(p) => {
+                                prose.push_str(&p);
+                                chunk_prose.push_str(&p);
+                            }
                             JailEvent::ToolCall(tc) => pending.push(tc),
                         }
                     }
                 }
-                Ok(ToolStreamChunk::Done { native_tool_calls, .. }) => pending.extend(native_tool_calls),
-                Err(err) => { eprintln!("prose chunk error: {err}"); break; }
+                Ok(ToolStreamChunk::Done {
+                    native_tool_calls, ..
+                }) => pending.extend(native_tool_calls),
+                Err(err) => {
+                    eprintln!("prose chunk error: {err}");
+                    break;
+                }
             }
         }
         for ev in jail.finish(Some(&prose_defs)).await.unwrap_or_default() {
             match ev {
-                JailEvent::Prose(p) => { prose.push_str(&p); chunk_prose.push_str(&p); }
+                JailEvent::Prose(p) => {
+                    prose.push_str(&p);
+                    chunk_prose.push_str(&p);
+                }
                 JailEvent::ToolCall(tc) => pending.push(tc),
             }
         }
@@ -658,7 +645,12 @@ async fn run_repro_turn_two_pass(
         if !salvaged.is_empty() {
             prose = cleaned;
             for c in salvaged {
-                if !pending.iter().any(|tc| tc.name == c.name && tc.arguments == c.arguments) { pending.push(c); }
+                if !pending
+                    .iter()
+                    .any(|tc| tc.name == c.name && tc.arguments == c.arguments)
+                {
+                    pending.push(c);
+                }
             }
         }
         // Prose pass must not re-resolve mechanics. Drop any outcome-tool calls
@@ -667,7 +659,9 @@ async fn run_repro_turn_two_pass(
         if !chunk_prose.trim().is_empty() {
             events.push(ReproEvent::Prose(chunk_prose.clone()));
         }
-        if pending.is_empty() { break; }
+        if pending.is_empty() {
+            break;
+        }
         let assistant_calls: Vec<serde_json::Value> = pending.iter().map(|tc| serde_json::json!({
             "id": tc.id, "type": "function", "function": { "name": tc.name, "arguments": tc.arguments }
         })).collect();
@@ -680,15 +674,28 @@ async fn run_repro_turn_two_pass(
         for tc in &pending {
             let result = exec_tool(&mut session, tc).await;
             let result_str = serde_json::to_string(&result).unwrap_or_default();
-            events.push(ReproEvent::ToolCall { name: tc.name.clone(), args: tc.arguments.clone(), result: result_str.clone() });
-            prose_messages.push(serde_json::json!({ "role": "tool", "tool_call_id": tc.id, "content": result_str }));
-            if tc.name == "ask_pc_decision" { ended = true; }
+            events.push(ReproEvent::ToolCall {
+                name: tc.name.clone(),
+                args: tc.arguments.clone(),
+                result: result_str.clone(),
+            });
+            prose_messages.push(
+                serde_json::json!({ "role": "tool", "tool_call_id": tc.id, "content": result_str }),
+            );
+            if tc.name == "ask_pc_decision" {
+                ended = true;
+            }
         }
-        if ended { break; }
+        if ended {
+            break;
+        }
     }
 
     let (_, cleaned) = salvage_bare_tool_calls(&prose, Some(&prose_defs));
-    ReproTurn { events, final_prose: cleaned }
+    ReproTurn {
+        events,
+        final_prose: strip_residual_call_syntax(&cleaned),
+    }
 }
 
 fn print_transcript(label: &str, turn: &ReproTurn) {
@@ -765,8 +772,16 @@ fn board_scenario() -> (Game, GameDetail, GameTurn) {
             id: "events".into(),
             consume_on_draw: true,
             cards: vec![
-                CardDef { id: "events:1".into(), name: "Boost".into(), text: "Move forward 2 extra spaces.".into() },
-                CardDef { id: "events:2".into(), name: "Snake".into(), text: "Roll 1d6; on 4+ you slide back that many spaces.".into() },
+                CardDef {
+                    id: "events:1".into(),
+                    name: "Boost".into(),
+                    text: "Move forward 2 extra spaces.".into(),
+                },
+                CardDef {
+                    id: "events:2".into(),
+                    name: "Snake".into(),
+                    text: "Roll 1d6; on 4+ you slide back that many spaces.".into(),
+                },
             ],
         }],
     };
@@ -797,8 +812,16 @@ async fn repro_combat_dice() {
     let settings = repro_settings();
     let (game, detail, turn) = combat_scenario();
     for run in 0..3 {
-        let result =
-            run_repro_turn(&game, &detail, &turn, &[], "", &settings, Strategy::Baseline).await;
+        let result = run_repro_turn(
+            &game,
+            &detail,
+            &turn,
+            &[],
+            "",
+            &settings,
+            Strategy::Baseline,
+        )
+        .await;
         print_transcript(&format!("combat BASELINE run {run}"), &result);
     }
 }
@@ -809,8 +832,16 @@ async fn repro_board_then_card() {
     let settings = repro_settings();
     let (game, detail, turn) = board_scenario();
     for run in 0..3 {
-        let result =
-            run_repro_turn(&game, &detail, &turn, &[], "", &settings, Strategy::Baseline).await;
+        let result = run_repro_turn(
+            &game,
+            &detail,
+            &turn,
+            &[],
+            "",
+            &settings,
+            Strategy::Baseline,
+        )
+        .await;
         print_transcript(&format!("board+card BASELINE run {run}"), &result);
     }
 }
@@ -821,8 +852,16 @@ async fn experiment_interrupt_combat() {
     let settings = repro_settings();
     let (game, detail, turn) = combat_scenario();
     for run in 0..3 {
-        let result =
-            run_repro_turn(&game, &detail, &turn, &[], "", &settings, Strategy::Interrupt).await;
+        let result = run_repro_turn(
+            &game,
+            &detail,
+            &turn,
+            &[],
+            "",
+            &settings,
+            Strategy::Interrupt,
+        )
+        .await;
         print_transcript(&format!("combat INTERRUPT run {run}"), &result);
     }
 }
@@ -833,8 +872,16 @@ async fn experiment_interrupt_board() {
     let settings = repro_settings();
     let (game, detail, turn) = board_scenario();
     for run in 0..3 {
-        let result =
-            run_repro_turn(&game, &detail, &turn, &[], "", &settings, Strategy::Interrupt).await;
+        let result = run_repro_turn(
+            &game,
+            &detail,
+            &turn,
+            &[],
+            "",
+            &settings,
+            Strategy::Interrupt,
+        )
+        .await;
         print_transcript(&format!("board+card INTERRUPT run {run}"), &result);
     }
 }

@@ -87,6 +87,7 @@ fn phase_label(phase: &str) -> &str {
     match phase {
         "checks" | "checks_pause" => "Checks",
         "rolled" | "rolled_pause" => "Roll",
+        "mechanics" | "mechanics_pause" => "Mechanics",
         "resolved" | "resolved_pause" => "State",
         "scene" | "scene_pause" => "Scene",
         "prose" => "Prose",

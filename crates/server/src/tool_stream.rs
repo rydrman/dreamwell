@@ -607,6 +607,60 @@ pub fn salvage_bare_tool_calls(
     fallback_extract_bare_calls(text, known.as_deref())
 }
 
+/// Strip any residual `call:tool{...}` invocation syntax (including truncated or
+/// concatenated fragments that [`salvage_bare_tool_calls`] cannot parse) from prose.
+/// `call:` never appears in legitimate narration, so it is always safe to remove. Used
+/// as a final cleanup so leaked/partial tool-call text never reaches the player.
+pub fn strip_residual_call_syntax(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(rel) = rest.find(BARE_CALL_PREFIX) {
+        let start = rel;
+        if !is_bare_call_boundary(rest, start) {
+            // `recall:` etc — keep up to and including this prefix, continue scanning.
+            let keep = start + BARE_CALL_PREFIX.len();
+            out.push_str(&rest[..keep]);
+            rest = &rest[keep..];
+            continue;
+        }
+        out.push_str(&rest[..start]);
+        let after = &rest[start + BARE_CALL_PREFIX.len()..];
+        // Scan the tool name, but stop early if a fresh `call:` is glued on (which
+        // happens when a truncated call concatenates with the next one) so we don't
+        // swallow the following invocation into this name.
+        let mut name_len = 0;
+        for (idx, ch) in after.char_indices() {
+            if after[idx..].starts_with(BARE_CALL_PREFIX) {
+                break;
+            }
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                name_len = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let post_name = &after[name_len..];
+        if post_name.starts_with('{') {
+            match balanced_brace_content(post_name) {
+                Some((_, consumed)) => rest = &post_name[consumed..],
+                // Unbalanced (truncated) braces — drop the remainder of the buffer.
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        } else {
+            rest = post_name;
+        }
+    }
+    out.push_str(rest);
+    // Collapse blank-line runs the stripped fragments may have left behind.
+    while out.contains("\n\n\n") {
+        out = out.replace("\n\n\n", "\n\n");
+    }
+    out.trim().to_string()
+}
+
 fn only_partial_start_marker(buffer: &str, parser: Option<&'static str>) -> bool {
     if buffer.is_empty() {
         return false;
@@ -899,6 +953,26 @@ ask_pc_decision{question: "The game is set up and your friends are ready. Who wi
             })
             .collect();
         assert!(!prose.contains("call:roll_dice"));
+    }
+
+    #[test]
+    fn strip_residual_call_syntax_removes_complete_and_truncated_fragments() {
+        // Concatenated truncated + complete fragments that salvage cannot parse.
+        let leaked = "call:adjust_resourcecall:adjust_resource{delta:-3,key:hp,target:goblin}call:ask_pc_decision{question:Press on?}";
+        assert_eq!(strip_residual_call_syntax(leaked), "");
+        // Prose with a trailing truncated call.
+        let mixed = "You strike true.\n\ncall:set_fact{target:pc,key:mood,value:fierce}";
+        assert_eq!(strip_residual_call_syntax(mixed), "You strike true.");
+        // A bare truncated fragment at the end.
+        assert_eq!(
+            strip_residual_call_syntax("The blade bites deep. call:adjust_resource"),
+            "The blade bites deep."
+        );
+        // `recall:` must not be mistaken for a tool call.
+        assert_eq!(
+            strip_residual_call_syntax("You recall: the door was locked."),
+            "You recall: the door was locked."
+        );
     }
 
     #[tokio::test]

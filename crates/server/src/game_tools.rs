@@ -169,14 +169,40 @@ pub fn simple_state_tool_specs() -> Vec<Value> {
     ]
 }
 
-/// Tools for the single-pass inline-prose agent: scenario mechanics fired inline plus
-/// tracked-state updates. Dramatic checks are declared and rolled before prose begins,
-/// so check tools are intentionally excluded here.
+/// Tools for the legacy single-pass inline-prose agent: scenario mechanics fired inline
+/// plus tracked-state updates. Retained for the reproduction harness and tests.
+#[cfg(test)]
 pub fn inline_prose_tool_specs() -> Vec<Value> {
     let mut tools = inline_mechanical_tool_specs();
     tools.extend(simple_state_tool_specs());
     tools.push(ask_pc_decision_spec());
     tools
+}
+
+/// Tools for the mechanics-resolution pass: only the scenario mechanic primitives
+/// (which return real outcomes) plus `ask_pc_decision`. No prose and no state tools —
+/// this pass exists purely to roll/draw/move so the prose pass never has to guess an
+/// outcome.
+pub fn mechanics_agent_tool_specs() -> Vec<Value> {
+    let mut tools = inline_mechanical_tool_specs();
+    tools.push(ask_pc_decision_spec());
+    tools
+}
+
+/// Tools for the narration pass: tracked-state updates plus `ask_pc_decision`. The
+/// outcome-bearing mechanic tools are intentionally excluded — every roll/draw/move was
+/// already resolved in the mechanics pass, so the narration must reuse those canonical
+/// results rather than producing new ones.
+pub fn prose_agent_tool_specs() -> Vec<Value> {
+    let mut tools = simple_state_tool_specs();
+    tools.push(ask_pc_decision_spec());
+    tools
+}
+
+/// Whether a tool name resolves a scenario mechanic with a real, server-decided outcome
+/// (dice/board/card). These must never be narrated before the tool runs.
+pub fn is_outcome_tool(name: &str) -> bool {
+    matches!(name, "roll_dice" | "board_move" | "draw_card")
 }
 
 fn ask_pc_decision_spec() -> Value {
@@ -502,6 +528,45 @@ mod tests {
         assert!(is_state_tool("set_fact"));
         assert!(is_state_tool("advance_clock"));
         assert!(!is_state_tool("roll_dice"));
+    }
+
+    #[test]
+    fn is_outcome_tool_recognizes_mechanics_only() {
+        assert!(is_outcome_tool("roll_dice"));
+        assert!(is_outcome_tool("board_move"));
+        assert!(is_outcome_tool("draw_card"));
+        assert!(!is_outcome_tool("set_fact"));
+        assert!(!is_outcome_tool("ask_pc_decision"));
+    }
+
+    #[test]
+    fn mechanics_specs_offer_only_mechanics_and_ask() {
+        let names: Vec<String> = mechanics_agent_tool_specs()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(names.iter().any(|n| n == "roll_dice"));
+        assert!(names.iter().any(|n| n == "board_move"));
+        assert!(names.iter().any(|n| n == "draw_card"));
+        assert!(names.iter().any(|n| n == "ask_pc_decision"));
+        // No state tools in the mechanics pass — state is recorded during narration.
+        for tool in SIMPLE_STATE_TOOLS {
+            assert!(!names.iter().any(|n| n == tool), "unexpected {tool}");
+        }
+    }
+
+    #[test]
+    fn prose_specs_offer_state_and_ask_but_no_outcome_tools() {
+        let names: Vec<String> = prose_agent_tool_specs()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+            .collect();
+        for tool in SIMPLE_STATE_TOOLS {
+            assert!(names.iter().any(|n| n == tool), "missing {tool}");
+        }
+        assert!(names.iter().any(|n| n == "ask_pc_decision"));
+        // Outcome tools are intentionally excluded from the narration pass.
+        assert!(!names.iter().any(|n| is_outcome_tool(n)));
     }
 
     #[test]
