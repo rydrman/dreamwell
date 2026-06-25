@@ -9,19 +9,13 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_prompts::build_characters_block;
 use crate::game_state::{apply_state_changes, build_state_block};
+use crate::game_turn::{model_override_for_phase, GameModelPhase};
+use crate::model_fallback::has_inference_provider;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct StateRecheckResponse {
     #[serde(default)]
     state_changes: Vec<StateChangeRequest>,
-}
-
-fn recheck_output_tokens(settings: &Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        (settings.context_tokens / 8).clamp(256, 768)
-    } else {
-        512
-    }
 }
 
 fn max_retries() -> u32 {
@@ -64,9 +58,9 @@ pub async fn enqueue_turn_state_recheck(
     guidance_notes: &str,
     settings: &Settings,
 ) -> AppResult<Job> {
-    if settings.model.is_empty() && db::get_game(pool, game_id).await?.model_resolve.is_empty() {
+    if !has_inference_provider(settings) {
         return Err(AppError::bad_request(
-            "Configure an inference model in Settings before rechecking state",
+            "Configure an inference provider in Settings before rechecking state",
         ));
     }
     let turn = db::get_turn(pool, game_id, turn_id).await?;
@@ -99,7 +93,6 @@ pub async fn run_turn_state_recheck_job(
     guidance: &str,
     settings: &Settings,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let game = db::get_game(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     if turn.prose.trim().is_empty() {
@@ -111,24 +104,19 @@ pub async fn run_turn_state_recheck_job(
     let state_block = build_state_block(&detail.state, &detail.actors);
     let characters_block = build_characters_block(&detail.actors);
     let prompt = build_recheck_prompt(&turn.prose, &state_block, &characters_block, guidance);
-    let model = crate::game_turn::model_for_phase(
-        &game,
-        settings,
-        crate::game_turn::GameModelPhase::Resolve,
-    );
+    let model_override = model_override_for_phase(&game, settings, GameModelPhase::Resolve);
     let token = tokio_util::sync::CancellationToken::new();
 
     let response: StateRecheckResponse = db::chat_completion_json_for_connection(
         pool,
-        &inference,
-        &model,
+        settings,
         &prompt,
-        0.2,
-        settings.top_p,
-        recheck_output_tokens(settings),
         Some(&state_recheck_schema()),
         max_retries(),
         &token,
+        Some(job_id),
+        None,
+        model_override.as_deref(),
     )
     .await?;
 

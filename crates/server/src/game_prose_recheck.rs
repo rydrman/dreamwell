@@ -8,7 +8,8 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_prompts::{build_characters_block, scenario_context_block};
 use crate::game_resolution::tier_str;
-use crate::inference::chat_completion;
+use crate::model_fallback::chat_completion_with_connection_fallback;
+use crate::thoughts::parse_thought_blocks;
 
 const PROSE_RECHECK_OK: &str = "OK";
 
@@ -26,14 +27,6 @@ Rules:
 - If prose misses beats, contradicts tiers, or adds unplanned plot, output corrected full prose
 - Match the established tone and second-person POV
 - No headings, labels, or meta commentary — only OK or corrected prose"#;
-
-fn recheck_output_tokens(settings: &Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        settings.max_tokens.clamp(512, settings.context_tokens / 2)
-    } else {
-        settings.max_tokens.max(512)
-    }
-}
 
 fn max_retries() -> u32 {
     config::GENERATION_MAX_RETRIES
@@ -154,7 +147,6 @@ pub async fn run_turn_prose_recheck_job(
     guidance: &str,
     settings: &Settings,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let game = db::get_game(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     if turn.prose.trim().is_empty() || turn.scene_beats.is_empty() {
@@ -164,8 +156,11 @@ pub async fn run_turn_prose_recheck_job(
 
     let detail = db::get_game_detail(pool, game_id).await?;
     let ctx = MacroContext::from_game_detail_and_settings(&detail, settings);
-    let model =
-        crate::game_turn::model_for_phase(&game, settings, crate::game_turn::GameModelPhase::Prose);
+    let model_override = crate::game_turn::model_override_for_phase(
+        &game,
+        settings,
+        crate::game_turn::GameModelPhase::Prose,
+    );
     let prompt = build_recheck_prompt(
         &game,
         &detail.actors,
@@ -179,13 +174,13 @@ pub async fn run_turn_prose_recheck_job(
     let mut raw = None;
 
     for attempt in 1..=max_attempts {
-        match chat_completion(
-            &inference,
-            &model,
+        match chat_completion_with_connection_fallback(
+            pool,
+            settings,
             &prompt,
-            0.2,
-            settings.top_p,
-            recheck_output_tokens(settings),
+            Some(job_id),
+            None,
+            model_override.as_deref(),
         )
         .await
         {
@@ -214,13 +209,21 @@ pub async fn run_turn_prose_recheck_job(
         return Ok(());
     }
 
-    let corrected = response.trim();
+    let corrected = if settings.thought_blocks_enabled {
+        parse_thought_blocks(response.trim()).reply
+    } else {
+        response.trim().to_string()
+    };
     if corrected.is_empty() {
         db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
         return Ok(());
     }
 
-    db::update_turn_prose(pool, turn_id, corrected).await?;
+    if settings.thought_blocks_enabled {
+        db::update_turn_generation(pool, turn_id, &corrected, "", None, false).await?;
+    } else {
+        db::update_turn_prose(pool, turn_id, &corrected).await?;
+    }
     db::touch_game(pool, game_id).await?;
     db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
     Ok(())

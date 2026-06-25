@@ -12,8 +12,10 @@ use crate::game_prompts::build_inline_prose_agent_messages;
 use crate::game_tools::{
     handle_mechanical_tool_call, inline_prose_tool_specs, parse_state_change_args, ToolSessionState,
 };
-use crate::game_turn::{declare_and_roll_checks, model_for_phase, GameModelPhase};
-use crate::inference::{stream_chat_completion_with_tools, ToolLoopConfig, ToolStreamChunk};
+use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
+use crate::inference::{ToolLoopConfig, ToolStreamChunk};
+use crate::model_fallback::stream_chat_completion_with_tools_connection_fallback;
+use crate::thoughts::{parse_thought_blocks, thought_timing};
 use crate::tool_stream::{
     resolve_tool_parser, salvage_bare_tool_calls, tool_definitions_from_specs, JailEvent,
     ToolStreamJail,
@@ -35,7 +37,8 @@ pub async fn run_tools_structured_phase(
 
     // Phase 1 — decide & roll dramatic checks based on the PC's skills.
     db::update_turn_phase(pool, turn_id, "checks").await?;
-    let checks = declare_and_roll_checks(pool, game_id, turn_id, guidance, settings, token).await?;
+    let checks =
+        declare_and_roll_checks(pool, game_id, turn_id, guidance, settings, token, job_id).await?;
     db::update_turn_phase(pool, turn_id, "rolled").await?;
 
     // Phase 2 — single narration pass that fires scenario mechanics inline.
@@ -43,11 +46,14 @@ pub async fn run_tools_structured_phase(
         return Err(AppError::bad_request("cancelled"));
     }
     db::update_turn_phase(pool, turn_id, "prose").await?;
+    if settings.thought_blocks_enabled {
+        db::clear_turn_thoughts(pool, turn_id).await?;
+    }
     let detail = db::get_game_detail(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
     let inference = db::get_inference_config(pool).await?;
-    let model = model_for_phase(&game, settings, GameModelPhase::Prose);
+    let model_override = model_override_for_phase(&game, settings, GameModelPhase::Prose);
 
     let mut session = ToolSessionState::new(game.clone());
     let mut messages =
@@ -67,25 +73,37 @@ pub async fn run_tools_structured_phase(
     let mut llm_calls = 0u32;
     let mut tool_call_count = 0u32;
     let mut end_turn_early = false;
-    let parser = resolve_tool_parser(&inference.tool_call_parser, &model);
+    let parser = resolve_tool_parser(
+        &inference.tool_call_parser,
+        model_override
+            .as_deref()
+            .or_else(|| {
+                let model = settings.model.trim();
+                (!model.is_empty()).then_some(model)
+            })
+            .unwrap_or(""),
+    );
     let tool_defs = tool_definitions_from_specs(&tools);
     let mut jail = ToolStreamJail::new(parser);
-    let mut last_prose_flush = Instant::now();
-    const PROSE_FLUSH_INTERVAL: Duration = Duration::from_millis(120);
+    let mut prose_stream = ProseStreamState {
+        last_flush: Instant::now(),
+        thought_started_at: None,
+        thought_duration_ms: None,
+    };
 
     for _ in 0..loop_config.max_iterations {
         if token.is_cancelled() {
             return Err(AppError::bad_request("cancelled"));
         }
-        let mut stream = stream_chat_completion_with_tools(
-            &inference,
-            &model,
+        let mut stream = stream_chat_completion_with_tools_connection_fallback(
+            pool,
+            settings,
             &messages,
             &tools,
             &serde_json::json!("auto"),
-            settings.temperature,
-            settings.top_p,
-            loop_config.max_tokens_per_call,
+            Some(job_id),
+            None,
+            model_override.as_deref(),
         )
         .await?;
         llm_calls += 1;
@@ -109,8 +127,8 @@ pub async fn run_tools_structured_phase(
                                     game_id,
                                     turn_id,
                                     &prose,
-                                    &mut last_prose_flush,
-                                    PROSE_FLUSH_INTERVAL,
+                                    settings,
+                                    &mut prose_stream,
                                     false,
                                 )
                                 .await?;
@@ -150,8 +168,8 @@ pub async fn run_tools_structured_phase(
             game_id,
             turn_id,
             &prose,
-            &mut last_prose_flush,
-            PROSE_FLUSH_INTERVAL,
+            settings,
+            &mut prose_stream,
             true,
         )
         .await?;
@@ -202,8 +220,8 @@ pub async fn run_tools_structured_phase(
                                 game_id,
                                 turn_id,
                                 &prose,
-                                &mut last_prose_flush,
-                                PROSE_FLUSH_INTERVAL,
+                                settings,
+                                &mut prose_stream,
                                 true,
                             )
                             .await?;
@@ -237,8 +255,8 @@ pub async fn run_tools_structured_phase(
                             game_id,
                             turn_id,
                             &prose,
-                            &mut last_prose_flush,
-                            PROSE_FLUSH_INTERVAL,
+                            settings,
+                            &mut prose_stream,
                             true,
                         )
                         .await?;
@@ -261,8 +279,8 @@ pub async fn run_tools_structured_phase(
                         game_id,
                         turn_id,
                         &prose,
-                        &mut last_prose_flush,
-                        PROSE_FLUSH_INTERVAL,
+                        settings,
+                        &mut prose_stream,
                         true,
                     )
                     .await?;
@@ -303,7 +321,16 @@ pub async fn run_tools_structured_phase(
         db::invalidate_scene_summaries_from(pool, game_id, turn.sort_order).await?;
     }
 
-    if prose.trim().is_empty() {
+    let (_, cleaned_prose) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
+    prose = cleaned_prose;
+
+    let has_content = if settings.thought_blocks_enabled {
+        let parsed = parse_thought_blocks(&prose);
+        !parsed.reply.trim().is_empty() || !parsed.thought.is_empty()
+    } else {
+        !prose.trim().is_empty()
+    };
+    if !has_content {
         db::complete_job(
             pool,
             job_id,
@@ -315,9 +342,16 @@ pub async fn run_tools_structured_phase(
         return Ok(());
     }
 
-    let (_, cleaned_prose) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
-    prose = cleaned_prose;
-    db::update_turn_prose(pool, turn_id, &prose).await?;
+    finalize_turn_prose(
+        pool,
+        turn_id,
+        &prose,
+        settings,
+        &mut prose_stream.thought_started_at,
+        &mut prose_stream.thought_duration_ms,
+        true,
+    )
+    .await?;
 
     let elapsed = started.elapsed().as_millis() as u64;
     let obs = TurnObservability {
@@ -365,20 +399,74 @@ fn format_blockquote(text: &str) -> String {
         .join("\n")
 }
 
+struct ProseStreamState {
+    last_flush: Instant,
+    thought_started_at: Option<Instant>,
+    thought_duration_ms: Option<i64>,
+}
+
 async fn flush_prose_throttled(
     pool: &SqlitePool,
     game_id: i64,
     turn_id: i64,
     prose: &str,
-    last_flush: &mut Instant,
-    interval: Duration,
+    settings: &Settings,
+    state: &mut ProseStreamState,
     force: bool,
 ) -> AppResult<()> {
-    if !force && last_flush.elapsed() < interval {
+    const PROSE_FLUSH_INTERVAL: Duration = Duration::from_millis(120);
+    if !force && state.last_flush.elapsed() < PROSE_FLUSH_INTERVAL {
         return Ok(());
     }
-    db::update_turn_prose(pool, turn_id, prose).await?;
+    finalize_turn_prose(
+        pool,
+        turn_id,
+        prose,
+        settings,
+        &mut state.thought_started_at,
+        &mut state.thought_duration_ms,
+        false,
+    )
+    .await?;
     db::touch_game(pool, game_id).await?;
-    *last_flush = Instant::now();
+    state.last_flush = Instant::now();
+    Ok(())
+}
+
+async fn finalize_turn_prose(
+    pool: &SqlitePool,
+    turn_id: i64,
+    prose: &str,
+    settings: &Settings,
+    thought_started_at: &mut Option<Instant>,
+    thought_duration_ms: &mut Option<i64>,
+    thought_complete: bool,
+) -> AppResult<()> {
+    if settings.thought_blocks_enabled {
+        let parsed = parse_thought_blocks(prose);
+        let (duration_ms, in_progress) = if thought_complete {
+            let (duration_ms, _) = thought_timing(&parsed, thought_started_at, thought_duration_ms);
+            let final_duration = if parsed.thought.is_empty() {
+                None
+            } else {
+                duration_ms
+                    .or_else(|| thought_started_at.map(|start| start.elapsed().as_millis() as i64))
+            };
+            (final_duration, false)
+        } else {
+            thought_timing(&parsed, thought_started_at, thought_duration_ms)
+        };
+        db::update_turn_generation(
+            pool,
+            turn_id,
+            &parsed.reply,
+            &parsed.thought,
+            duration_ms,
+            in_progress,
+        )
+        .await?;
+    } else {
+        db::update_turn_prose(pool, turn_id, prose).await?;
+    }
     Ok(())
 }

@@ -13,7 +13,8 @@ use axum::{
 };
 use dreamwell_types::{
     Game, GameActorUpdate, GameCreate, GameDetail, GameStateEntryUpdate, GameStreamPayload,
-    GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse, SubmitTurnRequest,
+    GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse, RewindTurnRequest,
+    SubmitTurnRequest,
 };
 
 use crate::character_import::parse_character_import;
@@ -38,6 +39,7 @@ pub fn router() -> Router<AppState> {
         .route("/:id/turns", post(submit_turn))
         .route("/:id/turns/:turn_id/continue", post(continue_turn))
         .route("/:id/turns/:turn_id/regenerate", post(regenerate_turn))
+        .route("/:id/turns/:turn_id/rewind", post(rewind_turn))
         .route("/:id/turns/:turn_id/fork", post(fork_turn))
         .route(
             "/:id/turns/:turn_id/prose/recheck",
@@ -213,6 +215,19 @@ async fn regenerate_turn(
     )?;
     let job = db::prepare_regenerate_turn(&state.pool, id, turn_id).await?;
     enqueue_game_generation(&state.queue, job).await?;
+    Ok(Json(db::get_game_detail(&state.pool, id).await?))
+}
+
+async fn rewind_turn(
+    State(state): State<AppState>,
+    Path((id, turn_id)): Path<(i64, i64)>,
+    Json(payload): Json<RewindTurnRequest>,
+) -> AppResult<Json<GameDetail>> {
+    let _ = db::get_game(&state.pool, id).await?;
+    for job in db::list_active_jobs_for_game(&state.pool, id).await? {
+        let _ = state.queue.cancel_job(&state.pool, job.id).await;
+    }
+    db::rewind_game_at_turn(&state.pool, id, turn_id, payload.include_turn).await?;
     Ok(Json(db::get_game_detail(&state.pool, id).await?))
 }
 

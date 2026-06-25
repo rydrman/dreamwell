@@ -1,6 +1,5 @@
 use dreamwell_types::{
-    structured_output_tokens, DeclareChecksResponse, DeclaredCheck, GameTurnCheck, Job, JobType,
-    Settings,
+    DeclareChecksResponse, DeclaredCheck, GameTurnCheck, Job, JobType, Settings,
 };
 use sqlx::SqlitePool;
 use tokio_util::sync::CancellationToken;
@@ -19,20 +18,21 @@ pub enum GameModelPhase {
     Prose,
 }
 
-pub fn model_for_phase(
+pub fn model_override_for_phase(
     game: &dreamwell_types::Game,
-    settings: &Settings,
+    _settings: &Settings,
     phase: GameModelPhase,
-) -> String {
+) -> Option<String> {
     let override_model = match phase {
         GameModelPhase::Checks => &game.model_checks,
         GameModelPhase::Resolve => &game.model_resolve,
         GameModelPhase::Prose => &game.model_prose,
     };
-    if !override_model.trim().is_empty() {
-        override_model.clone()
+    let trimmed = override_model.trim();
+    if trimmed.is_empty() {
+        None
     } else {
-        settings.model.clone()
+        Some(trimmed.to_string())
     }
 }
 
@@ -41,7 +41,17 @@ pub fn ensure_model_for_phase(
     settings: &Settings,
     phase: GameModelPhase,
 ) -> AppResult<()> {
-    if model_for_phase(game, settings, phase).trim().is_empty() {
+    if !crate::model_fallback::has_inference_provider(settings) {
+        return Err(AppError::bad_request(
+            "No inference provider configured in settings",
+        ));
+    }
+    if model_override_for_phase(game, settings, phase).is_none()
+        && settings.model.trim().is_empty()
+        && dreamwell_types::fallback_connections(&settings.connections)
+            .iter()
+            .all(|conn| conn.model.trim().is_empty())
+    {
         return Err(AppError::bad_request(
             "No model selected in settings (or game phase override)",
         ));
@@ -137,25 +147,24 @@ pub async fn declare_and_roll_checks(
     guidance: &str,
     settings: &Settings,
     token: &CancellationToken,
+    job_id: i64,
 ) -> AppResult<Vec<GameTurnCheck>> {
-    let inference = db::get_inference_config(pool).await?;
     let detail = db::get_game_detail(pool, game_id).await?;
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
 
     let messages = build_declare_checks_messages(&game, &detail, &turn, guidance, settings);
-    let checks_model = model_for_phase(&game, settings, GameModelPhase::Checks);
+    let model_override = model_override_for_phase(&game, settings, GameModelPhase::Checks);
     let declared: DeclareChecksResponse = db::chat_completion_json_for_connection(
         pool,
-        &inference,
-        &checks_model,
+        settings,
         &messages,
-        0.4,
-        settings.top_p,
-        structured_output_tokens(settings),
         Some(&declare_checks_schema()),
         max_retries(),
         token,
+        Some(job_id),
+        None,
+        model_override.as_deref(),
     )
     .await?;
 

@@ -403,7 +403,7 @@ pub async fn permanently_delete_story(pool: &SqlitePool, id: i64) -> AppResult<(
 
 pub async fn list_active_jobs_for_story(pool: &SqlitePool, story_id: i64) -> AppResult<Vec<Job>> {
     let rows = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE story_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC",
+        &format!("SELECT {} FROM generation_jobs WHERE story_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC", crate::db::JOB_COLUMNS),
     )
     .bind(story_id)
     .fetch_all(pool)
@@ -922,7 +922,7 @@ pub async fn enqueue_beat_prose_recheck_job(
 
 pub async fn get_active_story_job(pool: &SqlitePool, story_id: i64) -> AppResult<Option<Job>> {
     let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE story_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
+        &format!("SELECT {} FROM generation_jobs WHERE story_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1", crate::db::JOB_COLUMNS),
     )
     .bind(story_id)
     .fetch_optional(pool)

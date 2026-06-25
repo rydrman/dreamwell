@@ -974,6 +974,19 @@ pub async fn regenerate_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, S
     .await
 }
 
+pub async fn rewind_turn(
+    game_id: i64,
+    turn_id: i64,
+    include_turn: bool,
+) -> Result<GameDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/rewind"),
+        &serde_json::json!({ "include_turn": include_turn }),
+    )
+    .await
+}
+
 pub async fn fork_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, String> {
     json_body(
         "POST",

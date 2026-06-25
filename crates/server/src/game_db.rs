@@ -16,6 +16,11 @@ use dreamwell_types::CHAT_ARCHIVE_RETENTION_DAYS;
 
 const DEFAULT_SKILLS: &str = r#"{"Finesse":0,"Force":0,"Flair":0,"Focus":0,"Sway":0}"#;
 const OPENING_TURN_SORT_ORDER: i64 = -1;
+const TURN_COLUMNS: &str = "id, game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, thought_content, thought_duration_ms, thought_in_progress, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at";
+
+fn turn_select(where_clause: &str) -> String {
+    format!("SELECT {TURN_COLUMNS} FROM game_turns {where_clause}")
+}
 const GAME_COLUMNS: &str = "id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, created_at, updated_at, archived_at";
 
 pub async fn purge_expired_archived_games(pool: &SqlitePool) -> AppResult<u64> {
@@ -572,7 +577,7 @@ pub async fn permanently_delete_game(pool: &SqlitePool, id: i64) -> AppResult<()
 
 pub async fn list_active_jobs_for_game(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<Job>> {
     let rows = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE game_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC",
+        &format!("SELECT {} FROM generation_jobs WHERE game_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC", crate::db::JOB_COLUMNS),
     )
     .bind(game_id)
     .fetch_all(pool)
@@ -728,9 +733,9 @@ pub async fn update_state_entry(
 }
 
 async fn list_turns(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<GameTurn>> {
-    let rows = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
-    )
+    let rows = sqlx::query_as::<_, TurnRow>(&turn_select(
+        "WHERE game_id = ?1 ORDER BY sort_order ASC, id ASC",
+    ))
     .bind(game_id)
     .fetch_all(pool)
     .await?;
@@ -767,6 +772,9 @@ async fn turn_from_row(pool: &SqlitePool, row: TurnRow) -> AppResult<GameTurn> {
         phase: row.phase,
         scene_beats: parse_string_array(&row.scene_beats),
         prose: row.prose,
+        thought_content: row.thought_content,
+        thought_duration_ms: row.thought_duration_ms,
+        thought_in_progress: row.thought_in_progress != 0,
         state_changes: parse_state_changes(&row.state_changes),
         checks,
         system_rolls,
@@ -851,7 +859,7 @@ fn scene_from_row(row: SceneRow) -> AppResult<GameScene> {
 
 pub async fn get_active_game_job(pool: &SqlitePool, game_id: i64) -> AppResult<Option<Job>> {
     let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE game_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
+        &format!("SELECT {} FROM generation_jobs WHERE game_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1", crate::db::JOB_COLUMNS),
     )
     .bind(game_id)
     .fetch_optional(pool)
@@ -958,14 +966,123 @@ pub async fn prepare_regenerate_turn(
     turn_id: i64,
 ) -> AppResult<Job> {
     let _game = get_game(pool, game_id).await?;
-    let turn = get_turn(pool, game_id, turn_id).await?;
+    let detail = get_game_detail(pool, game_id).await?;
+    let turn = detail
+        .turns
+        .iter()
+        .find(|t| t.id == turn_id)
+        .cloned()
+        .ok_or_else(|| AppError::not_found("Turn not found"))?;
+    let Some(last) = detail.turns.last() else {
+        return Err(AppError::bad_request("Game has no turns"));
+    };
+    if turn.id != last.id {
+        return Err(AppError::bad_request(
+            "Only the most recent turn can be regenerated",
+        ));
+    }
     if turn.is_opening {
         return Err(AppError::bad_request("Opening scene cannot be regenerated"));
+    }
+    if turn.phase != "done" {
+        return Err(AppError::bad_request(
+            "Only completed generated responses can be regenerated",
+        ));
+    }
+    if turn.prose.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "Turn has no generated response to regenerate",
+        ));
     }
     if has_active_turn_job(pool, turn_id).await? {
         return Err(AppError::bad_request("Turn already has an active job"));
     }
     prepare_structured_agent_rerun(pool, game_id, turn_id, &turn).await
+}
+
+pub async fn rewind_game_at_turn(
+    pool: &SqlitePool,
+    game_id: i64,
+    turn_id: i64,
+    include_turn: bool,
+) -> AppResult<GameDetail> {
+    let detail = get_game_detail(pool, game_id).await?;
+    let turn = detail
+        .turns
+        .iter()
+        .find(|t| t.id == turn_id)
+        .ok_or_else(|| AppError::not_found("Turn not found"))?;
+    if include_turn && turn.is_opening {
+        return Err(AppError::bad_request(
+            "Cannot rewind before the opening scene",
+        ));
+    }
+
+    let mut to_delete: Vec<&GameTurn> = detail
+        .turns
+        .iter()
+        .filter(|t| {
+            if t.is_opening {
+                return false;
+            }
+            if include_turn {
+                t.sort_order >= turn.sort_order
+            } else {
+                t.sort_order > turn.sort_order
+            }
+        })
+        .collect();
+    if to_delete.is_empty() {
+        return Err(AppError::bad_request("Nothing to rewind"));
+    }
+    to_delete.sort_by_key(|t| std::cmp::Reverse(t.sort_order));
+
+    for deleted in &to_delete {
+        crate::game_state::revert_turn_state_changes(
+            pool,
+            game_id,
+            deleted.id,
+            &deleted.state_changes,
+            &detail.actors,
+        )
+        .await?;
+    }
+
+    let delete_ids: Vec<i64> = to_delete.iter().map(|t| t.id).collect();
+    for id in &delete_ids {
+        sqlx::query("DELETE FROM game_turns WHERE id = ?1 AND game_id = ?2")
+            .bind(id)
+            .bind(game_id)
+            .execute(pool)
+            .await?;
+    }
+
+    let kept_turns: Vec<GameTurn> = detail
+        .turns
+        .iter()
+        .filter(|t| !delete_ids.contains(&t.id))
+        .cloned()
+        .collect();
+    let game = get_game(pool, game_id).await?;
+    let instances =
+        crate::game_mechanics::replay_element_instances(&game.game_elements, &kept_turns);
+    update_game_element_instances(pool, game_id, &instances).await?;
+
+    let scene_cutoff = if include_turn {
+        turn.sort_order
+    } else {
+        turn.sort_order + 1
+    };
+    sqlx::query(
+        "DELETE FROM game_scenes WHERE game_id = ?1 AND start_turn >= ?2 AND start_turn > 0",
+    )
+    .bind(game_id)
+    .bind(scene_cutoff)
+    .execute(pool)
+    .await?;
+    invalidate_scene_summaries_from(pool, game_id, scene_cutoff).await?;
+    touch_game(pool, game_id).await?;
+    get_game_detail(pool, game_id).await
 }
 
 pub async fn fork_game_at_turn(
@@ -1132,7 +1249,7 @@ async fn clone_turn_to_game(
     let mechanical_results = json_string(&turn.mechanical_results);
     let observability = json_string(&turn.observability);
     let new_turn_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13) RETURNING id",
+        "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, thought_content, thought_duration_ms, thought_in_progress, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16) RETURNING id",
     )
     .bind(new_game_id)
     .bind(turn.sort_order)
@@ -1141,6 +1258,9 @@ async fn clone_turn_to_game(
     .bind(&turn.phase)
     .bind(&scene_beats)
     .bind(&turn.prose)
+    .bind(&turn.thought_content)
+    .bind(turn.thought_duration_ms)
+    .bind(turn.thought_in_progress as i64)
     .bind(&state_changes)
     .bind(turn.is_opening as i64)
     .bind(plan_json)
@@ -1196,7 +1316,7 @@ async fn prepare_structured_agent_rerun(
     clear_system_rolls(pool, turn_id).await?;
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "UPDATE game_turns SET prose='', scene_beats='[]', state_changes='[]', plan_json=NULL, mechanical_results_json='[]', observability_json='{}', phase='pending', updated_at=?1 WHERE id=?2",
+        "UPDATE game_turns SET prose='', thought_content='', thought_duration_ms=NULL, thought_in_progress=0, scene_beats='[]', state_changes='[]', plan_json=NULL, mechanical_results_json='[]', observability_json='{}', phase='pending', updated_at=?1 WHERE id=?2",
     )
     .bind(&now)
     .bind(turn_id)
@@ -1213,14 +1333,12 @@ async fn prepare_structured_agent_rerun(
 }
 
 pub async fn get_turn(pool: &SqlitePool, game_id: i64, turn_id: i64) -> AppResult<GameTurn> {
-    let row = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE id = ?1 AND game_id = ?2",
-    )
-    .bind(turn_id)
-    .bind(game_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("Turn not found"))?;
+    let row = sqlx::query_as::<_, TurnRow>(&turn_select("WHERE id = ?1 AND game_id = ?2"))
+        .bind(turn_id)
+        .bind(game_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| AppError::not_found("Turn not found"))?;
     turn_from_row(pool, row).await
 }
 
@@ -1243,6 +1361,41 @@ pub async fn update_turn_prose(pool: &SqlitePool, turn_id: i64, prose: &str) -> 
         .bind(turn_id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+pub async fn update_turn_generation(
+    pool: &SqlitePool,
+    turn_id: i64,
+    prose: &str,
+    thought_content: &str,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: bool,
+) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE game_turns SET prose=?1, thought_content=?2, thought_duration_ms=?3, thought_in_progress=?4, updated_at=?5 WHERE id=?6",
+    )
+    .bind(prose)
+    .bind(thought_content)
+    .bind(thought_duration_ms)
+    .bind(thought_in_progress as i64)
+    .bind(&now)
+    .bind(turn_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn clear_turn_thoughts(pool: &SqlitePool, turn_id: i64) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE game_turns SET thought_content='', thought_duration_ms=NULL, thought_in_progress=0, updated_at=?1 WHERE id=?2",
+    )
+    .bind(&now)
+    .bind(turn_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -1382,12 +1535,10 @@ pub async fn merge_turn_observability(
     turn_id: i64,
     patch: TurnObservability,
 ) -> AppResult<()> {
-    let turn = sqlx::query_as::<_, TurnRow>(
-        "SELECT id, game_id, sort_order, player_action, guidance_notes, phase, scene_beats, prose, state_changes, is_opening, plan_json, mechanical_results_json, observability_json, created_at, updated_at FROM game_turns WHERE id = ?1",
-    )
-    .bind(turn_id)
-    .fetch_one(pool)
-    .await?;
+    let turn = sqlx::query_as::<_, TurnRow>(&turn_select("WHERE id = ?1"))
+        .bind(turn_id)
+        .fetch_one(pool)
+        .await?;
     let mut obs = parse_json_default::<TurnObservability>(&turn.observability_json);
     obs.llm_call_count += patch.llm_call_count;
     obs.tool_call_count += patch.tool_call_count;
@@ -1548,6 +1699,9 @@ struct TurnRow {
     phase: String,
     scene_beats: String,
     prose: String,
+    thought_content: String,
+    thought_duration_ms: Option<i64>,
+    thought_in_progress: i64,
     state_changes: String,
     is_opening: i64,
     plan_json: Option<String>,

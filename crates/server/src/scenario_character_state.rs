@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
+use crate::model_fallback::has_inference_provider;
 
 const GENERATE_CHARACTER_STATE_SYSTEM: &str = r#"You design initial typed game state for one character in a tabletop RPG scenario.
 
@@ -61,14 +62,6 @@ pub fn character_state_generation_schema() -> serde_json::Value {
         },
         "required": ["initial_state"]
     })
-}
-
-fn output_tokens(settings: &Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        (settings.context_tokens / 6).clamp(512, 1536)
-    } else {
-        768
-    }
 }
 
 fn max_retries() -> u32 {
@@ -217,7 +210,7 @@ pub async fn generate_character_state(
     payload: &GenerateCharacterStateRequest,
     settings: &Settings,
 ) -> AppResult<GenerateCharacterStateResponse> {
-    if settings.model.trim().is_empty() {
+    if !has_inference_provider(settings) {
         return Err(AppError::bad_request(
             "Configure an inference model in Settings before generating character state",
         ));
@@ -226,21 +219,19 @@ pub async fn generate_character_state(
         return Err(AppError::bad_request("Character name is required"));
     }
 
-    let inference = db::get_inference_config(pool).await?;
     let messages = build_generate_character_state_messages(payload);
     let token = CancellationToken::new();
 
     let llm: LlmCharacterStateResponse = db::chat_completion_json_for_connection(
         pool,
-        &inference,
-        settings.model.trim(),
+        settings,
         &messages,
-        0.4,
-        settings.top_p,
-        output_tokens(settings),
         Some(&character_state_generation_schema()),
         max_retries(),
         &token,
+        None,
+        None,
+        None,
     )
     .await?;
 

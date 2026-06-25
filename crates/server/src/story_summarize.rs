@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::inference::chat_completion;
+use crate::model_fallback::chat_completion_with_connection_fallback;
 use crate::summarize::process_summarize_output;
 
 const CHAPTER_SUMMARIZE_SYSTEM: &str = r#"Compress written chapter prose into a dense fact summary for downstream story generation.
@@ -15,14 +15,6 @@ Rules:
 - Include: key events, character names/state, objects, locations, unresolved threads
 - Target ≤150 words
 - Output only the summary text"#;
-
-fn summarize_output_tokens(settings: &Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        (settings.context_tokens / 8).clamp(256, 512)
-    } else {
-        384
-    }
-}
 
 fn max_retries() -> u32 {
     config::GENERATION_MAX_RETRIES
@@ -87,7 +79,6 @@ pub async fn run_story_chapter_summarize_job(
     chapter_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let detail = db::get_story_detail(pool, story_id).await?;
     let chapter = detail
         .chapters
@@ -100,13 +91,13 @@ pub async fn run_story_chapter_summarize_job(
     let mut raw = None;
 
     for attempt in 1..=max_attempts {
-        match chat_completion(
-            &inference,
-            &settings.model,
+        match chat_completion_with_connection_fallback(
+            pool,
+            settings,
             &messages,
-            0.2,
-            settings.top_p,
-            summarize_output_tokens(settings),
+            Some(job_id),
+            None,
+            None,
         )
         .await
         {

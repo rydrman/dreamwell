@@ -5,16 +5,8 @@ use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_prompts::build_scene_summarize_messages;
-use crate::inference::chat_completion;
+use crate::model_fallback::chat_completion_with_connection_fallback;
 use crate::summarize::process_summarize_output;
-
-fn summarize_output_tokens(settings: &Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        (settings.context_tokens / 8).clamp(256, 512)
-    } else {
-        384
-    }
-}
 
 fn max_retries() -> u32 {
     config::GENERATION_MAX_RETRIES
@@ -28,7 +20,6 @@ pub async fn run_game_scene_summarize_job(
     game_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let detail = db::get_game_detail(pool, game_id).await?;
     let scene = detail
         .scenes
@@ -40,13 +31,13 @@ pub async fn run_game_scene_summarize_job(
     let mut raw = None;
 
     for attempt in 1..=max_attempts {
-        match chat_completion(
-            &inference,
-            &settings.model,
+        match chat_completion_with_connection_fallback(
+            pool,
+            settings,
             &messages,
-            0.3,
-            settings.top_p,
-            summarize_output_tokens(settings),
+            Some(job_id),
+            None,
+            None,
         )
         .await
         {

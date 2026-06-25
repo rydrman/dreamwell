@@ -273,6 +273,9 @@ pub struct Message {
     /// Set when the most recent generation job for this message failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_error: Option<String>,
+    /// Transient notice while generation retries on a fallback model.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub generation_notice: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -373,6 +376,15 @@ pub struct Job {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// Active provider connection label while the job is running.
+    #[serde(default)]
+    pub generation_provider: String,
+    /// Active model id while the job is running.
+    #[serde(default)]
+    pub generation_model: String,
+    /// Transient fallback notice while retrying another provider.
+    #[serde(default)]
+    pub generation_notice: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -632,6 +644,12 @@ pub struct InferenceConnection {
     pub api_key_set: bool,
     #[serde(default)]
     pub model: String,
+    /// When false, skipped during provider fallback.
+    #[serde(default = "default_connection_enabled")]
+    pub enabled: bool,
+    /// Priority order for provider fallback (lower = tried first).
+    #[serde(default)]
+    pub sort_order: i64,
     #[serde(default)]
     pub json_format_strategy: JsonFormatStrategy,
     /// Text-embedded tool-call parser for streaming game narration (`auto`, `none`, or a dynamo parser name).
@@ -649,6 +667,42 @@ pub struct InferenceConnection {
     pub max_context_messages: i64,
     #[serde(default = "default_connection_auto_context_on_model_change")]
     pub auto_context_on_model_change: bool,
+}
+
+fn default_connection_enabled() -> bool {
+    true
+}
+
+/// Human-readable label for a provider connection.
+pub fn connection_label(conn: &InferenceConnection) -> String {
+    let name = conn.name.trim();
+    if !name.is_empty() {
+        return name.to_string();
+    }
+    let url = conn.inference_url.trim();
+    if !url.is_empty() {
+        return url.to_string();
+    }
+    format!("Connection {}", conn.id)
+}
+
+/// Whether a connection has enough config to attempt inference.
+pub fn connection_inference_ready(conn: &InferenceConnection) -> bool {
+    conn.enabled && !conn.inference_url.trim().is_empty() && !conn.model.trim().is_empty()
+}
+
+/// Enabled connections in fallback priority order (`sort_order`, then `id`).
+pub fn fallback_connections(connections: &[InferenceConnection]) -> Vec<&InferenceConnection> {
+    let mut ready: Vec<&InferenceConnection> = connections
+        .iter()
+        .filter(|conn| connection_inference_ready(conn))
+        .collect();
+    ready.sort_by_key(|conn| (conn.sort_order, conn.id));
+    ready
+}
+
+pub fn has_inference_provider(connections: &[InferenceConnection]) -> bool {
+    !fallback_connections(connections).is_empty()
 }
 
 fn default_tool_call_parser() -> String {
@@ -694,6 +748,8 @@ pub struct InferenceConnectionUpdate {
     /// Omitted keeps the existing key; an empty string clears it.
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub enabled: Option<bool>,
+    pub sort_order: Option<i64>,
     pub json_format_strategy: Option<JsonFormatStrategy>,
     pub tool_call_parser: Option<String>,
     pub temperature: Option<f64>,
@@ -1215,6 +1271,12 @@ pub struct GameTurn {
     pub phase: String,
     pub scene_beats: Vec<String>,
     pub prose: String,
+    #[serde(default)]
+    pub thought_content: String,
+    #[serde(default)]
+    pub thought_duration_ms: Option<i64>,
+    #[serde(default)]
+    pub thought_in_progress: bool,
     pub state_changes: Vec<AppliedStateChange>,
     pub checks: Vec<GameTurnCheck>,
     #[serde(default)]
@@ -1351,6 +1413,14 @@ pub struct SubmitTurnRequest {
     pub player_action: String,
     #[serde(default)]
     pub guidance_notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RewindTurnRequest {
+    /// When true, delete the selected turn as well (rewind before a player action).
+    /// When false, keep the selected turn and delete later turns (rewind after a GM response).
+    #[serde(default)]
+    pub include_turn: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

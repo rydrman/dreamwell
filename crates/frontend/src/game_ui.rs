@@ -11,7 +11,10 @@ use crate::api;
 use crate::dice_ui::DiceRollDisplay;
 use crate::game_presets_ui::GmTonePresetPicker;
 use crate::game_sync::{detail_stale_vs_sse, should_replace_detail_from_sse};
-use crate::generation_ui::{game_notice, GenerationErrorAlert, GenerationStatusBar};
+use crate::generation_ui::{
+    active_job_fallback_notice, active_job_inference_label, game_notice, GenerationErrorAlert,
+    GenerationStatusBar,
+};
 use crate::item_list::GameList;
 use crate::markdown::render_message_content;
 use crate::message_menu::MessageOptionsMenu;
@@ -20,6 +23,7 @@ use crate::state_ui::{
     InlineStateChangesGroup, PhaseSection, PlanBeatsList, StateEntriesPanel, StateEntryRow,
     StateScopeActor,
 };
+use crate::thought_ui::ThoughtBlock;
 use crate::title_editor::TitleEditor;
 use crate::view_scroll::scroll_content_view_to_bottom;
 
@@ -39,6 +43,27 @@ fn game_id_from_route(route: &AppRoute) -> Option<i64> {
         AppRoute::Games { game_id, .. } => *game_id,
         _ => None,
     }
+}
+
+fn confirm_rewind_turns(count: usize, include_turn: bool) -> bool {
+    if count == 0 {
+        return true;
+    }
+    let message = if include_turn {
+        if count == 1 {
+            "Delete this turn?".to_string()
+        } else {
+            format!("Delete this turn and {} turns after it?", count - 1)
+        }
+    } else {
+        format!(
+            "Delete {count} turn{} after this one?",
+            if count == 1 { "" } else { "s" },
+        )
+    };
+    web_sys::window()
+        .and_then(|w| w.confirm_with_message(&message).ok())
+        .unwrap_or(false)
 }
 
 fn phase_label(phase: &str) -> &str {
@@ -220,6 +245,30 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         })
     };
 
+    let on_rewind = {
+        let detail = detail.clone();
+        Callback::from(
+            move |(turn_id, include_turn, delete_count): (i64, bool, usize)| {
+                let Some(game_id) = game_id else { return };
+                if !confirm_rewind_turns(delete_count, include_turn) {
+                    return;
+                }
+                let detail = detail.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match api::rewind_turn(game_id, turn_id, include_turn).await {
+                        Ok(d) => detail.set(Some(d)),
+                        Err(err) => {
+                            if let Some(window) = web_sys::window() {
+                                let _ =
+                                    window.alert_with_message(&format!("Could not rewind: {err}"));
+                            }
+                        }
+                    }
+                });
+            },
+        )
+    };
+
     let on_fork = {
         let on_navigate = props.on_navigate.clone();
         let on_games_refresh = props.on_games_refresh.clone();
@@ -322,7 +371,16 @@ pub fn game_shell(props: &GameShellProps) -> Html {
     };
 
     let game_detail = (*detail).clone();
+    let show_thoughts = props
+        .settings
+        .as_ref()
+        .is_some_and(|s| s.thought_blocks_enabled);
     let notice = game_detail.as_ref().and_then(game_notice);
+    let active_job = game_detail
+        .as_ref()
+        .and_then(|detail| detail.game.active_job.clone());
+    let inference_label = active_job_inference_label(active_job.as_ref());
+    let fallback_notice = active_job_fallback_notice(active_job.as_ref());
     let model_missing = props
         .settings
         .as_ref()
@@ -391,28 +449,48 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 
                     <div class="content-scroll">
                         <div class="messages game-turn-feed" ref={turn_feed_ref.clone()}>
-                            { for game_detail.turns.iter().map(|turn| {
+                            { for game_detail.turns.iter().enumerate().map(|(turn_idx, turn)| {
                                 let turn_id = turn.id;
                                 let is_opening = turn.is_opening;
+                                let is_last = turn_idx + 1 == game_detail.turns.len();
+                                let turns_after = game_detail.turns.len() - turn_idx - 1;
                                 let step_paused = turn.phase.ends_with("_pause");
-                                let show_continue = step_paused;
-                                let show_regenerate = turn.phase == "done";
-                                let show_retry = turn.phase == "failed"
-                                    || (!is_opening
-                                        && turn.phase != "done"
-                                        && turn.phase != "pending"
-                                        && !turn.phase.ends_with("_pause"));
-                                let show_align_prose = turn.phase == "done"
+                                let show_continue = is_last && step_paused;
+                                let show_regenerate = is_last
+                                    && turn.phase == "done"
+                                    && !turn.prose.trim().is_empty();
+                                let show_retry = is_last
+                                    && (turn.phase == "failed"
+                                        || (!is_opening
+                                            && turn.phase != "done"
+                                            && turn.phase != "pending"
+                                            && !turn.phase.ends_with("_pause")));
+                                let show_align_prose = is_last
+                                    && turn.phase == "done"
                                     && !turn.prose.is_empty()
                                     && !turn.scene_beats.is_empty();
-                                let show_recheck_state = turn.phase == "done" && !turn.prose.is_empty();
+                                let show_recheck_state = is_last
+                                    && turn.phase == "done"
+                                    && !turn.prose.is_empty();
                                 let show_fork = turn.phase == "done";
+                                let show_assistant_rewind = turns_after > 0;
+                                let has_user_bubble = !is_opening
+                                    && (!turn.player_action.trim().is_empty()
+                                        || !turn.guidance_notes.trim().is_empty());
+                                let show_user_rewind = has_user_bubble;
+                                let assistant_rewind_count = turns_after;
+                                let user_rewind_count = turns_after + 1;
+                                let turn_generating = is_last && active_job.is_some();
+                                let show_thought_block = show_thoughts
+                                    && (!turn.thought_content.is_empty()
+                                        || (turn.thought_in_progress && turn_generating));
                                 let can_menu = !is_opening && (show_continue
                                     || show_regenerate
                                     || show_retry
                                     || show_fork
                                     || show_align_prose
-                                    || show_recheck_state);
+                                    || show_recheck_state
+                                    || show_assistant_rewind);
                                 let display_prose = if turn.prose.is_empty() {
                                     String::new()
                                 } else if is_opening {
@@ -454,6 +532,26 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 || !turn.guidance_notes.trim().is_empty())
                                         {
                                             <div class="message user">
+                                                if show_user_rewind {
+                                                    <div class="message-header">
+                                                        <div class="message-meta muted">{"You"}</div>
+                                                        <MessageOptionsMenu align_end={true} title="Turn options">
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item message-menu-item--rewind"
+                                                                onclick={on_rewind.reform(move |_| (turn_id, true, user_rewind_count))}
+                                                            >
+                                                                { if user_rewind_count == 1 {
+                                                                    "Rewind here (delete this turn)".to_string()
+                                                                } else {
+                                                                    format!(
+                                                                        "Rewind here (delete {user_rewind_count} turns)",
+                                                                    )
+                                                                } }
+                                                            </button>
+                                                        </MessageOptionsMenu>
+                                                    </div>
+                                                }
                                                 if !turn.player_action.trim().is_empty() {
                                                     <div class="game-prose markdown-body">
                                                         { render_message_content(&turn.player_action) }
@@ -535,8 +633,36 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     {"Recheck state"}
                                                                 </button>
                                                             }
+                                                            if show_assistant_rewind {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item message-menu-item--rewind"
+                                                                    onclick={on_rewind.reform(move |_| (turn_id, false, assistant_rewind_count))}
+                                                                >
+                                                                    { format!(
+                                                                        "Rewind here (delete {assistant_rewind_count} turn{})",
+                                                                        if assistant_rewind_count == 1 { "" } else { "s" },
+                                                                    ) }
+                                                                </button>
+                                                            }
                                                         </MessageOptionsMenu>
                                                     }
+                                                </div>
+                                            } else if show_assistant_rewind {
+                                                <div class="message-header">
+                                                    <div class="message-meta muted">{"Opening"}</div>
+                                                    <MessageOptionsMenu title="Turn options">
+                                                        <button
+                                                            type="button"
+                                                            class="message-menu-item message-menu-item--rewind"
+                                                            onclick={on_rewind.reform(move |_| (turn_id, false, assistant_rewind_count))}
+                                                        >
+                                                            { format!(
+                                                                "Rewind here (delete {assistant_rewind_count} turn{})",
+                                                                if assistant_rewind_count == 1 { "" } else { "s" },
+                                                            ) }
+                                                        </button>
+                                                    </MessageOptionsMenu>
                                                 </div>
                                             }
                                             if turn.phase == "failed" {
@@ -666,9 +792,24 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 <InlineStateChangesGroup changes={turn.state_changes.clone()} />
                                             }
 
+                                            if show_thought_block {
+                                                <ThoughtBlock
+                                                    thought_content={turn.thought_content.clone()}
+                                                    thought_duration_ms={turn.thought_duration_ms}
+                                                    thought_in_progress={turn.thought_in_progress && turn_generating}
+                                                />
+                                            }
+
                                             if !display_prose.is_empty() || turn.phase == "prose" {
                                                 <div class="game-prose markdown-body">
-                                                    { render_prose_with_blocks(&display_prose, turn) }
+                                                    if display_prose.is_empty()
+                                                        && show_thought_block
+                                                        && turn_generating
+                                                    {
+                                                        <span class="muted">{"(No reply text yet — see thought block above)"}</span>
+                                                    } else {
+                                                        { render_prose_with_blocks(&display_prose, turn) }
+                                                    }
                                                 </div>
                                             }
                                         </div>
@@ -678,7 +819,11 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                         </div>
 
                         if let Some(notice) = notice {
-                            <GenerationStatusBar notice={notice} />
+                            <GenerationStatusBar
+                                notice={notice}
+                                inference_label={inference_label.clone()}
+                                fallback_notice={fallback_notice.clone()}
+                            />
                         }
                         if model_missing {
                             <div class="message-error composer-notice" role="alert">

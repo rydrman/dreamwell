@@ -19,8 +19,27 @@ pub use stories_db::*;
 
 use crate::config::MAX_CONCURRENT_JOBS;
 use crate::error::{AppError, AppResult};
-use crate::inference::{chat_completion_json, InferenceConfig};
+use crate::inference::InferenceConfig;
 use tokio_util::sync::CancellationToken;
+
+pub async fn get_inference_config_for_connection(
+    pool: &SqlitePool,
+    connection_id: i64,
+) -> AppResult<InferenceConfig> {
+    let row = sqlx::query_as::<_, ConnectionConfigRow>(
+        "SELECT id, inference_url, api_key, COALESCE(json_format_strategy, 'auto') AS json_format_strategy, COALESCE(tool_call_parser, 'auto') AS tool_call_parser FROM inference_connections WHERE id = ?1",
+    )
+    .bind(connection_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(InferenceConfig::with_connection(
+        row.inference_url,
+        Some(row.api_key).filter(|key| !key.is_empty()),
+        Some(row.id),
+        parse_json_format_strategy(&row.json_format_strategy),
+        row.tool_call_parser,
+    ))
+}
 
 pub async fn connect(database_url: &str) -> AppResult<SqlitePool> {
     let url = database_url.strip_prefix("sqlite:").unwrap_or(database_url);
@@ -640,7 +659,7 @@ pub async fn purge_expired_archived_chats(pool: &SqlitePool) -> AppResult<u64> {
 
 pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Job>> {
     let rows = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize', 'chat_variable_recheck') AND status IN ('queued','running') ORDER BY created_at ASC",
+        &format!("SELECT {JOB_COLUMNS} FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize', 'chat_variable_recheck') AND status IN ('queued','running') ORDER BY created_at ASC"),
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -651,7 +670,7 @@ pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppRe
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
     let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.reply_beats, m.state_changes, m.generation_phase, m.is_summary, m.in_summary, m.created_at, j.status as job_status, (SELECT gj.error FROM generation_jobs gj WHERE gj.message_id = m.id AND gj.status = 'failed' ORDER BY gj.completed_at DESC LIMIT 1) as generation_error FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.reply_beats, m.state_changes, m.generation_phase, m.is_summary, m.in_summary, m.created_at, m.generation_notice, j.status as job_status, (SELECT gj.error FROM generation_jobs gj WHERE gj.message_id = m.id AND gj.status = 'failed' ORDER BY gj.completed_at DESC LIMIT 1) as generation_error FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -677,7 +696,7 @@ pub async fn list_active_jobs_for_message(
     message_id: i64,
 ) -> AppResult<Vec<Job>> {
     let rows = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE message_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC",
+        &format!("SELECT {JOB_COLUMNS} FROM generation_jobs WHERE message_id = ?1 AND status IN ('queued','running') ORDER BY created_at ASC"),
     )
     .bind(message_id)
     .fetch_all(pool)
@@ -736,6 +755,7 @@ pub async fn insert_message(
         created_at: parse_dt(&now)?,
         job_status: None,
         generation_error: None,
+        generation_notice: String::new(),
     })
 }
 
@@ -750,6 +770,10 @@ pub async fn fail_chat_message_generation(
         update_message_content(pool, message_id, &format!("[Generation failed: {error}]")).await?;
     }
     set_thought_in_progress(pool, message_id, false).await?;
+    sqlx::query("UPDATE messages SET generation_notice = '' WHERE id = ?1")
+        .bind(message_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -1158,7 +1182,7 @@ pub async fn finalize_message_typed_generation(
     let changes_json = serde_json::to_string(state_changes)
         .map_err(|e| AppError::internal(format!("serialize state_changes: {e}")))?;
     sqlx::query(
-        "UPDATE messages SET content = ?1, thought_content = ?2, thought_duration_ms = ?3, thought_in_progress = ?4, reply_beats = ?5, state_changes = ?6, generation_phase = 'complete', variable_updates = '[]' WHERE id = ?7",
+        "UPDATE messages SET content = ?1, thought_content = ?2, thought_duration_ms = ?3, thought_in_progress = ?4, reply_beats = ?5, state_changes = ?6, generation_phase = 'complete', generation_notice = '', variable_updates = '[]' WHERE id = ?7",
     )
     .bind(&content)
     .bind(&thought_content)
@@ -1211,41 +1235,34 @@ pub async fn get_inference_config(pool: &SqlitePool) -> AppResult<InferenceConfi
     ))
 }
 
-/// Structured JSON completion using the active connection's format preference.
+/// Structured JSON completion with provider fallback.
 #[allow(clippy::too_many_arguments)]
 pub async fn chat_completion_json_for_connection<T>(
     pool: &SqlitePool,
-    config: &InferenceConfig,
-    model: &str,
+    settings: &Settings,
     messages: &[serde_json::Value],
-    temperature: f64,
-    top_p: f64,
-    max_tokens: i64,
     response_format: Option<&serde_json::Value>,
     max_attempts: u32,
     token: &CancellationToken,
+    job_id: Option<i64>,
+    message_id: Option<i64>,
+    model_override: Option<&str>,
 ) -> AppResult<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    let mut learned = None;
-    let result = chat_completion_json(
-        config,
-        model,
+    crate::model_fallback::chat_completion_json_with_connection_fallback(
+        pool,
+        settings,
         messages,
-        temperature,
-        top_p,
-        max_tokens,
         response_format,
         max_attempts,
         token,
-        &mut learned,
+        job_id,
+        message_id,
+        model_override,
     )
-    .await?;
-    if let (Some(connection_id), Some(strategy)) = (config.connection_id, learned) {
-        persist_learned_json_format_strategy(pool, connection_id, strategy).await?;
-    }
-    Ok(result)
+    .await
 }
 
 pub async fn persist_learned_json_format_strategy(
@@ -1284,7 +1301,7 @@ fn parse_json_format_strategy(raw: &str) -> JsonFormatStrategy {
     }
 }
 
-const INFERENCE_CONNECTION_SELECT: &str = "SELECT id, name, inference_url, api_key, model, json_format_strategy, tool_call_parser, temperature, top_p, max_tokens, context_tokens, max_context_messages, auto_context_on_model_change FROM inference_connections";
+const INFERENCE_CONNECTION_SELECT: &str = "SELECT id, name, inference_url, api_key, model, enabled, sort_order, json_format_strategy, tool_call_parser, temperature, top_p, max_tokens, context_tokens, max_context_messages, auto_context_on_model_change FROM inference_connections";
 
 fn apply_connection_profile(settings: &mut Settings, conn: &InferenceConnection) {
     settings.inference_url = conn.inference_url.clone();
@@ -1318,7 +1335,7 @@ async fn snapshot_active_connection_settings(
 }
 
 pub async fn list_inference_connections(pool: &SqlitePool) -> AppResult<Vec<InferenceConnection>> {
-    let query = format!("{INFERENCE_CONNECTION_SELECT} ORDER BY id");
+    let query = format!("{INFERENCE_CONNECTION_SELECT} ORDER BY sort_order ASC, id ASC");
     let rows = sqlx::query_as::<_, InferenceConnectionRow>(&query)
         .fetch_all(pool)
         .await?;
@@ -1333,12 +1350,17 @@ pub async fn create_inference_connection(
     payload: InferenceConnectionCreate,
 ) -> AppResult<InferenceConnection> {
     let api_key = payload.api_key.unwrap_or_default();
+    let next_sort_order: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM inference_connections")
+            .fetch_one(pool)
+            .await?;
     let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO inference_connections (name, inference_url, api_key) VALUES (?1, ?2, ?3) RETURNING id",
+        "INSERT INTO inference_connections (name, inference_url, api_key, sort_order) VALUES (?1, ?2, ?3, ?4) RETURNING id",
     )
     .bind(payload.name.trim())
     .bind(payload.inference_url.trim())
     .bind(api_key)
+    .bind(next_sort_order)
     .fetch_one(pool)
     .await?;
     get_inference_connection(pool, id).await
@@ -1356,13 +1378,19 @@ pub async fn clone_inference_connection(
         .ok_or_else(|| AppError::not_found("Inference connection not found"))?;
 
     let name = format!("{} (copy)", source.name.trim());
+    let next_sort_order: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM inference_connections")
+            .fetch_one(pool)
+            .await?;
     let new_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO inference_connections (name, inference_url, api_key, model, json_format_strategy, tool_call_parser, temperature, top_p, max_tokens, context_tokens, max_context_messages, auto_context_on_model_change) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) RETURNING id",
+        "INSERT INTO inference_connections (name, inference_url, api_key, model, enabled, sort_order, json_format_strategy, tool_call_parser, temperature, top_p, max_tokens, context_tokens, max_context_messages, auto_context_on_model_change) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) RETURNING id",
     )
     .bind(name)
     .bind(source.inference_url.trim())
     .bind(source.api_key)
     .bind(source.model)
+    .bind(source.enabled)
+    .bind(next_sort_order)
     .bind(source.json_format_strategy)
     .bind(source.tool_call_parser)
     .bind(source.temperature)
@@ -1413,6 +1441,8 @@ pub async fn update_inference_connection(
         .unwrap_or(current.json_format_strategy.as_str());
     let tool_call_parser = payload.tool_call_parser.unwrap_or(current.tool_call_parser);
     let model = payload.model.unwrap_or(current.model);
+    let enabled = payload.enabled.unwrap_or(current.enabled != 0);
+    let sort_order = payload.sort_order.unwrap_or(current.sort_order);
     let temperature = payload.temperature.unwrap_or(current.temperature);
     let top_p = payload.top_p.unwrap_or(current.top_p);
     let max_tokens = payload.max_tokens.unwrap_or(current.max_tokens);
@@ -1425,12 +1455,14 @@ pub async fn update_inference_connection(
         .unwrap_or(current.auto_context_on_model_change != 0);
 
     sqlx::query(
-        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, model = ?4, json_format_strategy = ?5, tool_call_parser = ?6, temperature = ?7, top_p = ?8, max_tokens = ?9, context_tokens = ?10, max_context_messages = ?11, auto_context_on_model_change = ?12 WHERE id = ?13",
+        "UPDATE inference_connections SET name = ?1, inference_url = ?2, api_key = ?3, model = ?4, enabled = ?5, sort_order = ?6, json_format_strategy = ?7, tool_call_parser = ?8, temperature = ?9, top_p = ?10, max_tokens = ?11, context_tokens = ?12, max_context_messages = ?13, auto_context_on_model_change = ?14 WHERE id = ?15",
     )
     .bind(name.trim())
     .bind(inference_url.trim())
     .bind(api_key)
     .bind(model)
+    .bind(enabled as i64)
+    .bind(sort_order)
     .bind(json_format_strategy)
     .bind(tool_call_parser)
     .bind(temperature)
@@ -1838,9 +1870,9 @@ pub async fn enqueue_job(pool: &SqlitePool, chat_id: i64, message_id: i64) -> Ap
 }
 
 pub async fn get_job(pool: &SqlitePool, id: i64) -> AppResult<Job> {
-    let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE id = ?1",
-    )
+    let row = sqlx::query_as::<_, JobRow>(&format!(
+        "SELECT {JOB_COLUMNS} FROM generation_jobs WHERE id = ?1"
+    ))
     .bind(id)
     .fetch_optional(pool)
     .await?
@@ -1850,7 +1882,7 @@ pub async fn get_job(pool: &SqlitePool, id: i64) -> AppResult<Job> {
 
 pub async fn get_active_job(pool: &SqlitePool, chat_id: i64) -> AppResult<Option<Job>> {
     let row = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize', 'chat_variable_recheck') AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1",
+        &format!("SELECT {JOB_COLUMNS} FROM generation_jobs WHERE chat_id = ?1 AND job_type IN ('chat_message', 'chat_summarize', 'chat_variable_recheck') AND status IN ('queued','running') ORDER BY created_at ASC LIMIT 1"),
     )
     .bind(chat_id)
     .fetch_optional(pool)
@@ -1860,16 +1892,16 @@ pub async fn get_active_job(pool: &SqlitePool, chat_id: i64) -> AppResult<Option
 
 pub async fn list_queue(pool: &SqlitePool) -> AppResult<(Vec<Job>, Vec<Job>)> {
     let running = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE status = 'running' ORDER BY started_at ASC",
+        &format!("SELECT {JOB_COLUMNS} FROM generation_jobs WHERE status = 'running' ORDER BY started_at ASC"),
     )
     .fetch_all(pool)
     .await?
     .into_iter()
     .map(Into::into)
     .collect();
-    let queued = sqlx::query_as::<_, JobRow>(
-        "SELECT id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at FROM generation_jobs WHERE status = 'queued' ORDER BY created_at ASC",
-    )
+    let queued = sqlx::query_as::<_, JobRow>(&format!(
+        "SELECT {JOB_COLUMNS} FROM generation_jobs WHERE status = 'queued' ORDER BY created_at ASC"
+    ))
     .fetch_all(pool)
     .await?
     .into_iter()
@@ -2010,10 +2042,42 @@ pub async fn complete_job(
     error: Option<String>,
 ) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE generation_jobs SET status=?1, error=?2, completed_at=?3 WHERE id=?4")
+    sqlx::query(
+        "UPDATE generation_jobs SET status=?1, error=?2, completed_at=?3, generation_provider='', generation_model='', generation_notice='' WHERE id=?4",
+    )
         .bind(job_status_str(status))
         .bind(error)
         .bind(&now)
+        .bind(job_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_job_generation_inference(
+    pool: &SqlitePool,
+    job_id: i64,
+    provider: &str,
+    model: &str,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE generation_jobs SET generation_provider = ?1, generation_model = ?2, generation_notice = '' WHERE id = ?3",
+    )
+    .bind(provider)
+    .bind(model)
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_job_generation_notice(
+    pool: &SqlitePool,
+    job_id: i64,
+    notice: &str,
+) -> AppResult<()> {
+    sqlx::query("UPDATE generation_jobs SET generation_notice = ?1 WHERE id = ?2")
+        .bind(notice)
         .bind(job_id)
         .execute(pool)
         .await?;
@@ -2069,6 +2133,7 @@ fn message_from_row(row: MessageRow) -> Message {
             .unwrap_or_else(|_| Utc::now()),
         job_status: row.job_status.map(|s| parse_job_status(&s)),
         generation_error: row.generation_error,
+        generation_notice: row.generation_notice,
     }
 }
 
@@ -2137,6 +2202,7 @@ struct MessageRow {
     is_summary: i64,
     in_summary: i64,
     created_at: String,
+    generation_notice: String,
     job_status: Option<String>,
     generation_error: Option<String>,
 }
@@ -2193,6 +2259,8 @@ impl From<VariableRow> for ChatVariable {
     }
 }
 
+pub(crate) const JOB_COLUMNS: &str = "id, job_type, chat_id, message_id, story_id, chapter_id, beat_id, game_id, turn_id, guidance_notes, status, error, position, created_at, started_at, completed_at, generation_provider, generation_model, generation_notice";
+
 #[derive(sqlx::FromRow)]
 pub(crate) struct JobRow {
     id: i64,
@@ -2211,6 +2279,9 @@ pub(crate) struct JobRow {
     created_at: String,
     started_at: Option<String>,
     completed_at: Option<String>,
+    generation_provider: String,
+    generation_model: String,
+    generation_notice: String,
 }
 
 impl From<JobRow> for Job {
@@ -2242,6 +2313,9 @@ impl From<JobRow> for Job {
                     .ok()
                     .map(|dt| dt.with_timezone(&Utc))
             }),
+            generation_provider: row.generation_provider,
+            generation_model: row.generation_model,
+            generation_notice: row.generation_notice,
         }
     }
 }
@@ -2304,6 +2378,8 @@ struct InferenceConnectionRow {
     inference_url: String,
     api_key: String,
     model: String,
+    enabled: i64,
+    sort_order: i64,
     json_format_strategy: String,
     tool_call_parser: String,
     temperature: f64,
@@ -2322,6 +2398,8 @@ impl InferenceConnectionRow {
             inference_url: self.inference_url,
             api_key_set: !self.api_key.is_empty(),
             model: self.model,
+            enabled: self.enabled != 0,
+            sort_order: self.sort_order,
             json_format_strategy: parse_json_format_strategy(&self.json_format_strategy),
             tool_call_parser: self.tool_call_parser,
             temperature: self.temperature,
@@ -2332,6 +2410,15 @@ impl InferenceConnectionRow {
             auto_context_on_model_change: self.auto_context_on_model_change != 0,
         }
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct ConnectionConfigRow {
+    id: i64,
+    inference_url: String,
+    api_key: String,
+    json_format_strategy: String,
+    tool_call_parser: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -2677,6 +2764,7 @@ mod settings_update_tests {
                 context_tokens: Some(16384),
                 max_context_messages: Some(24),
                 auto_context_on_model_change: Some(false),
+                ..Default::default()
             },
         )
         .await

@@ -17,14 +17,6 @@ struct StateRecheckResponse {
     state_changes: Vec<StateChangeRequest>,
 }
 
-fn recheck_output_tokens(settings: &Settings) -> i64 {
-    if settings.context_tokens > 0 {
-        (settings.context_tokens / 8).clamp(256, 768)
-    } else {
-        512
-    }
-}
-
 fn build_recheck_prompt(prose: &str, state_block: &str) -> Vec<serde_json::Value> {
     vec![
         json!({
@@ -45,7 +37,6 @@ pub async fn run_chat_state_recheck_job(
     message_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     if !settings.variables_enabled {
         return Err(AppError::bad_request("Chat state is disabled in settings"));
     }
@@ -57,17 +48,16 @@ pub async fn run_chat_state_recheck_job(
 
     let response: StateRecheckResponse = db::chat_completion_json_for_connection(
         pool,
-        &inference,
-        &settings.model,
+        settings,
         &messages,
-        0.2,
-        settings.top_p,
-        recheck_output_tokens(settings),
         Some(&state_recheck_schema()),
         config::GENERATION_MAX_RETRIES
             .load(std::sync::atomic::Ordering::SeqCst)
             .max(1),
         &tokio_util::sync::CancellationToken::new(),
+        Some(job_id),
+        None,
+        None,
     )
     .await?;
     if !response.state_changes.is_empty() {
@@ -96,7 +86,6 @@ pub async fn run_story_state_recheck_job(
     beat_id: i64,
     settings: &Settings,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     if !settings.variables_enabled {
         return Err(AppError::bad_request("Story state is disabled in settings"));
     }
@@ -108,17 +97,16 @@ pub async fn run_story_state_recheck_job(
 
     let response: StateRecheckResponse = db::chat_completion_json_for_connection(
         pool,
-        &inference,
-        &settings.model,
+        settings,
         &messages,
-        0.2,
-        settings.top_p,
-        recheck_output_tokens(settings),
         Some(&state_recheck_schema()),
         config::GENERATION_MAX_RETRIES
             .load(std::sync::atomic::Ordering::SeqCst)
             .max(1),
         &tokio_util::sync::CancellationToken::new(),
+        Some(job_id),
+        None,
+        None,
     )
     .await?;
     if !response.state_changes.is_empty() {

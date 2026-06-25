@@ -10,11 +10,11 @@ use crate::api;
 use crate::app_sync;
 use crate::auto_grow::{container_input_callback, fit_textareas_in, fit_textareas_in_when_ready};
 use crate::generation_ui::{
-    beat_block_status, beat_editor_locked, beat_has_generation_job, chapter_block_status,
-    chapter_editor_locked, chapter_has_substantial_prose, chapter_summary_stale,
-    generation_error_from_content, is_stale_summary_error, stale_chapters_in_story,
-    story_basics_locked, story_notice, BlockGenerationStatus, GenerationButtonGroup,
-    GenerationStatusBar, StaleChapterItem,
+    active_job_fallback_notice, active_job_inference_label, beat_block_status, beat_editor_locked,
+    beat_has_generation_job, chapter_block_status, chapter_editor_locked,
+    chapter_has_substantial_prose, chapter_summary_stale, generation_error_from_content,
+    is_stale_summary_error, stale_chapters_in_story, story_basics_locked, story_notice,
+    BlockGenerationStatus, GenerationButtonGroup, GenerationStatusBar, StaleChapterItem,
 };
 use crate::item_list::StoryList;
 use crate::router::{AppRoute, Overlay, StoryNav};
@@ -817,6 +817,9 @@ fn story_editor(props: &StoryEditorProps) -> Html {
             && matches!(job.status, JobStatus::Queued | JobStatus::Running)
     });
     let generation_notice = story_notice(&detail);
+    let active_job = detail.story.active_job.as_ref();
+    let inference_label = active_job_inference_label(active_job);
+    let fallback_notice = active_job_fallback_notice(active_job);
 
     let on_stale_error = {
         let stale_dialog_action = stale_dialog_action.clone();
@@ -940,7 +943,11 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                 </p>
             </header>
             if let Some(notice) = generation_notice {
-                <GenerationStatusBar notice={notice} />
+                <GenerationStatusBar
+                    notice={notice}
+                    inference_label={inference_label.clone()}
+                    fallback_notice={fallback_notice.clone()}
+                />
             }
             <div
                 ref={editor_ref}

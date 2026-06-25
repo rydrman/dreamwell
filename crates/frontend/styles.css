@@ -349,6 +349,92 @@ button {
   margin-bottom: 0;
 }
 
+.settings-model-list-section {
+  margin-bottom: 0.75rem;
+}
+
+.settings-model-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.inference-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.inference-model-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--surface);
+}
+
+.inference-model-row[draggable="true"] {
+  cursor: grab;
+}
+
+.inference-model-row:active {
+  cursor: grabbing;
+}
+
+.inference-model-drag {
+  color: var(--muted);
+  font-size: 0.85rem;
+  user-select: none;
+  line-height: 1;
+}
+
+.inference-model-enabled {
+  display: flex;
+  align-items: center;
+  margin: 0;
+}
+
+.inference-model-id {
+  flex: 1;
+  min-width: 0;
+}
+
+.inference-model-remove {
+  flex-shrink: 0;
+}
+
+.inference-provider-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.inference-provider-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.inference-provider-label strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generation-fallback-banner {
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
 .settings-model-name {
   margin: 0.25rem 0 0;
   font-size: 0.8rem;
@@ -1531,12 +1617,30 @@ input.header-title {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.625rem 1rem;
   border-top: 1px solid var(--border);
   background: var(--surface);
   color: var(--muted);
   font-size: 0.875rem;
+}
+
+.composer-status-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.composer-status-inference {
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .composer-status--writing {

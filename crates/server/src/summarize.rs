@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::inference::chat_completion;
+use crate::model_fallback::{chat_completion_with_connection_fallback, has_inference_provider};
 use crate::prompts::estimate_static_prompt_tokens;
 use crate::thoughts::parse_thought_blocks;
 
@@ -325,17 +325,10 @@ async fn call_summarize_model_once(
     pool: &SqlitePool,
     settings: &Settings,
     prompt: &[serde_json::Value],
+    job_id: Option<i64>,
 ) -> AppResult<String> {
-    let inference = db::get_inference_config(pool).await?;
-    let raw = chat_completion(
-        &inference,
-        &settings.model,
-        prompt,
-        0.3,
-        settings.top_p,
-        summary_output_tokens(settings),
-    )
-    .await?;
+    let raw = chat_completion_with_connection_fallback(pool, settings, prompt, job_id, None, None)
+        .await?;
     process_summarize_output(&raw).map_err(AppError::inference)
 }
 
@@ -343,12 +336,13 @@ async fn call_summarize_model(
     pool: &SqlitePool,
     settings: &Settings,
     prompt: &[serde_json::Value],
+    job_id: Option<i64>,
 ) -> AppResult<String> {
     let max_attempts = summarize_max_retries();
     let mut last_error = "summarization failed".to_string();
 
     for attempt in 1..=max_attempts {
-        match call_summarize_model_once(pool, settings, prompt).await {
+        match call_summarize_model_once(pool, settings, prompt, job_id).await {
             Ok(summary) => return Ok(summary),
             Err(err) => {
                 last_error = err.to_string();
@@ -402,7 +396,7 @@ pub async fn enqueue_regenerate_summary_for_chat(
     marker_id: i64,
     settings: &Settings,
 ) -> AppResult<Job> {
-    if settings.model.is_empty() {
+    if !has_inference_provider(settings) {
         return Err(crate::error::AppError::bad_request(
             "Configure an inference model in Settings before regenerating a summary",
         ));
@@ -442,7 +436,7 @@ pub async fn enqueue_summarize_for_chat(
     chat_id: i64,
     settings: &Settings,
 ) -> AppResult<Job> {
-    if settings.model.is_empty() {
+    if !has_inference_provider(settings) {
         return Err(crate::error::AppError::bad_request(
             "Configure an inference model in Settings before summarizing",
         ));
@@ -469,7 +463,7 @@ async fn try_enqueue_summarize(
     settings: &Settings,
     force: bool,
 ) -> AppResult<Option<Job>> {
-    if !force && (!settings.summarize_enabled || settings.model.is_empty()) {
+    if !force && (!settings.summarize_enabled || !has_inference_provider(settings)) {
         return Ok(None);
     }
     if db::has_active_summarize_job(pool, chat_id).await? {
@@ -653,7 +647,8 @@ pub async fn run_summarize_job(
     let progress = execute_summarize_loop(pool, chat_id, settings, force, move |prompt| {
         let settings = settings_for_loop.clone();
         let pool = pool_for_loop.clone();
-        async move { call_summarize_model(&pool, &settings, &prompt).await }
+        let job_id = job_id;
+        async move { call_summarize_model(&pool, &settings, &prompt, Some(job_id)).await }
     })
     .await?;
 
@@ -701,7 +696,7 @@ async fn run_regenerate_summary_job(
     let batch = select_newest_batch_for_budget(&candidates, &chat.summary, settings);
     let transcript = build_transcript(&batch);
     let prompt = build_regenerate_prompt(&chat.summary, &transcript);
-    let summary = call_summarize_model(pool, settings, &prompt).await?;
+    let summary = call_summarize_model(pool, settings, &prompt, Some(job_id)).await?;
 
     db::update_chat_summary(pool, chat_id, &summary).await?;
     let count = marker_count.max(1);
@@ -758,7 +753,7 @@ pub async fn refresh_chat_summary_markers(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use dreamwell_types::Settings;
+    use dreamwell_types::{InferenceConnection, JsonFormatStrategy, Settings};
 
     fn msg(id: i64, content: &str) -> Message {
         Message {
@@ -778,14 +773,31 @@ mod tests {
             created_at: Utc::now(),
             job_status: None,
             generation_error: None,
+            generation_notice: String::new(),
         }
     }
 
     fn test_settings() -> Settings {
         Settings {
-            inference_url: String::new(),
-            active_connection_id: None,
-            connections: Vec::new(),
+            inference_url: "http://localhost:8080/v1".into(),
+            active_connection_id: Some(1),
+            connections: vec![InferenceConnection {
+                id: 1,
+                name: "Test".into(),
+                inference_url: "http://localhost:8080/v1".into(),
+                api_key_set: false,
+                model: "m".into(),
+                enabled: true,
+                sort_order: 0,
+                json_format_strategy: JsonFormatStrategy::Auto,
+                tool_call_parser: "auto".into(),
+                temperature: 0.8,
+                top_p: 0.9,
+                max_tokens: 512,
+                context_tokens: 4096,
+                max_context_messages: 40,
+                auto_context_on_model_change: true,
+            }],
             model: "m".into(),
             temperature: 0.8,
             top_p: 0.9,
@@ -1041,9 +1053,30 @@ mod tests {
         }
 
         async fn test_settings_with_model(pool: &SqlitePool) -> Settings {
+            let conn = db::create_inference_connection(
+                pool,
+                dreamwell_types::InferenceConnectionCreate {
+                    name: "Test".into(),
+                    inference_url: "http://localhost:11434/v1".into(),
+                    api_key: None,
+                },
+            )
+            .await
+            .expect("connection");
+            db::update_inference_connection(
+                pool,
+                conn.id,
+                dreamwell_types::InferenceConnectionUpdate {
+                    model: Some("test-model".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("model");
             db::update_settings(
                 pool,
                 SettingsUpdate {
+                    active_connection_id: Some(conn.id),
                     model: Some("test-model".into()),
                     context_tokens: Some(4096),
                     summarize_enabled: Some(true),

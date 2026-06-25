@@ -28,6 +28,7 @@ mod stories_ui;
 mod story_save;
 mod story_sync;
 mod summary_ui;
+mod thought_ui;
 mod title_editor;
 mod variables;
 mod variables_ui;
@@ -48,6 +49,7 @@ use dreamwell_types::*;
 use game_create_ui::GameCreateModal;
 use game_ui::GameShell;
 use generation_ui::{
+    active_generation_notice, active_job_fallback_notice, active_job_inference_label,
     composer_notice, generation_error_message, GenerationNotice, GenerationStatusBar,
 };
 use gloo_timers::callback::Timeout;
@@ -2198,6 +2200,12 @@ fn app() -> Html {
                             })
                     }
                     notice={selected.as_ref().and_then(|chat| composer_notice(chat, &messages))}
+                    inference_label={selected.as_ref().and_then(|chat| {
+                        active_job_inference_label(chat.active_job.as_ref())
+                    })}
+                    fallback_notice={selected.as_ref().and_then(|chat| {
+                        active_job_fallback_notice(chat.active_job.as_ref())
+                    }).or_else(|| active_generation_notice(&messages))}
                     on_send={Callback::from({
                         let messages = messages.clone();
                         let messages_loading = messages_loading.clone();
@@ -2553,7 +2561,7 @@ fn can_summarize_chat(messages: &[Message], settings: &Option<Settings>) -> bool
     let Some(settings) = settings else {
         return false;
     };
-    if settings.model.is_empty() {
+    if !has_configured_provider(settings) {
         return false;
     }
     let min_keep = settings.summarize_keep_recent.max(2) as usize;
@@ -2603,59 +2611,7 @@ fn confirm_delete_after(count: usize) -> bool {
         .unwrap_or(false)
 }
 
-fn format_thought_duration(ms: i64) -> String {
-    let total_secs = (ms / 1000).max(0);
-    if total_secs < 60 {
-        format!("{total_secs}s")
-    } else {
-        let mins = total_secs / 60;
-        let secs = total_secs % 60;
-        format!("{mins}m{secs}s")
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct ThoughtBlockProps {
-    thought_content: String,
-    thought_duration_ms: Option<i64>,
-    thought_in_progress: bool,
-}
-
-#[function_component(ThoughtBlock)]
-fn thought_block(props: &ThoughtBlockProps) -> Html {
-    let expanded = use_state(|| false);
-
-    let label = if props.thought_in_progress {
-        "thinking...".to_string()
-    } else if let Some(ms) = props.thought_duration_ms {
-        format!("thought for {}", format_thought_duration(ms))
-    } else {
-        "thought".to_string()
-    };
-
-    let toggle = {
-        let expanded = expanded.clone();
-        Callback::from(move |_| expanded.set(!*expanded))
-    };
-
-    html! {
-        <div class="message-thought">
-            <button type="button" class="message-thought-toggle" onclick={toggle}>
-                if props.thought_in_progress {
-                    <span class="thought-spinner" aria-hidden="true"></span>
-                }
-                <span class="message-thought-label">{ label }</span>
-                <span class="message-thought-chevron" aria-hidden="true">
-                    { if *expanded { "▾" } else { "▸" } }
-                </span>
-            </button>
-            if *expanded {
-                <pre class="message-thought-body">{ &props.thought_content }</pre>
-            }
-        </div>
-    }
-}
-
+use crate::thought_ui::ThoughtBlock;
 #[derive(Clone, Copy, PartialEq)]
 enum MessageBubbleMode {
     View,
@@ -3237,8 +3193,12 @@ fn message_list(props: &MessageListProps) -> Html {
         .as_ref()
         .is_some_and(|s| s.thought_blocks_enabled);
     let show_variables = props.settings.as_ref().is_some_and(|s| s.variables_enabled);
+    let fallback_notice = active_generation_notice(&props.messages);
     html! {
         <div class="messages" ref={messages_ref}>
+            if let Some(notice) = fallback_notice {
+                <div class="generation-fallback-banner" role="status">{ notice }</div>
+            }
             if props.messages.is_empty() {
                 <div class="empty-state muted">
                     if props.loading {
@@ -3303,6 +3263,8 @@ fn message_list(props: &MessageListProps) -> Html {
 struct ComposerProps {
     disabled: bool,
     notice: Option<GenerationNotice>,
+    inference_label: Option<String>,
+    fallback_notice: Option<String>,
     on_send: Callback<String>,
 }
 
@@ -3336,7 +3298,11 @@ fn composer(props: &ComposerProps) -> Html {
     html! {
         <>
             if let Some(notice) = props.notice {
-                <GenerationStatusBar notice={notice} />
+                <GenerationStatusBar
+                    notice={notice}
+                    inference_label={props.inference_label.clone()}
+                    fallback_notice={props.fallback_notice.clone()}
+                />
             }
             <div class="composer">
                 <textarea
@@ -4011,6 +3977,33 @@ impl SettingsSaveContext {
     }
 }
 
+fn has_configured_provider(settings: &Settings) -> bool {
+    dreamwell_types::has_inference_provider(&settings.connections)
+        || !settings.model.trim().is_empty()
+}
+
+fn fallback_ordered_connection_indices(connections: &[InferenceConnection]) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..connections.len()).collect();
+    indices.sort_by_key(|&i| (connections[i].sort_order, connections[i].id));
+    indices
+}
+
+fn reorder_fallback_connections(
+    connections: &mut [InferenceConnection],
+    from_sorted: usize,
+    to_sorted: usize,
+) {
+    let mut order = fallback_ordered_connection_indices(connections);
+    if from_sorted == to_sorted || from_sorted >= order.len() || to_sorted >= order.len() {
+        return;
+    }
+    let moved = order.remove(from_sorted);
+    order.insert(to_sorted, moved);
+    for (sort_order, &conn_index) in order.iter().enumerate() {
+        connections[conn_index].sort_order = sort_order as i64;
+    }
+}
+
 fn apply_connection_to_settings(settings: &mut Settings, conn: &InferenceConnection) {
     settings.inference_url = conn.inference_url.clone();
     settings.model = conn.model.clone();
@@ -4139,6 +4132,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
     let model_error = use_state(|| None::<String>);
     let detected_caps = use_state(|| None::<ModelCapabilities>);
     let caps_busy = use_state(|| false);
+    let drag_index = use_state(|| None::<usize>);
 
     let Some(s) = (*draft).clone() else {
         return html! { <p class="muted">{"Loading settings…"}</p> };
@@ -4164,6 +4158,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
         .map(|c| c.tool_call_parser.clone())
         .unwrap_or_else(|| "auto".to_string());
     let tool_parsers = use_state(Vec::<String>::new);
+    let fallback_indices = fallback_ordered_connection_indices(&s.connections);
 
     {
         let tool_parsers = tool_parsers.clone();
@@ -4182,45 +4177,9 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
             <div class="settings-group">
                 <strong>{"Inference settings"}</strong>
                 <p class="muted" style="margin:0.35rem 0 0.5rem;">
-                    {"Each connection stores its own endpoint, model, and generation defaults. Switch connections to load a saved profile; API keys are stored on the server and sent as Bearer tokens."}
+                    {"Each connection is a provider profile (endpoint, model, defaults). Drag to set fallback order; disabled connections are skipped. Clone a connection to use the same provider with a different model."}
                 </p>
                 <div class="settings-connection-row">
-                    <label class="field">
-                        <span class="muted">{"Active connection"}</span>
-                        <select onchange={{
-                            let save_ctx = save_ctx.clone();
-                            let models = models.clone();
-                            let model_error = model_error.clone();
-                            let detected_caps = detected_caps.clone();
-                            Callback::from(move |e: Event| {
-                                let input: HtmlInputElement = e.target_unchecked_into();
-                                let id: i64 = input.value().parse().unwrap_or(0);
-                                if id <= 0 {
-                                    return;
-                                }
-                                let save_ctx = save_ctx.clone();
-                                let models = models.clone();
-                                let model_error = model_error.clone();
-                                save_ctx.switch_active_connection(id);
-                                detected_caps.set(None);
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    match api::list_models().await {
-                                        Ok(list) => {
-                                            model_error.set(None);
-                                            models.set(list);
-                                        }
-                                        Err(err) => model_error.set(Some(err)),
-                                    }
-                                });
-                            })
-                        }}>
-                            { for s.connections.iter().map(|c| html! {
-                                <option value={c.id.to_string()} selected={Some(c.id) == s.active_connection_id}>
-                                    { c.name.clone() }
-                                </option>
-                            }) }
-                        </select>
-                    </label>
                     <button class="btn secondary" type="button" onclick={{
                         let save_ctx = save_ctx.clone();
                         Callback::from(move |_| {
@@ -4287,6 +4246,165 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                             });
                         })
                     }}>{"Delete"}</button>
+                </div>
+                <div class="settings-model-list-section">
+                    <div class="settings-model-list-header">
+                        <span class="muted">{"Providers (fallback order)"}</span>
+                        <button class="btn secondary btn-compact" type="button" onclick={{
+                            let models = models.clone();
+                            let model_error = model_error.clone();
+                            Callback::from(move |_| {
+                                let models = models.clone();
+                                let model_error = model_error.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    match api::list_models().await {
+                                        Ok(list) => {
+                                            model_error.set(None);
+                                            models.set(list);
+                                        }
+                                        Err(err) => model_error.set(Some(err)),
+                                    }
+                                });
+                            })
+                        }}>{"Refresh model list"}</button>
+                    </div>
+                    <p class="muted" style="margin:0.35rem 0 0.75rem;">
+                        {"Click a provider to edit it. On errors the server tries the next enabled provider automatically."}
+                    </p>
+                    <div class="inference-model-list">
+                        { for fallback_indices.iter().enumerate().map(|(sorted_index, conn_index)| {
+                            let conn = s.connections[*conn_index].clone();
+                            let conn_id = conn.id;
+                            let conn_enabled = conn.enabled;
+                            let is_active = Some(conn_id) == s.active_connection_id;
+                            let label = connection_label(&conn);
+                            let model_hint = if conn.model.trim().is_empty() {
+                                "No model".to_string()
+                            } else {
+                                conn.model.clone()
+                            };
+                            let drag_index = drag_index.clone();
+                            let save_ctx = save_ctx.clone();
+                            let detected_caps = detected_caps.clone();
+                            html! {
+                                <div
+                                    class={classes!("inference-model-row", is_active.then_some("inference-provider-active"))}
+                                    draggable="true"
+                                    onclick={{
+                                        let save_ctx = save_ctx.clone();
+                                        let detected_caps = detected_caps.clone();
+                                        let models = models.clone();
+                                        let model_error = model_error.clone();
+                                        Callback::from(move |e: MouseEvent| {
+                                            if e.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()).is_some() {
+                                                return;
+                                            }
+                                            save_ctx.switch_active_connection(conn_id);
+                                            detected_caps.set(None);
+                                            let models = models.clone();
+                                            let model_error = model_error.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                match api::list_models().await {
+                                                    Ok(list) => {
+                                                        model_error.set(None);
+                                                        models.set(list);
+                                                    }
+                                                    Err(err) => model_error.set(Some(err)),
+                                                }
+                                            });
+                                        })
+                                    }}
+                                    ondragstart={{
+                                        let drag_index = drag_index.clone();
+                                        Callback::from(move |e: DragEvent| {
+                                            drag_index.set(Some(sorted_index));
+                                            if let Some(data) = e.data_transfer() {
+                                                let _ = data.set_data("text/plain", &sorted_index.to_string());
+                                                data.set_effect_allowed("move");
+                                            }
+                                        })
+                                    }}
+                                    ondragover={{
+                                        Callback::from(|e: DragEvent| {
+                                            e.prevent_default();
+                                        })
+                                    }}
+                                    ondrop={{
+                                        let drag_index = drag_index.clone();
+                                        let save_ctx = save_ctx.clone();
+                                        Callback::from(move |e: DragEvent| {
+                                            e.prevent_default();
+                                            let from = (*drag_index).unwrap_or(sorted_index);
+                                            drag_index.set(None);
+                                            if from == sorted_index {
+                                                return;
+                                            }
+                                            let mut updates = Vec::new();
+                                            save_ctx.update_field(|current| {
+                                                reorder_fallback_connections(
+                                                    &mut current.connections,
+                                                    from,
+                                                    sorted_index,
+                                                );
+                                                updates = current
+                                                    .connections
+                                                    .iter()
+                                                    .map(|conn| (conn.id, conn.sort_order))
+                                                    .collect();
+                                            });
+                                            let save_ctx = save_ctx.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                for (id, sort_order) in updates {
+                                                    let payload = InferenceConnectionUpdate {
+                                                        sort_order: Some(sort_order),
+                                                        ..Default::default()
+                                                    };
+                                                    if let Err(err) = api::update_inference_connection(id, &payload).await {
+                                                        save_ctx.phase.set(SettingsSavePhase::Failed(err));
+                                                        return;
+                                                    }
+                                                }
+                                            });
+                                        })
+                                    }}
+                                >
+                                    <span class="inference-model-drag" title="Drag to reorder" aria-hidden="true">{"⋮⋮"}</span>
+                                    <label class="inference-model-enabled" title="Enable for inference">
+                                        <input
+                                            type="checkbox"
+                                        checked={conn_enabled}
+                                        onclick={{
+                                            let save_ctx = save_ctx.clone();
+                                            Callback::from(move |e: MouseEvent| {
+                                                e.stop_propagation();
+                                                let enabled = !conn_enabled;
+                                                    save_ctx.update_field(|current| {
+                                                        if let Some(row) = current.connections.iter_mut().find(|c| c.id == conn_id) {
+                                                            row.enabled = enabled;
+                                                        }
+                                                    });
+                                                    let save_ctx = save_ctx.clone();
+                                                    wasm_bindgen_futures::spawn_local(async move {
+                                                        let payload = InferenceConnectionUpdate {
+                                                            enabled: Some(enabled),
+                                                            ..Default::default()
+                                                        };
+                                                        if let Err(err) = api::update_inference_connection(conn_id, &payload).await {
+                                                            save_ctx.phase.set(SettingsSavePhase::Failed(err));
+                                                        }
+                                                    });
+                                                })
+                                            }}
+                                        />
+                                    </label>
+                                    <div class="inference-provider-label">
+                                        <strong>{ label }</strong>
+                                        <span class="muted">{ model_hint }</span>
+                                    </div>
+                                </div>
+                            }
+                        }) }
+                    </div>
                 </div>
                 if let Some(active_id) = s.active_connection_id {
                     <label class="field">
@@ -4448,68 +4566,46 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                     </p>
                 </label>
             }
-            <div class="settings-model-row">
-                <label class="field">
-                    <span class="muted">{"Model"}</span>
-                    <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
-                        <input
-                            type="text"
-                            list="dreamwell-model-list"
-                            value={s.model.clone()}
-                            placeholder="Type model id (e.g. from your provider)"
-                            oninput={{
-                                let save_ctx = save_ctx.clone();
-                                Callback::from(move |e: InputEvent| {
-                                    let input: HtmlInputElement = e.target_unchecked_into();
-                                    let model = input.value();
-                                    save_ctx.update_field(|current| {
-                                        current.model = model;
-                                    });
-                                })
-                            }}
-                            onchange={{
-                                let save_ctx = save_ctx.clone();
-                                let detected_caps = detected_caps.clone();
-                                let caps_busy = caps_busy.clone();
-                                Callback::from(move |e: Event| {
-                                    let input: HtmlInputElement = e.target_unchecked_into();
-                                    probe_model_capabilities_for_settings(
-                                        &save_ctx,
-                                        &detected_caps,
-                                        &caps_busy,
-                                        input.value(),
-                                    );
-                                })
-                            }}
-                        />
-                        <datalist id="dreamwell-model-list">
-                            { for models.iter().map(|m| html! {
-                                <option value={m.id.clone()} label={m.name.clone().unwrap_or(m.id.clone())} />
-                            }) }
-                        </datalist>
-                    </AutoSaveField>
-                    <p class="muted" style="margin:0.35rem 0 0;">
-                        {"Refresh loads models from the backend when supported; otherwise type the model id manually."}
-                    </p>
-                </label>
-                <button class="btn secondary" type="button" onclick={{
-                    let models = models.clone();
-                    let model_error = model_error.clone();
-                    Callback::from(move |_| {
-                        let models = models.clone();
-                        let model_error = model_error.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match api::list_models().await {
-                                Ok(list) => {
-                                    model_error.set(None);
-                                    models.set(list);
-                                }
-                                Err(err) => model_error.set(Some(err)),
-                            }
-                        });
-                    })
-                }}>{"Refresh"}</button>
-            </div>
+            <datalist id="dreamwell-model-list">
+                { for models.iter().map(|m| html! {
+                    <option value={m.id.clone()} label={m.name.clone().unwrap_or(m.id.clone())} />
+                }) }
+            </datalist>
+            <label class="field">
+                <span class="muted">{"Model"}</span>
+                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                    <input
+                        type="text"
+                        list="dreamwell-model-list"
+                        value={s.model.clone()}
+                        placeholder="Model id"
+                        oninput={{
+                            let save_ctx = save_ctx.clone();
+                            Callback::from(move |e: InputEvent| {
+                                let input: HtmlInputElement = e.target_unchecked_into();
+                                let value = input.value();
+                                save_ctx.update_field(|current| {
+                                    current.model = value;
+                                });
+                            })
+                        }}
+                        onchange={{
+                            let save_ctx = save_ctx.clone();
+                            let detected_caps = detected_caps.clone();
+                            let caps_busy = caps_busy.clone();
+                            let model = s.model.clone();
+                            Callback::from(move |_: Event| {
+                                probe_model_capabilities_for_settings(
+                                    &save_ctx,
+                                    &detected_caps,
+                                    &caps_busy,
+                                    model.clone(),
+                                );
+                            })
+                        }}
+                    />
+                </AutoSaveField>
+            </label>
             if let Some(err) = &*model_error {
                 <p class="text-danger">{ err }</p>
             }
@@ -4568,7 +4664,7 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                         { format!("Prompt budget: ~{prompt_budget} tokens (context − response)") }
                     </p>
                 }
-                <button class="btn secondary" style="margin-top:0.5rem;" disabled={s.model.is_empty() || *caps_busy} onclick={{
+                <button class="btn secondary" style="margin-top:0.5rem;" disabled={!has_configured_provider(&s) || *caps_busy} onclick={{
                     let save_ctx = save_ctx.clone();
                     let detected_caps = detected_caps.clone();
                     let caps_busy = caps_busy.clone();

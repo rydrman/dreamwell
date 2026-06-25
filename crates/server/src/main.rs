@@ -17,6 +17,7 @@ mod game_turn;
 mod game_turn_agent;
 mod inference;
 mod message_followups;
+mod model_fallback;
 mod prompts;
 mod queue;
 mod routes;

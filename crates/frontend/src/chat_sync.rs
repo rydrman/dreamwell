@@ -74,6 +74,7 @@ mod tests {
             created_at: Utc::now(),
             job_status,
             generation_error: None,
+            generation_notice: String::new(),
         }
     }
 
@@ -103,6 +104,9 @@ mod tests {
             created_at: Utc::now(),
             started_at: None,
             completed_at: None,
+            generation_provider: String::new(),
+            generation_model: String::new(),
+            generation_notice: String::new(),
         };
         let messages = vec![assistant_message(Some(JobStatus::Running))];
         let chat = sample_chat(Some(job));
@@ -135,6 +139,9 @@ mod tests {
             created_at: Utc::now(),
             started_at: None,
             completed_at: None,
+            generation_provider: String::new(),
+            generation_model: String::new(),
+            generation_notice: String::new(),
         };
         let messages = vec![assistant_message(Some(JobStatus::Running))];
         let chat = sample_chat(Some(job));
@@ -181,6 +188,9 @@ mod tests {
             created_at: Utc::now(),
             started_at: None,
             completed_at: None,
+            generation_provider: String::new(),
+            generation_model: String::new(),
+            generation_notice: String::new(),
         };
         let messages = vec![assistant_message(Some(JobStatus::Running))];
         let chat = sample_chat(Some(job));

@@ -27,6 +27,43 @@ pub fn generation_error_message(content: &str, explicit: Option<&str>) -> Option
     generation_error_from_content(content)
 }
 
+pub fn job_inference_label(job: &Job) -> Option<String> {
+    let provider = job.generation_provider.trim();
+    let model = job.generation_model.trim();
+    match (provider.is_empty(), model.is_empty()) {
+        (true, true) => None,
+        (false, false) => Some(format!("{provider} · {model}")),
+        (false, true) => Some(provider.to_string()),
+        (true, false) => Some(model.to_string()),
+    }
+}
+
+pub fn job_fallback_notice(job: &Job) -> Option<String> {
+    if job.generation_notice.is_empty() {
+        None
+    } else {
+        Some(job.generation_notice.clone())
+    }
+}
+
+pub fn active_job_inference_label(job: Option<&Job>) -> Option<String> {
+    job.and_then(job_inference_label)
+}
+
+pub fn active_job_fallback_notice(job: Option<&Job>) -> Option<String> {
+    job.and_then(job_fallback_notice)
+}
+
+pub fn active_generation_notice(messages: &[Message]) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
+        if message.generation_notice.is_empty() {
+            None
+        } else {
+            Some(message.generation_notice.clone())
+        }
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerationPhase {
     Writing,
@@ -342,19 +379,29 @@ pub fn is_stale_summary_error(err: &str) -> bool {
 #[derive(Properties, PartialEq)]
 pub struct GenerationStatusBarProps {
     pub notice: GenerationNotice,
+    #[prop_or_default]
+    pub inference_label: Option<String>,
+    #[prop_or_default]
+    pub fallback_notice: Option<String>,
 }
 
 #[function_component(GenerationStatusBar)]
 pub fn generation_status_bar(props: &GenerationStatusBarProps) -> Html {
     let notice = props.notice;
+    let status_text = props.fallback_notice.as_deref().unwrap_or(notice.message());
     html! {
         <div
             class={classes!("composer-status", notice.status_class())}
             role="status"
             aria-live="polite"
         >
-            <span class="settings-save-spinner" aria-hidden="true"></span>
-            <span>{ notice.message() }</span>
+            <span class="composer-status-main">
+                <span class="settings-save-spinner" aria-hidden="true"></span>
+                <span>{ status_text }</span>
+            </span>
+            if let Some(label) = &props.inference_label {
+                <span class="composer-status-inference">{ label }</span>
+            }
         </div>
     }
 }
@@ -822,7 +869,23 @@ mod tests {
             created_at: chrono::Utc::now(),
             job_status,
             generation_error: None,
+            generation_notice: String::new(),
         }
+    }
+
+    #[test]
+    fn job_inference_label_formats_provider_and_model() {
+        let mut job = sample_job(JobStatus::Running, JobType::ChatMessage);
+        assert_eq!(job_inference_label(&job), None);
+
+        job.generation_model = "llama-3".into();
+        assert_eq!(job_inference_label(&job), Some("llama-3".to_string()));
+
+        job.generation_provider = "Local Ollama".into();
+        assert_eq!(
+            job_inference_label(&job),
+            Some("Local Ollama · llama-3".to_string())
+        );
     }
 
     #[test]

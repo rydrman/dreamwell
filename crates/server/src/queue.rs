@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dreamwell_types::{structured_output_tokens, Job, JobStatus, JobType};
+use dreamwell_types::{Job, JobStatus, JobType};
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -13,8 +13,11 @@ use crate::chat_state::{apply_state_changes, build_state_block};
 use crate::config;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::inference::{chat_completion, stream_chat_completion};
 use crate::message_followups::{enqueue_chat_followups, ChatGenerationComplete};
+use crate::model_fallback::{
+    chat_completion_with_connection_fallback, has_inference_provider,
+    stream_chat_completion_with_connection_fallback,
+};
 use crate::prompts::build_messages_for_inference;
 use crate::story_prompts::{
     build_beat_outline_messages, build_beat_prose_continue_messages,
@@ -120,29 +123,6 @@ fn append_prose_continuation(base: &str, continuation: &str) -> String {
         (false, true) => format!("{base}\n\n"),
         (false, false) => format!("{base}\n\n{continuation}"),
     }
-}
-
-fn thought_timing(
-    parsed: &crate::thoughts::ParsedThoughts,
-    thought_started_at: &mut Option<Instant>,
-    thought_duration_ms: &mut Option<i64>,
-) -> (Option<i64>, bool) {
-    if !parsed.thought_complete {
-        if thought_started_at.is_none() {
-            *thought_started_at = Some(Instant::now());
-        }
-        return (*thought_duration_ms, true);
-    }
-
-    if thought_duration_ms.is_none() && !parsed.thought.is_empty() {
-        if let Some(start) = thought_started_at {
-            *thought_duration_ms = Some(start.elapsed().as_millis() as i64);
-        } else {
-            *thought_duration_ms = Some(0);
-        }
-    }
-
-    (*thought_duration_ms, false)
 }
 
 #[derive(Clone)]
@@ -446,7 +426,7 @@ async fn run_job(
     }
 
     let settings = db::get_settings(pool).await?;
-    if settings.model.is_empty() {
+    if !has_inference_provider(&settings) {
         return fail_job(pool, job_id, &job, "No model selected in settings").await;
     }
 
@@ -772,7 +752,6 @@ async fn run_chat_typed_generation_attempt(
     _messages: &[serde_json::Value],
     token: &CancellationToken,
 ) -> AppResult<ChatGenerationOutcome> {
-    let inference = db::get_inference_config(pool).await?;
     let chat = db::get_chat(pool, chat_id).await?;
     let character = db::get_character(pool, chat.character_id).await.ok();
 
@@ -782,15 +761,14 @@ async fn run_chat_typed_generation_attempt(
 
     let plan: dreamwell_types::PlanPhaseResponse = match db::chat_completion_json_for_connection(
         pool,
-        &inference,
-        &settings.model,
+        settings,
         &plan_messages,
-        0.4,
-        settings.top_p,
-        structured_output_tokens(settings),
         Some(&chat_plan_schema()),
         generation_max_retries(),
         token,
+        Some(job_id),
+        Some(message_id),
+        None,
     )
     .await
     {
@@ -828,13 +806,13 @@ async fn run_chat_typed_generation_attempt(
     )
     .await?;
 
-    let mut stream = match stream_chat_completion(
-        &inference,
-        &settings.model,
+    let mut stream = match stream_chat_completion_with_connection_fallback(
+        pool,
+        settings,
         &prose_messages,
-        settings.temperature,
-        settings.top_p,
-        settings.max_tokens,
+        Some(job_id),
+        Some(message_id),
+        None,
     )
     .await
     {
@@ -888,6 +866,7 @@ async fn run_chat_typed_generation_attempt(
         &applied,
     )
     .await?;
+    let _ = crate::model_fallback::clear_message_generation_notice(pool, message_id).await;
 
     Ok(ChatGenerationOutcome::Success)
 }
@@ -901,14 +880,13 @@ async fn run_chat_legacy_generation_attempt(
     messages: &[serde_json::Value],
     token: &CancellationToken,
 ) -> AppResult<ChatGenerationOutcome> {
-    let inference = db::get_inference_config(pool).await?;
-    let mut stream = match stream_chat_completion(
-        &inference,
-        &settings.model,
+    let mut stream = match stream_chat_completion_with_connection_fallback(
+        pool,
+        settings,
         messages,
-        settings.temperature,
-        settings.top_p,
-        settings.max_tokens,
+        Some(job_id),
+        Some(message_id),
+        None,
     )
     .await
     {
@@ -930,7 +908,7 @@ async fn run_chat_legacy_generation_attempt(
                 if db_throttle.ready() {
                     if settings.thought_blocks_enabled {
                         let parsed = parse_thought_blocks(&accumulated);
-                        let (duration_ms, in_progress) = thought_timing(
+                        let (duration_ms, in_progress) = crate::thoughts::thought_timing(
                             &parsed,
                             &mut thought_started_at,
                             &mut thought_duration_ms,
@@ -988,8 +966,11 @@ async fn run_chat_legacy_generation_attempt(
     let (processed, thought_content, thought_duration_ms, _thought_in_progress) =
         if settings.thought_blocks_enabled {
             let parsed = parse_thought_blocks(&accumulated);
-            let (duration_ms, in_progress) =
-                thought_timing(&parsed, &mut thought_started_at, &mut thought_duration_ms);
+            let (duration_ms, in_progress) = crate::thoughts::thought_timing(
+                &parsed,
+                &mut thought_started_at,
+                &mut thought_duration_ms,
+            );
             let final_duration = if parsed.thought.is_empty() {
                 None
             } else if in_progress {
@@ -1034,6 +1015,7 @@ async fn run_chat_legacy_generation_attempt(
         )
         .await?;
     }
+    let _ = crate::model_fallback::clear_message_generation_notice(pool, message_id).await;
 
     Ok(ChatGenerationOutcome::Success)
 }
@@ -1045,7 +1027,6 @@ async fn run_story_propose_chapters(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1078,13 +1059,13 @@ async fn run_story_propose_chapters(
             () = token.cancelled() => {
                 return cancel_job_record(pool, job).await;
             }
-            result = chat_completion(
-                &inference,
-                &settings.model,
+            result = chat_completion_with_connection_fallback(
+                pool,
+                settings,
                 &messages,
-                0.7,
-                settings.top_p,
-                2048,
+                Some(job_id),
+                None,
+                None,
             ) => result,
         };
 
@@ -1118,7 +1099,6 @@ async fn run_story_propose_beats(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1164,13 +1144,13 @@ async fn run_story_propose_beats(
             () = token.cancelled() => {
                 return cancel_job_record(pool, job).await;
             }
-            result = chat_completion(
-                &inference,
-                &settings.model,
+            result = chat_completion_with_connection_fallback(
+                pool,
+                settings,
                 &messages,
-                0.7,
-                settings.top_p,
-                2048,
+                Some(job_id),
+                None,
+                None,
             ) => result,
         };
 
@@ -1204,7 +1184,6 @@ async fn run_story_chapter_outline(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1250,13 +1229,13 @@ async fn run_story_chapter_outline(
             () = token.cancelled() => {
                 return cancel_job_record(pool, job).await;
             }
-            result = chat_completion(
-                &inference,
-                &settings.model,
+            result = chat_completion_with_connection_fallback(
+                pool,
+                settings,
                 &messages,
-                0.7,
-                settings.top_p,
-                512,
+                Some(job_id),
+                None,
+                None,
             ) => result,
         };
 
@@ -1291,7 +1270,6 @@ async fn run_story_beat_outline(
     settings: &dreamwell_types::Settings,
     token: CancellationToken,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("story job missing story_id"))?;
@@ -1346,13 +1324,13 @@ async fn run_story_beat_outline(
             () = token.cancelled() => {
                 return cancel_job_record(pool, job).await;
             }
-            result = chat_completion(
-                &inference,
-                &settings.model,
+            result = chat_completion_with_connection_fallback(
+                pool,
+                settings,
                 &messages,
-                0.7,
-                settings.top_p,
-                512,
+                Some(job_id),
+                None,
+                None,
             ) => result,
         };
 
@@ -1387,7 +1365,6 @@ async fn run_story_typed_beat_prose(
     settings: &dreamwell_types::Settings,
     token: &CancellationToken,
 ) -> AppResult<()> {
-    let inference = db::get_inference_config(pool).await?;
     let story_id = job
         .story_id
         .ok_or_else(|| AppError::internal("missing story_id"))?;
@@ -1422,15 +1399,14 @@ async fn run_story_typed_beat_prose(
 
     let plan: dreamwell_types::PlanPhaseResponse = db::chat_completion_json_for_connection(
         pool,
-        &inference,
-        &settings.model,
+        settings,
         &plan_messages,
-        0.4,
-        settings.top_p,
-        structured_output_tokens(settings),
         Some(&story_plan_schema()),
         generation_max_retries(),
         token,
+        Some(job_id),
+        None,
+        None,
     )
     .await?;
 
@@ -1462,13 +1438,13 @@ async fn run_story_typed_beat_prose(
         &actors,
     );
 
-    let mut stream = stream_chat_completion(
-        &inference,
-        &settings.model,
+    let mut stream = stream_chat_completion_with_connection_fallback(
+        pool,
+        settings,
         &prose_messages,
-        settings.temperature,
-        settings.top_p,
-        settings.max_tokens,
+        Some(job_id),
+        None,
+        None,
     )
     .await?;
 
@@ -1664,15 +1640,14 @@ async fn run_beat_prose_generation_attempt(
     existing_variable_updates: &[dreamwell_types::BeatVariableUpdate],
     token: &CancellationToken,
 ) -> AppResult<BeatProseOutcome> {
-    let inference = db::get_inference_config(pool).await?;
     let base = append_base.unwrap_or("");
-    let mut stream = match stream_chat_completion(
-        &inference,
-        &settings.model,
+    let mut stream = match stream_chat_completion_with_connection_fallback(
+        pool,
+        settings,
         messages,
-        settings.temperature,
-        settings.top_p,
-        settings.max_tokens,
+        Some(job_id),
+        None,
+        None,
     )
     .await
     {

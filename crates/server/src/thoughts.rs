@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedThoughts {
@@ -160,6 +161,29 @@ fn collapse_spaces(text: &str) -> String {
     static SPACES: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let spaces = SPACES.get_or_init(|| Regex::new(r" {2,}").expect("space collapse regex"));
     spaces.replace_all(text, " ").to_string()
+}
+
+pub fn thought_timing(
+    parsed: &ParsedThoughts,
+    thought_started_at: &mut Option<Instant>,
+    thought_duration_ms: &mut Option<i64>,
+) -> (Option<i64>, bool) {
+    if !parsed.thought_complete {
+        if thought_started_at.is_none() {
+            *thought_started_at = Some(Instant::now());
+        }
+        return (*thought_duration_ms, true);
+    }
+
+    if thought_duration_ms.is_none() && !parsed.thought.is_empty() {
+        if let Some(start) = thought_started_at {
+            *thought_duration_ms = Some(start.elapsed().as_millis() as i64);
+        } else {
+            *thought_duration_ms = Some(0);
+        }
+    }
+
+    (*thought_duration_ms, false)
 }
 
 #[cfg(test)]

@@ -112,6 +112,9 @@ mod tests {
             created_at: Utc::now(),
             started_at: None,
             completed_at: None,
+            generation_provider: String::new(),
+            generation_model: String::new(),
+            generation_notice: String::new(),
         }
     }
 
