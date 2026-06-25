@@ -10,7 +10,8 @@ use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
 use crate::game_prompts::build_inline_prose_agent_messages;
 use crate::game_tools::{
-    handle_mechanical_tool_call, inline_prose_tool_specs, parse_state_change_args, ToolSessionState,
+    handle_mechanical_tool_call, inline_prose_tool_specs, is_state_tool, parse_state_tool_call,
+    ToolSessionState,
 };
 use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
 use crate::inference::{ToolLoopConfig, ToolStreamChunk};
@@ -229,8 +230,8 @@ pub async fn run_tools_structured_phase(
                     }
                     res
                 }
-                "apply_state_changes" => {
-                    let changes = parse_state_change_args(&tc);
+                name if is_state_tool(name) => {
+                    let changes = parse_state_tool_call(&tc);
                     let fresh = db::get_game_detail(pool, game_id).await?;
                     let applied = crate::game_state::apply_state_changes(
                         pool,

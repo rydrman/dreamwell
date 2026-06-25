@@ -1,4 +1,4 @@
-use dreamwell_state::{state_kind_str, STATE_CHANGE_PROMPT};
+use dreamwell_state::{state_kind_str, STATE_TARGET_RULES};
 use dreamwell_types::{
     substitute_macros, Game, GameActor, GameDetail, GameScene, GameTurn, GameTurnCheck,
     MacroContext, Settings, PROSE_CHECK_MARKER_OPEN, PROSE_INLINE_MARKER_CLOSE,
@@ -112,26 +112,31 @@ GOOD — prose, then one tool, then outcome prose, repeat:
   You hook a finger under the top card of the events deck and flip it face-up.
   → draw_card(deck_id="events")
   The card reads "Shortcut — skip ahead one space."
-  → apply_state_changes(changes=[{target:"pc", kind:"condition", key:"has_shortcut", op:"set", value:"true"}])
+  → set_condition(target="pc", key="has_shortcut", value="true")
   You pocket the slip and reach for the die.
   You scoop up the move die and toss it across the board.
   → board_move(actor="pc")
   It clatters to a four; you advance four spaces toward the finish line.
-  → apply_state_changes(changes=[{target:"world", kind:"fact", key:"location", op:"set", value:"space 36, near finish"}, {target:"pc", kind:"fact", key:"mood", op:"set", value:"excited"}])
+  → set_fact(target="world", key="location", value="space 36, near finish")
+  → set_fact(target="pc", key="mood", value="excited")
   Your pulse kicks up as the crowd cheers from the sidelines.
 
 BAD — do not do this:
   → draw_card(...) and board_move(...) together before any prose
   You roll a four and draw Shortcut. (outcomes invented before tools run)
-  You're excited and standing near the finish line now. (location and mood only in prose — no apply_state_changes)
+  You're excited and standing near the finish line now. (location and mood only in prose — no set_fact call)
 
 PC agency:
 - When a card or scene requires a choice the player has not made, call ask_pc_decision with a concrete question BEFORE resolving the effect.
 - Do not pick targets, options, or strategic decisions for the PC.
 
-Tracked state (apply_state_changes tool):
-- When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call apply_state_changes — do not only mention them in prose.
-- The tool is the source of truth, not the prose alone.
+Tracked state (use the dedicated state tools — one attribute per call):
+- set_fact(target, key, value) / clear_fact(target, key): durable facts (location, inventory, NPC traits, quest stage).
+- set_condition(target, key, value) / clear_condition(target, key): temporary statuses that clear soon (hidden, bleeding, inspired).
+- adjust_resource(target, key, delta) / set_resource(target, key, value): numeric tracks (stress +1, supply = 3); values clamp to 0..max.
+- advance_clock(target, key, delta) / set_clock(target, key, value): segmented progress clocks.
+- target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
+- When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
 
 Ending the turn:
 - When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
@@ -593,7 +598,7 @@ fn format_tracked_state_schema(schema: &[dreamwell_types::TrackedVarDef]) -> Str
         })
         .collect();
     format!(
-        "Tracked state schema (use apply_state_changes to update these):\n{}",
+        "Tracked state schema (update these with the state tools — set_fact/set_condition/adjust_resource/etc.):\n{}",
         lines.join("\n")
     )
 }
@@ -649,7 +654,7 @@ pub fn build_inline_prose_agent_messages(
         json!({
             "role": "system",
             "content": format!(
-                "{}\n\n{STATE_CHANGE_PROMPT}",
+                "{}\n\n{STATE_TARGET_RULES}",
                 game_system_prompt(INLINE_PROSE_AGENT_SYSTEM)
             ),
         }),
@@ -1210,8 +1215,10 @@ mod tests {
         assert!(system.contains("deck_id"));
         assert!(system.contains("ask_pc_decision"));
         assert!(system.contains("Example rhythm"));
-        assert!(system.contains("apply_state_changes"));
-        assert!(system.contains("no apply_state_changes"));
+        assert!(system.contains("set_fact"));
+        assert!(system.contains("set_condition"));
+        assert!(system.contains("adjust_resource"));
+        assert!(system.contains("no set_fact call"));
         assert!(system.contains("One mechanic per cycle"));
         let user = msgs[1]["content"].as_str().unwrap();
         assert!(user.contains("Follow the scenario rules"));
