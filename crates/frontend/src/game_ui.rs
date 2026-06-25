@@ -66,6 +66,23 @@ fn confirm_rewind_turns(count: usize, include_turn: bool) -> bool {
         .unwrap_or(false)
 }
 
+/// Player action and GM guidance to restore in the composer after a rewind.
+fn turn_text_to_restore_on_rewind(
+    turns: &[GameTurn],
+    turn_id: i64,
+    include_turn: bool,
+) -> Option<(String, String)> {
+    let turn_idx = turns.iter().position(|t| t.id == turn_id)?;
+    if include_turn {
+        let turn = &turns[turn_idx];
+        Some((turn.player_action.clone(), turn.guidance_notes.clone()))
+    } else {
+        turns
+            .get(turn_idx + 1)
+            .map(|turn| (turn.player_action.clone(), turn.guidance_notes.clone()))
+    }
+}
+
 fn phase_label(phase: &str) -> &str {
     match phase {
         "checks" | "checks_pause" => "Checks",
@@ -247,16 +264,29 @@ pub fn game_shell(props: &GameShellProps) -> Html {
 
     let on_rewind = {
         let detail = detail.clone();
+        let action_input = action_input.clone();
+        let guidance_input = guidance_input.clone();
         Callback::from(
             move |(turn_id, include_turn, delete_count): (i64, bool, usize)| {
                 let Some(game_id) = game_id else { return };
                 if !confirm_rewind_turns(delete_count, include_turn) {
                     return;
                 }
+                let restore_text = (*detail)
+                    .as_ref()
+                    .and_then(|d| turn_text_to_restore_on_rewind(&d.turns, turn_id, include_turn));
                 let detail = detail.clone();
+                let action_input = action_input.clone();
+                let guidance_input = guidance_input.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     match api::rewind_turn(game_id, turn_id, include_turn).await {
-                        Ok(d) => detail.set(Some(d)),
+                        Ok(d) => {
+                            detail.set(Some(d));
+                            if let Some((action, guidance)) = restore_text {
+                                action_input.set(action);
+                                guidance_input.set(guidance);
+                            }
+                        }
                         Err(err) => {
                             if let Some(window) = web_sys::window() {
                                 let _ =
@@ -1505,4 +1535,60 @@ pub fn merge_game_list(detail: &GameDetail, games: &[Game]) -> Vec<Game> {
 
 mod game_sync {
     pub use crate::game_sync::*;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn sample_turn(id: i64, action: &str, guidance: &str) -> GameTurn {
+        GameTurn {
+            id,
+            game_id: 1,
+            sort_order: id,
+            player_action: action.into(),
+            guidance_notes: guidance.into(),
+            phase: "done".into(),
+            scene_beats: vec![],
+            prose: String::new(),
+            thought_content: String::new(),
+            thought_duration_ms: None,
+            thought_in_progress: false,
+            state_changes: vec![],
+            checks: vec![],
+            system_rolls: vec![],
+            plan: None,
+            mechanical_results: vec![],
+            observability: TurnObservability::default(),
+            is_opening: false,
+            generation_error: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn turn_text_to_restore_includes_selected_turn_when_rewinding_user_bubble() {
+        let turns = vec![
+            sample_turn(1, "look around", "be gentle"),
+            sample_turn(2, "pick the lock", ""),
+        ];
+        let (action, guidance) =
+            turn_text_to_restore_on_rewind(&turns, 1, true).expect("restore text");
+        assert_eq!(action, "look around");
+        assert_eq!(guidance, "be gentle");
+    }
+
+    #[test]
+    fn turn_text_to_restore_uses_next_turn_when_rewinding_after_gm_response() {
+        let turns = vec![
+            sample_turn(1, "look around", ""),
+            sample_turn(2, "pick the lock", "hurry"),
+        ];
+        let (action, guidance) =
+            turn_text_to_restore_on_rewind(&turns, 1, false).expect("restore text");
+        assert_eq!(action, "pick the lock");
+        assert_eq!(guidance, "hurry");
+    }
 }
