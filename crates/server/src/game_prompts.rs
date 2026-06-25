@@ -203,10 +203,16 @@ POV (overrides GM style):
 - NPCs and their dialogue use third person or quoted speech as usual.
 
 Use the resolved results, never invent new ones:
-- Narrate using the resolved mechanics EXACTLY: the same dice numbers, the same drawn card names and text, the same board spaces and movement. Do NOT invent, change, re-roll, re-draw, or add any dice roll, card draw, or board move. There is nothing left to roll — it is already done.
-- If a number or card you would mention is not in "Resolved mechanics (canonical)", do not state it.
+- The canonical outcomes are fixed. Do NOT invent, change, re-roll, re-draw, or add any dice roll, card draw, or board move.
 - If that section says there were no mechanics, this is pure narration with no dice/cards/moves.
 - Honor any resolved check tiers already rolled — a fail must not read as an unqualified success.
+
+Inline outcome blocks (presentation — the UI renders the real result):
+- Each resolved mechanic in "Resolved mechanics (canonical)" has a reference marker like ⟦mech:0⟧. Embed that marker EXACTLY at the point in the narration where that outcome should appear.
+- Rhythm: write lead-up prose that stops before the outcome (reaching for the card, the die leaving your hand), insert the marker, then write reaction prose that follows from whatever the block shows — without restating the die face, card name, card text, or landing space in your own words.
+- The marker is the only place the player sees the rolled number or drawn card; do not duplicate those facts in surrounding prose.
+- Use each listed marker exactly once, in story order matching the canonical list.
+- Dramatic checks rolled before this turn may already be anchored with ⟦check:N⟧ at the start — narrate from those tiers without contradicting them.
 
 How to narrate:
 - Narrate the world, NPCs, environment, and the consequences of the player's stated action and GM guidance, in second person.
@@ -613,9 +619,9 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
         }
         TurnPromptPhase::ProseNarrate => {
             let mut instruction = String::from(
-                "Narrate this turn now in second person (\"you\") using EXACTLY the resolved mechanics above. \
+                "Narrate this turn now in second person (\"you\") using the resolved mechanics above. \
                  Begin with the narrative prose — write the full narration FIRST (at least a paragraph); do not start with a tool call or end the turn without prose. \
-                 Do not roll, draw, or move anything — that is already done; reuse those numbers, cards, and spaces verbatim. \
+                 Embed each ⟦mech:N⟧ marker from the canonical list at the point in the story where that outcome belongs; do not restate die faces, card names, or landing spaces in prose — the marker block shows them. \
                  Advance one beat — resolve the player's action and the resolved mechanics — then stop; do not invent extra beats. \
                  AFTER the prose, call the tracked-state tools for durable changes the narration establishes, and stop with ask_pc_decision only when the PC owes a choice.",
             );
@@ -658,39 +664,62 @@ fn format_resolved_mechanics_block(results: &[dreamwell_types::MechanicalResult]
     }
     let lines: Vec<String> = results
         .iter()
-        .map(|r| match &r.data {
-            MechanicalData::DiceRoll {
-                dice_expr,
-                rolls,
-                total,
-            } => {
-                let label = if r.label.trim().is_empty() {
-                    "Dice".to_string()
-                } else {
-                    r.label.trim().to_string()
-                };
-                format!("- {label} ({dice_expr}): rolled {rolls:?} = {total}")
+        .map(|r| {
+            let marker = dreamwell_types::prose_mech_marker(r.sort_order);
+            match &r.data {
+                MechanicalData::DiceRoll {
+                    dice_expr,
+                    rolls,
+                    total,
+                } => {
+                    let label = if r.label.trim().is_empty() {
+                        "Dice".to_string()
+                    } else {
+                        r.label.trim().to_string()
+                    };
+                    format!(
+                        "- {marker} {label} ({dice_expr}): rolled {rolls:?} = {total}"
+                    )
+                }
+                MechanicalData::BoardMove {
+                    actor,
+                    roll,
+                    from_space,
+                    to_space,
+                    space_tags,
+                    ..
+                } => format!(
+                    "- {marker} Board move: {actor} rolled {roll}, moved space {from_space} → {to_space} (tags: {})",
+                    space_tags.join(", ")
+                ),
+                MechanicalData::CardDraw {
+                    name,
+                    text,
+                    deck_id,
+                    ..
+                } => format!("- {marker} Card drawn from {deck_id}: {name} — {text}"),
             }
-            MechanicalData::BoardMove {
-                actor,
-                roll,
-                from_space,
-                to_space,
-                space_tags,
-                ..
-            } => format!(
-                "- Board move: {actor} rolled {roll}, moved space {from_space} → {to_space} (tags: {})",
-                space_tags.join(", ")
-            ),
-            MechanicalData::CardDraw {
-                name,
-                text,
-                deck_id,
-                ..
-            } => format!("- Card drawn from {deck_id}: {name} — {text}"),
         })
         .collect();
     format!("Resolved mechanics (canonical):\n{}", lines.join("\n"))
+}
+
+/// Ensure every resolved mechanic has its inline marker in the prose. The model is
+/// prompted to place markers, but weak models may omit them — append any missing ones
+/// in canonical order so the UI can still render outcomes inline.
+pub(crate) fn ensure_inline_mech_markers(
+    prose: &mut String,
+    results: &[dreamwell_types::MechanicalResult],
+) {
+    for result in results {
+        let marker = dreamwell_types::prose_mech_marker(result.sort_order);
+        if !prose.contains(&marker) {
+            if !prose.is_empty() {
+                prose.push_str("\n\n");
+            }
+            prose.push_str(&marker);
+        }
+    }
 }
 
 /// When the immediately previous turn ended on a freshly drawn card whose effect was
@@ -1561,12 +1590,50 @@ mod tests {
         let system = msgs[0]["content"].as_str().unwrap();
         assert!(system.contains("ALREADY been rolled"));
         assert!(system.contains("begin your response with the narrative prose"));
+        assert!(system.contains("⟦mech:0⟧"));
         assert!(system.contains("Do NOT invent, change, re-roll"));
         let user = msgs[1]["content"].as_str().unwrap();
         assert!(user.contains("Resolved mechanics (canonical):"));
-        assert!(user.contains("attack roll (1d6): rolled [5] = 5"));
-        assert!(user.contains("Boost — Move forward 2 extra spaces."));
-        assert!(user.contains("reuse those numbers, cards, and spaces verbatim"));
+        assert!(user.contains("⟦mech:0⟧ attack roll (1d6): rolled [5] = 5"));
+        assert!(user.contains("⟦mech:1⟧ Card drawn from events: Boost"));
+        assert!(user.contains("Embed each ⟦mech:N⟧ marker"));
+    }
+
+    #[test]
+    fn ensure_inline_mech_markers_appends_missing_in_order() {
+        use dreamwell_types::{MechanicalData, MechanicalKind, MechanicalResult};
+        let results = vec![
+            MechanicalResult {
+                kind: MechanicalKind::DiceRoll,
+                label: "roll".into(),
+                data: MechanicalData::DiceRoll {
+                    dice_expr: "1d6".into(),
+                    rolls: vec![3],
+                    total: 3,
+                },
+                sort_order: 0,
+            },
+            MechanicalResult {
+                kind: MechanicalKind::DiceRoll,
+                label: "roll".into(),
+                data: MechanicalData::DiceRoll {
+                    dice_expr: "1d6".into(),
+                    rolls: vec![6],
+                    total: 6,
+                },
+                sort_order: 1,
+            },
+        ];
+        let mut prose = format!(
+            "You reach for the die.\n\n{}",
+            dreamwell_types::prose_mech_marker(0)
+        );
+        ensure_inline_mech_markers(&mut prose, &results);
+        assert!(prose.contains(&dreamwell_types::prose_mech_marker(0)));
+        assert!(prose.contains(&dreamwell_types::prose_mech_marker(1)));
+        let first = prose.find(&dreamwell_types::prose_mech_marker(0)).unwrap();
+        let second = prose.find(&dreamwell_types::prose_mech_marker(1)).unwrap();
+        assert!(first < second);
     }
 
     #[test]

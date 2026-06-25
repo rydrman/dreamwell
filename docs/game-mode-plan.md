@@ -72,16 +72,21 @@ LLM passes**, which is a refinement of §3's pipeline:
    before any narration exists.
 3. **Prose narration** (`build_prose_narration_messages`,
    `prose_agent_tool_specs`) — the model writes the turn prose from a
-   "Resolved mechanics (canonical)" block and may call *only* state / ask tools.
-   Outcome tools are not offered, and any the model emits anyway are dropped, so
-   the narration can only reuse the canonical results.
+   "Resolved mechanics (canonical)" block (each line includes its `⟦mech:N⟧`
+   reference) and embeds those markers at the narration point. The frontend
+   expands markers into inline dice/card/board blocks from the canonical
+   `mechanical_results`, so the player discovers outcomes as they read without
+   the model restating numbers in prose. State / ask tools still run after the
+   prose; outcome tools are not offered and any the model emits anyway are dropped.
 
 **Why the split:** a single inline pass let weaker local models narrate a
 fabricated dice result first ("you roll a 4…") and then emit a contradicting
 `roll_dice` tool call, so the prose never matched the real roll. Resolving all
-mechanics *before* narration removes the contradiction entirely. The frontend
-already renders detached, collapsible "Mechanics"/"Checks"/"State" panels when
-the prose carries no inline markers, which is what the narration pass produces.
+mechanics *before* narration removes the contradiction entirely. Inline markers
+restore the "outcome as you read" feel: the marker is only a pointer — the UI
+renders the real result from `mechanical_results`, not from model text. If the
+model omits a marker, `ensure_inline_mech_markers` appends any missing ones so
+the detached "Mechanics" panel stays hidden when possible.
 See `crates/server/src/game_repro.rs` for the live reproduction/regression
 harness (run with `--ignored`).
 

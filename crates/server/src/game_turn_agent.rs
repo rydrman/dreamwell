@@ -10,7 +10,9 @@ use tokio_util::sync::CancellationToken;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
-use crate::game_prompts::{build_mechanics_agent_messages, build_prose_narration_messages};
+use crate::game_prompts::{
+    build_mechanics_agent_messages, build_prose_narration_messages, ensure_inline_mech_markers,
+};
 use crate::game_tools::{
     handle_mechanical_tool_call, is_outcome_tool, is_state_tool, mechanics_agent_tool_specs,
     parse_state_tool_call, prose_agent_tool_specs, ToolSessionState,
@@ -383,6 +385,16 @@ async fn run_prose_pass(
     let loop_config = ToolLoopConfig::default();
 
     let mut prose = String::new();
+    for check in checks {
+        append_inline_marker(
+            &mut prose,
+            dreamwell_types::prose_check_marker(check.sort_order),
+        );
+    }
+    if !prose.is_empty() {
+        db::update_turn_prose(pool, turn_id, &prose).await?;
+        db::touch_game(pool, game_id).await?;
+    }
     let mut applied_state: Vec<AppliedStateChange> = Vec::new();
     let mut llm_calls = 0u32;
     let mut tool_calls = 0u32;
@@ -516,10 +528,27 @@ async fn run_prose_pass(
                 )
                 .await?;
                 let count = applied.len();
+                let start_idx = applied_state.len() as i64;
                 applied_state.extend(applied);
+                for offset in 0..count {
+                    append_inline_marker(
+                        &mut prose,
+                        dreamwell_types::prose_state_marker(start_idx + offset as i64),
+                    );
+                }
                 if !applied_state.is_empty() {
                     db::update_turn_state_changes(pool, turn_id, &applied_state).await?;
                     db::touch_game(pool, game_id).await?;
+                    flush_prose_throttled(
+                        pool,
+                        game_id,
+                        turn_id,
+                        &prose,
+                        settings,
+                        &mut prose_stream,
+                        true,
+                    )
+                    .await?;
                 }
                 serde_json::json!({ "applied": count })
             } else if tc.name == "ask_pc_decision" {
@@ -571,6 +600,7 @@ async fn run_prose_pass(
     // Final safety net: drop any leaked/truncated `call:` tool-call syntax so it
     // never reaches the player as prose.
     prose = strip_residual_call_syntax(&cleaned);
+    ensure_inline_mech_markers(&mut prose, resolved_mechanics);
 
     finalize_turn_prose(
         pool,
@@ -596,6 +626,13 @@ fn append_question_blockquote(prose: &mut String, question: &str) {
         prose.push_str("\n\n");
     }
     prose.push_str(&format_blockquote(question));
+}
+
+fn append_inline_marker(prose: &mut String, marker: String) {
+    if !prose.is_empty() {
+        prose.push_str("\n\n");
+    }
+    prose.push_str(&marker);
 }
 
 fn format_blockquote(text: &str) -> String {
