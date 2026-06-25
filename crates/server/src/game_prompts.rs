@@ -53,7 +53,31 @@ Rules:
 - Only propose checks using trait names listed for the PC in the Characters block
 - Return empty checks array with no_check_reason only when a roll would add no tension or uncertainty
 - Keep string fields concise so the JSON response stays complete
-- Output ONLY valid JSON matching the schema"#;
+- Output ONLY valid JSON matching the schema
+
+Use these exact field names (do not rename or nest differently):
+{
+  "checks": [
+    {
+      "label": "short name for the roll",
+      "skill": "exact trait name from Characters",
+      "modifier": 0,
+      "stakes": "what happens on failure",
+      "justification": "why this roll is needed"
+    }
+  ],
+  "no_check_reason": null
+}
+When no checks are needed: "checks": [] and set no_check_reason to a brief reason (not null)."#;
+
+/// Compact hint appended to JSON repair retries for the declare-checks phase.
+pub fn declare_checks_repair_hint() -> &'static str {
+    r#"Required JSON shape (exact keys):
+{"checks":[{"label":"...","skill":"TraitName","modifier":0,"stakes":"...","justification":"..."}],"no_check_reason":null}
+- checks: array (may be empty); each item needs label, skill, modifier (integer), stakes, justification
+- no_check_reason: string when checks is empty, otherwise null
+- Do not use alternate key names like trait, name, mod, or dramatic_checks"#
+}
 
 const INLINE_PROSE_AGENT_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose that resolves the player's action and moves the scene forward, calling tools inline to fire any real game mechanic.
 
@@ -434,6 +458,15 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
     }
 
     append_turn_direction(&mut body, turn, guidance);
+
+    if phase == TurnPromptPhase::DeclareChecks {
+        push_section(
+            &mut body,
+            "Decide whether this action needs dramatic checks. \
+             Respond with JSON only — use the exact field names from the system message \
+             (checks, label, skill, modifier, stakes, justification, no_check_reason).",
+        );
+    }
 
     if phase == TurnPromptPhase::ProseInline {
         let guidance_present = !effective_turn_guidance(turn, guidance).is_empty();
@@ -1449,6 +1482,26 @@ mod tests {
         assert!(DECLARE_CHECKS_SYSTEM.contains("cozy, intimate"));
         assert!(DECLARE_CHECKS_SYSTEM.contains("social, emotional"));
         assert!(!DECLARE_CHECKS_SYSTEM.contains("Prefer no check for low-stakes"));
+    }
+
+    #[test]
+    fn declare_checks_system_lists_exact_json_field_names() {
+        assert!(DECLARE_CHECKS_SYSTEM.contains(r#""checks""#));
+        assert!(DECLARE_CHECKS_SYSTEM.contains(r#""label""#));
+        assert!(DECLARE_CHECKS_SYSTEM.contains(r#""skill""#));
+        assert!(DECLARE_CHECKS_SYSTEM.contains(r#""modifier""#));
+        assert!(DECLARE_CHECKS_SYSTEM.contains(r#""no_check_reason""#));
+    }
+
+    #[test]
+    fn declare_checks_user_message_reminds_about_json_fields() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let messages = build_declare_checks_messages(&game, &detail, &turn, "", &test_settings());
+        let user = messages[1]["content"].as_str().unwrap();
+        assert!(user.contains("exact field names"));
+        assert!(user.contains("no_check_reason"));
     }
 
     #[test]
