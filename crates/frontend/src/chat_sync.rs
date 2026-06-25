@@ -35,6 +35,37 @@ pub fn should_apply_messages_from_sse(payload_messages: &[Message], payload_chat
     !messages_stale_vs_chat(payload_messages, payload_chat)
 }
 
+/// Whether two message lists would render identically in the chat timeline.
+///
+/// Ignores bookkeeping fields such as `in_summary` that change during multi-pass
+/// summarization without affecting visible bubbles.
+pub fn messages_display_equivalent(current: &[Message], incoming: &[Message]) -> bool {
+    if current.len() != incoming.len() {
+        return false;
+    }
+    current
+        .iter()
+        .zip(incoming)
+        .all(|(left, right)| message_display_equivalent(left, right))
+}
+
+fn message_display_equivalent(left: &Message, right: &Message) -> bool {
+    left.id == right.id
+        && left.role == right.role
+        && left.content == right.content
+        && left.thought_content == right.thought_content
+        && left.thought_duration_ms == right.thought_duration_ms
+        && left.thought_in_progress == right.thought_in_progress
+        && left.variable_updates == right.variable_updates
+        && left.reply_beats == right.reply_beats
+        && left.state_changes == right.state_changes
+        && left.generation_phase == right.generation_phase
+        && left.is_summary == right.is_summary
+        && left.job_status == right.job_status
+        && left.generation_error == right.generation_error
+        && left.generation_notice == right.generation_notice
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +191,29 @@ mod tests {
         let messages = vec![assistant_message(Some(JobStatus::Running))];
         let chat = sample_chat(None);
         assert!(!should_apply_messages_from_sse(&messages, &chat));
+    }
+
+    #[test]
+    fn display_equivalent_ignores_in_summary_flag() {
+        let mut summarized = assistant_message(None);
+        summarized.in_summary = true;
+        let original = assistant_message(None);
+        assert!(message_display_equivalent(&original, &summarized));
+    }
+
+    #[test]
+    fn display_equivalent_detects_content_change() {
+        let mut changed = assistant_message(None);
+        changed.content = "updated".into();
+        let original = assistant_message(None);
+        assert!(!message_display_equivalent(&original, &changed));
+    }
+
+    #[test]
+    fn display_equivalent_lists_match() {
+        let left = vec![assistant_message(None), assistant_message(None)];
+        let right = left.clone();
+        assert!(messages_display_equivalent(&left, &right));
     }
 
     #[test]

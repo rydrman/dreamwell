@@ -44,7 +44,10 @@ thread_local! {
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
-use chat_sync::{message_generation_live, messages_stale_vs_chat, should_apply_messages_from_sse};
+use chat_sync::{
+    message_generation_live, messages_display_equivalent, messages_stale_vs_chat,
+    should_apply_messages_from_sse,
+};
 use dreamwell_types::*;
 use game_create_ui::GameCreateModal;
 use game_ui::GameShell;
@@ -641,7 +644,9 @@ fn app() -> Html {
                                 false,
                             );
                             *had_active_job.borrow_mut() = false;
-                        } else if should_apply_messages_from_sse(&payload.messages, &payload.chat) {
+                        } else if should_apply_messages_from_sse(&payload.messages, &payload.chat)
+                            && !messages_display_equivalent(&messages, &payload.messages)
+                        {
                             messages.set(payload.messages.clone());
                             messages_loading.set(false);
                         }
@@ -2625,7 +2630,7 @@ struct MessageBubbleProps {
     is_last: bool,
     after_count: usize,
     display_content: String,
-    rendered_content: Html,
+    render_text: String,
     show_thoughts: bool,
     show_variables: bool,
     #[prop_or(true)]
@@ -2910,7 +2915,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                 <span class="muted">{"(Empty response)"}</span>
             } else {
                 if show_body {
-                    { props.rendered_content.clone() }
+                    <markdown::MemoizedMessageBody text={props.render_text.clone()} />
                     if streaming {
                         <span class="streaming-cursor" aria-hidden="true">{"▍"}</span>
                         <div class="message-streaming-note muted">{"Still writing…"}</div>
@@ -3218,12 +3223,12 @@ fn message_list(props: &MessageListProps) -> Html {
                     } else {
                         m.content.clone()
                     };
-                    let rendered_content = if display_content.is_empty() {
-                        html! {}
+                    let render_text = if display_content.is_empty() {
+                        String::new()
                     } else if let Some(ctx) = macro_ctx.as_ref() {
-                        markdown::render_message_content(&substitute_macros(&display_content, ctx))
+                        substitute_macros(&display_content, ctx)
                     } else {
-                        markdown::render_message_content(&display_content)
+                        display_content.clone()
                     };
                     if m.is_summary {
                         html! {
@@ -3245,7 +3250,7 @@ fn message_list(props: &MessageListProps) -> Html {
                                 is_last={is_last}
                                 after_count={after_count}
                                 display_content={display_content}
-                                rendered_content={rendered_content}
+                                render_text={render_text}
                                 show_thoughts={show_thoughts}
                                 show_variables={show_variables}
                                 generation_live={props.generation_live}
