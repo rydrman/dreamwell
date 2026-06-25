@@ -101,6 +101,7 @@ How to narrate:
 
 Inline mechanics (use tools, never invent outcomes):
 - board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
+- For movement on a board, use board_move — it rolls the board's move die for you and returns the result. Do NOT call roll_dice to move a piece, and never pair roll_dice with board_move for the same step (that double-rolls). Reserve roll_dice for dice the scenario calls for outside of board movement (card effects, damage, encounter or skill rolls).
 - Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
 - draw_card requires an explicit deck_id — choose the deck per scenario rules (e.g. map space tags from board_move to the correct deck).
 - One mechanic per cycle: write lead-up prose (no outcome), call exactly one matching tool, then write outcome prose from the tool's actual result before starting the next mechanic. Never batch board_move, draw_card, or roll_dice in the same assistant message.
@@ -119,14 +120,15 @@ Example rhythm (follow this interleaved pattern):
 GOOD — lead-up prose that stops before the outcome, then one tool, then outcome prose from the tool's actual result, repeat:
   You hook a finger under the top card of the events deck and flip it face-up.   (lead-up stops before naming the card)
   call:draw_card{deck_id:events}
-  The card reads "Shortcut — skip ahead one space."   (outcome prose uses the tool's returned card text)
-  call:set_condition{target:pc,key:has_shortcut,value:true}
-  You pocket the slip and pinch the move die between two fingers.
-  You blow on it for luck and let it tumble across the board.   (lead-up stops before naming any number)
-  call:roll_dice{dice_expr:1d6,label:move}
-  The die settles on a five.   (outcome prose uses the number roll_dice returned — nothing was committed before the call)
+  The card reads "Nerve test — roll 1d6; on a 4+ you keep your composure."   (outcome prose uses the tool's returned card text)
+  call:set_condition{target:pc,key:facing_nerve_test,value:true}
+  You weigh the die in your palm, then let it tumble across the felt.   (lead-up stops before naming any number)
+  call:roll_dice{dice_expr:1d6,label:nerve test}
+  It settles on a five — your composure holds.   (outcome prose uses the number roll_dice returned — nothing was committed before the call)
+  You pocket the slip and step up to take your move.
+  You scoop up the board's move die and toss it across the board.   (lead-up stops before naming how far you go — board_move rolls and moves)
   call:board_move{actor:pc}
-  Five spaces carry you up to the gap near the finish line.   (outcome prose uses board_move's returned position)
+  It carries you four spaces up to the gap near the finish line.   (outcome prose uses board_move's returned roll and position)
   call:set_fact{target:world,key:location,value:"space 36, near finish"}
   call:set_fact{target:pc,key:mood,value:excited}
   call:adjust_resource{target:Sophie,key:arousal,delta:2}
@@ -134,9 +136,10 @@ GOOD — lead-up prose that stops before the outcome, then one tool, then outcom
 
 BAD — do not do this:
   call:draw_card{deck_id:events}call:board_move{actor:pc} together before any prose
-  You roll a four and draw Shortcut. (outcomes invented before tools run)
-  The die tumbles to a four. call:roll_dice{dice_expr:1d6,label:move} (number stated in prose BEFORE the tool runs — and the tool may return a different number)
-  The die settles on a four; call:roll_dice returns 6 (prose number must MATCH the tool result, never contradict it)
+  You roll a four and draw Nerve test. (outcomes invented before tools run)
+  call:roll_dice{dice_expr:1d6,label:move}call:board_move{actor:pc} (roll_dice + board_move for the same step double-rolls — board_move rolls the move die itself)
+  The die tumbles to a four. call:roll_dice{dice_expr:1d6,label:nerve test} (number stated in prose BEFORE the tool runs — and the tool may return a different number)
+  It settles on a four; call:roll_dice returns 6 (prose number must MATCH the tool result, never contradict it)
   adjust_resource(target="Sophie", key="arousal", delta=2) (parentheses syntax — not parsed)
   You're excited and standing near the finish line now. (location and mood only in prose — no set_fact call)
 
