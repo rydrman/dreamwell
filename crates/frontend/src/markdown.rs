@@ -24,6 +24,17 @@ pub fn render_message_content(text: &str) -> Html {
     }
 }
 
+/// Renders markdown only when `text` changes — avoids re-parsing every bubble on parent re-renders.
+#[derive(Properties, PartialEq)]
+pub struct MemoizedMessageBodyProps {
+    pub text: String,
+}
+
+#[function_component(MemoizedMessageBody)]
+pub fn memoized_message_body(props: &MemoizedMessageBodyProps) -> Html {
+    render_message_content(&props.text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -618,6 +618,9 @@ where
         db::mark_messages_in_summary(pool, &batch_ids).await?;
         total_summarized += batch_ids.len();
         passes_completed += 1;
+    }
+
+    if passes_completed > 0 {
         db::touch_chat(pool, chat_id).await?;
     }
 
