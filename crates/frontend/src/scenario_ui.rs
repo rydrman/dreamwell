@@ -1,13 +1,13 @@
 use dreamwell_types::*;
 use std::collections::HashMap;
-use web_sys::{HtmlInputElement, HtmlTextAreaElement};
+use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::api;
 use crate::game_presets_ui::GmTonePresetPicker;
 use crate::scenario_state_ui::{
     editable_character_state_to_saved, editable_tracked_var_to_saved, EditableCharacterStateDef,
-    EditableTrackedVarDef,
+    EditableTrackedVarDef, InlineTextField, InlineTextareaField,
 };
 
 #[derive(Properties, PartialEq)]
@@ -981,74 +981,76 @@ fn scenario_traits_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
 fn scenario_opening_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     let draft = draft.clone();
     html! {
-        <label class="field">
-            <span class="muted">{"Opening message"}</span>
-            <div class="composer-input-stack">
-                <textarea
-                    class="composer-input-stack__primary input"
-                    rows="4"
-                    placeholder="Opening narration or first player action"
-                    value={draft.opening_message.clone()}
-                    oninput={{
-                        let draft = draft.clone();
-                        Callback::from(move |e: InputEvent| {
-                            let input: HtmlTextAreaElement = e.target_unchecked_into();
-                            let mut next = (*draft).clone();
-                            next.opening_message = input.value();
-                            draft.set(next);
-                        })
-                    }}
-                />
-                <textarea
-                    class="composer-input-stack__secondary input"
-                    rows="2"
-                    placeholder="Optional guidance for the GM"
-                    value={draft.opening_guidance.clone()}
-                    oninput={{
-                        let draft = draft.clone();
-                        Callback::from(move |e: InputEvent| {
-                            let input: HtmlTextAreaElement = e.target_unchecked_into();
-                            let mut next = (*draft).clone();
-                            next.opening_guidance = input.value();
-                            draft.set(next);
-                        })
-                    }}
-                />
-            </div>
+        <>
+            <InlineTextareaField
+                label="Opening message"
+                placeholder="Opening narration or first player action"
+                value={draft.opening_message.clone()}
+                on_change={Callback::from({
+                    let draft = draft.clone();
+                    move |value: String| {
+                        let mut next = (*draft).clone();
+                        next.opening_message = value;
+                        draft.set(next);
+                    }
+                })}
+            />
+            <InlineTextareaField
+                label="Opening GM guidance"
+                placeholder="Optional guidance for the GM"
+                value={draft.opening_guidance.clone()}
+                secondary={true}
+                on_change={Callback::from({
+                    let draft = draft.clone();
+                    move |value: String| {
+                        let mut next = (*draft).clone();
+                        next.opening_guidance = value;
+                        draft.set(next);
+                    }
+                })}
+            />
             <span class="muted scenario-field-hint">
                 {"GM guidance is applied to the auto-submitted first turn when you start a game from this scenario."}
             </span>
-        </label>
+        </>
     }
 }
 
 fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     let fields_before_tone = [
-        ("title", "Title", false),
-        ("premise", "Premise / scenario", true),
-        ("objective", "Objective", true),
+        ("title", "Title", false, ""),
+        ("premise", "Premise / scenario", true, ""),
+        ("objective", "Objective", true, ""),
     ];
     let fields_after_tone = [
-        ("setting", "Setting / world", true),
-        ("gm_style", "GM style", true),
-        ("setup_text", "Setup instructions", true),
-        ("pc_name", "Default PC name", false),
-        ("pc_description", "Default PC description", true),
+        ("setting", "Setting / world", true, ""),
+        ("gm_style", "GM style", true, ""),
+        ("setup_text", "Setup instructions", true, ""),
+        ("pc_name", "Default PC name", false, ""),
+        ("pc_description", "Default PC description", true, ""),
     ];
     html! {
-        <>
-            { for fields_before_tone.iter().map(|(key, label, multiline)| {
+        <div class="scenario-editor-fields">
+            { for fields_before_tone.iter().map(|(key, label, multiline, placeholder)| {
                 let key = *key;
                 let draft = draft.clone();
+                let value = scenario_draft_field(draft.clone(), key);
                 html! {
-                    <label class="field">
-                        <span class="muted">{ *label }</span>
-                        if *multiline {
-                            <textarea value={scenario_draft_field(draft.clone(), key)} oninput={scenario_draft_oninput(draft, key)} />
-                        } else {
-                            <input type="text" value={scenario_draft_field(draft.clone(), key)} oninput={scenario_draft_oninput(draft, key)} />
-                        }
-                    </label>
+                    if *multiline {
+                        <InlineTextareaField
+                            label={label.to_string()}
+                            placeholder={*placeholder}
+                            value={value}
+                            on_change={scenario_draft_onchange(draft, key)}
+                        />
+                    } else {
+                        <InlineTextField
+                            label={label.to_string()}
+                            placeholder={*placeholder}
+                            value={value}
+                            on_change={scenario_draft_onchange(draft, key)}
+                        />
+                    }
                 }
             }) }
             { scenario_opening_fields(draft) }
@@ -1061,21 +1063,29 @@ fn scenario_fields(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                     draft.set(next);
                 }
             })} />
-            { for fields_after_tone.iter().map(|(key, label, multiline)| {
+            { for fields_after_tone.iter().map(|(key, label, multiline, placeholder)| {
                 let key = *key;
                 let draft = draft.clone();
+                let value = scenario_draft_field(draft.clone(), key);
                 html! {
-                    <label class="field">
-                        <span class="muted">{ *label }</span>
-                        if *multiline {
-                            <textarea value={scenario_draft_field(draft.clone(), key)} oninput={scenario_draft_oninput(draft, key)} />
-                        } else {
-                            <input type="text" value={scenario_draft_field(draft.clone(), key)} oninput={scenario_draft_oninput(draft, key)} />
-                        }
-                    </label>
+                    if *multiline {
+                        <InlineTextareaField
+                            label={label.to_string()}
+                            placeholder={*placeholder}
+                            value={value}
+                            on_change={scenario_draft_onchange(draft, key)}
+                        />
+                    } else {
+                        <InlineTextField
+                            label={label.to_string()}
+                            placeholder={*placeholder}
+                            value={value}
+                            on_change={scenario_draft_onchange(draft, key)}
+                        />
+                    }
                 }
             }) }
-        </>
+        </div>
     }
 }
 
@@ -1095,11 +1105,9 @@ fn scenario_draft_field(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Stri
     }
 }
 
-fn scenario_draft_oninput(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Callback<InputEvent> {
+fn scenario_draft_onchange(draft: UseStateHandle<ScenarioDraft>, key: &str) -> Callback<String> {
     let key = key.to_string();
-    Callback::from(move |e: InputEvent| {
-        let input: HtmlInputElement = e.target_unchecked_into();
-        let value = input.value();
+    Callback::from(move |value: String| {
         let mut next = (*draft).clone();
         match key.as_str() {
             "title" => next.title = value,

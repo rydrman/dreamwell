@@ -951,17 +951,14 @@ fn game_elements_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                                             })
                                         }} />
                                     </div>
-                                    <textarea placeholder="Card text" value={text} oninput={{
+                                    { textarea_input("Card text", &text, {
                                         let draft = draft.clone();
-                                        Callback::from(move |e: InputEvent| {
-                                            let input: HtmlInputElement = e.target_unchecked_into();
-                                            mutate_draft(&draft, |d| {
-                                                if let Some(deck) = d.game_elements.decks.get_mut(index) {
-                                                    if let Some(card) = deck.cards.get_mut(ci) { card.text = input.value(); }
-                                                }
-                                            });
-                                        })
-                                    }} />
+                                        Callback::from(move |value: String| mutate_draft(&draft, |d| {
+                                            if let Some(deck) = d.game_elements.decks.get_mut(index) {
+                                                if let Some(card) = deck.cards.get_mut(ci) { card.text = value; }
+                                            }
+                                        }))
+                                    }) }
                                     <button type="button" class="btn secondary btn-compact" onclick={{
                                         let draft = draft.clone();
                                         Callback::from(move |_| mutate_draft(&draft, |d| {
