@@ -1,6 +1,9 @@
 use dreamwell_types::{normalize_target, CharacterStateDef, StateKind, TrackedVarDef};
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
+
+use crate::auto_grow::{fit_textarea, fit_textarea_when_ready};
+use crate::use_fit_textarea;
 
 pub fn optional_i64_input(
     label: &str,
@@ -30,27 +33,238 @@ pub fn optional_i64_input(
     }
 }
 
+fn start_edit_on_click(editing: UseStateHandle<bool>) -> Callback<MouseEvent> {
+    Callback::from(move |e: MouseEvent| {
+        e.stop_propagation();
+        editing.set(true);
+    })
+}
+
+fn start_edit_on_keydown(editing: UseStateHandle<bool>) -> Callback<KeyboardEvent> {
+    Callback::from(move |e: KeyboardEvent| {
+        if e.key() == "Enter" || e.key() == " " {
+            e.prevent_default();
+            editing.set(true);
+        }
+    })
+}
+
+#[derive(Properties, PartialEq)]
+pub struct InlineTextFieldProps {
+    pub label: String,
+    pub value: String,
+    #[prop_or("")]
+    pub placeholder: &'static str,
+    pub on_change: Callback<String>,
+}
+
+#[function_component(InlineTextField)]
+pub fn inline_text_field(props: &InlineTextFieldProps) -> Html {
+    let editing = use_state(|| false);
+    let input_ref = use_node_ref();
+    let value = props.value.clone();
+
+    {
+        let editing = editing.clone();
+        let value = value.clone();
+        use_effect_with(value, move |_| {
+            editing.set(false);
+            || ()
+        });
+    }
+
+    {
+        let input_ref = input_ref.clone();
+        let editing = *editing;
+        use_effect_with(editing, move |editing| {
+            if *editing {
+                if let Some(input) = input_ref.cast::<HtmlInputElement>() {
+                    let _ = input.focus();
+                    input.select();
+                }
+            }
+            || ()
+        });
+    }
+
+    let on_change = props.on_change.clone();
+    let placeholder = props.placeholder;
+    let label = props.label.clone();
+    let display = if value.is_empty() {
+        placeholder.to_string()
+    } else {
+        value.clone()
+    };
+    let display_empty = value.is_empty();
+
+    html! {
+        <label class="field scenario-inline-field">
+            <span class="muted">{ label }</span>
+            if *editing {
+                <input
+                    ref={input_ref}
+                    type="text"
+                    class="input scenario-inline-field__control"
+                    placeholder={placeholder}
+                    value={value}
+                    onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
+                    oninput={{
+                        let on_change = on_change.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlInputElement = e.target_unchecked_into();
+                            on_change.emit(input.value());
+                        })
+                    }}
+                    onkeydown={{
+                        let editing = editing.clone();
+                        Callback::from(move |e: KeyboardEvent| {
+                            if e.key() == "Escape" {
+                                editing.set(false);
+                            }
+                        })
+                    }}
+                    onblur={{
+                        let editing = editing.clone();
+                        Callback::from(move |_| editing.set(false))
+                    }}
+                />
+            } else {
+                <div
+                    class={classes!(
+                        "scenario-inline-display",
+                        display_empty.then_some("scenario-inline-display--empty"),
+                    )}
+                    title="Click to edit"
+                    tabindex="0"
+                    role="button"
+                    onclick={start_edit_on_click(editing.clone())}
+                    onkeydown={start_edit_on_keydown(editing.clone())}
+                >
+                    { display }
+                </div>
+            }
+        </label>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct InlineTextareaFieldProps {
+    pub label: String,
+    pub value: String,
+    #[prop_or("")]
+    pub placeholder: &'static str,
+    pub on_change: Callback<String>,
+    #[prop_or(false)]
+    pub secondary: bool,
+}
+
+#[function_component(InlineTextareaField)]
+pub fn inline_textarea_field(props: &InlineTextareaFieldProps) -> Html {
+    let editing = use_state(|| false);
+    let textarea_ref = use_node_ref();
+    let value = props.value.clone();
+
+    use_fit_textarea!(&textarea_ref, value.clone());
+
+    {
+        let editing = editing.clone();
+        let value = value.clone();
+        use_effect_with(value, move |_| {
+            editing.set(false);
+            || ()
+        });
+    }
+
+    {
+        let textarea_ref = textarea_ref.clone();
+        let editing = *editing;
+        use_effect_with(editing, move |editing| {
+            if *editing {
+                if let Some(textarea) = textarea_ref.cast::<HtmlTextAreaElement>() {
+                    let _ = textarea.focus();
+                    fit_textarea(&textarea);
+                    fit_textarea_when_ready(textarea);
+                }
+            }
+            || ()
+        });
+    }
+
+    let on_change = props.on_change.clone();
+    let placeholder = props.placeholder;
+    let label = props.label.clone();
+    let display = if value.is_empty() {
+        placeholder.to_string()
+    } else {
+        value.clone()
+    };
+    let display_empty = value.is_empty();
+
+    html! {
+        <label class="field scenario-inline-field">
+            <span class="muted">{ label }</span>
+            if *editing {
+                <textarea
+                    ref={textarea_ref}
+                    class={classes!(
+                        "input",
+                        "scenario-inline-field__control",
+                        props.secondary.then_some("scenario-inline-field__control--secondary"),
+                    )}
+                    rows="1"
+                    placeholder={placeholder}
+                    value={value}
+                    onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}
+                    oninput={{
+                        let on_change = on_change.clone();
+                        Callback::from(move |e: InputEvent| {
+                            let input: HtmlTextAreaElement = e.target_unchecked_into();
+                            fit_textarea(&input);
+                            on_change.emit(input.value());
+                        })
+                    }}
+                    onkeydown={{
+                        let editing = editing.clone();
+                        Callback::from(move |e: KeyboardEvent| {
+                            if e.key() == "Escape" {
+                                editing.set(false);
+                            }
+                        })
+                    }}
+                    onblur={{
+                        let editing = editing.clone();
+                        Callback::from(move |_| editing.set(false))
+                    }}
+                />
+            } else {
+                <div
+                    class={classes!(
+                        "scenario-inline-display",
+                        display_empty.then_some("scenario-inline-display--empty"),
+                        props.secondary.then_some("scenario-inline-display--secondary"),
+                    )}
+                    title="Click to edit"
+                    tabindex="0"
+                    role="button"
+                    onclick={start_edit_on_click(editing.clone())}
+                    onkeydown={start_edit_on_keydown(editing.clone())}
+                >
+                    { display }
+                </div>
+            }
+        </label>
+    }
+}
+
 pub fn text_input(label: &str, value: &str, on_change: Callback<String>) -> Html {
     html! {
-        <label class="field">
-            <span class="muted">{ label }</span>
-            <input type="text" class="input" value={value.to_string()} oninput={Callback::from(move |e: InputEvent| {
-                let input: HtmlInputElement = e.target_unchecked_into();
-                on_change.emit(input.value());
-            })} />
-        </label>
+        <InlineTextField label={label.to_string()} value={value.to_string()} on_change={on_change} />
     }
 }
 
 pub fn textarea_input(label: &str, value: &str, on_change: Callback<String>) -> Html {
     html! {
-        <label class="field">
-            <span class="muted">{ label }</span>
-            <textarea class="input" value={value.to_string()} oninput={Callback::from(move |e: InputEvent| {
-                let input: HtmlInputElement = e.target_unchecked_into();
-                on_change.emit(input.value());
-            })} />
-        </label>
+        <InlineTextareaField label={label.to_string()} value={value.to_string()} on_change={on_change} />
     }
 }
 

@@ -3303,6 +3303,67 @@ details.plan-beats-list {
   gap: 0.5rem;
 }
 
+.scenario-editor-fields {
+  margin-top: 1rem;
+}
+
+.scenario-inline-field textarea.scenario-inline-field__control {
+  resize: none;
+  overflow: hidden;
+}
+
+.scenario-inline-display {
+  cursor: text;
+  border-radius: 0.375rem;
+  padding: 0.15rem 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  min-height: 1.5em;
+}
+
+.scenario-inline-display:hover,
+.scenario-inline-display:focus-visible {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  outline: none;
+}
+
+.scenario-inline-display--empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.scenario-inline-display--secondary {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.scenario-inline-field__control--secondary {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.scenario-editor-row .input:not(:focus) {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.scenario-editor-row .input:not(:focus):hover {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.scenario-editor-block .input:not(:focus):not(.scenario-inline-field__control) {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.scenario-editor-block .input:not(:focus):not(.scenario-inline-field__control):hover {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
 .scenario-editor-row {
   display: flex;
   gap: 0.5rem;
