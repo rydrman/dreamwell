@@ -739,8 +739,8 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                     on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "mechanics".to_string())))}
                                                 >
                                                     { for turn.mechanical_results.iter().map(|r| html! {
-                                                        <div class="mechanical-result-item muted small" key={format!("{}-{}", turn_id, r.sort_order)}>
-                                                            { mechanical_result_summary(r) }
+                                                        <div class="mechanical-result-item" key={format!("{}-{}", turn_id, r.sort_order)}>
+                                                            { render_inline_mechanic(r) }
                                                         </div>
                                                     }) }
                                                     if turn.observability.llm_call_count > 0 || turn.observability.tool_call_count > 0 {
@@ -756,7 +756,10 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.system_rolls.is_empty() && !hide_detached_phases {
+                                            if !turn.system_rolls.is_empty()
+                                                && !hide_detached_phases
+                                                && turn.mechanical_results.is_empty()
+                                            {
                                                 <PhaseSection
                                                     label={"System rolls".to_string()}
                                                     expanded={Some(expanded_phases.contains(&(turn_id, "system".to_string())))}
