@@ -51,8 +51,8 @@ pub fn inline_mechanical_tool_specs() -> Vec<Value> {
 /// inline prose agent only ever supplies target/key/value — far simpler than the
 /// batch `apply_state_changes` blob.
 pub const SIMPLE_STATE_TOOLS: &[&str] = &[
-    "set_fact",
-    "clear_fact",
+    "set_variable",
+    "clear_variable",
     "set_condition",
     "clear_condition",
     "adjust_resource",
@@ -60,6 +60,9 @@ pub const SIMPLE_STATE_TOOLS: &[&str] = &[
     "advance_clock",
     "set_clock",
 ];
+
+/// Legacy tool names kept for backward compatibility with older model outputs.
+const LEGACY_SIMPLE_STATE_TOOL_ALIASES: &[&str] = &["set_fact", "clear_fact"];
 
 const STATE_TARGET_DESC: &str =
     "Who the value belongs to: \"pc\" for the player character, \"world\" for scene-wide facts, or an NPC's name. An unknown name auto-creates that NPC.";
@@ -127,16 +130,16 @@ fn numeric_state_tool(
 pub fn simple_state_tool_specs() -> Vec<Value> {
     vec![
         text_state_tool(
-            "set_fact",
-            "Default for most state updates. Record or update a durable text fact (location, mood, inventory, traits, quest stage). Call whenever narration establishes or changes a lasting attribute — the tool is the source of truth, not the prose.",
+            "set_variable",
+            "Default for most state updates. Record or update a durable text variable (location, mood, inventory, traits, quest stage, appearance, body measurements). Call whenever narration establishes or changes a lasting attribute — the tool is the source of truth, not the prose.",
         ),
         clear_state_tool(
-            "clear_fact",
-            "Remove a durable fact that is no longer true (an item is dropped, a location is left behind).",
+            "clear_variable",
+            "Remove a durable variable that is no longer true (an item is dropped, a location is left behind).",
         ),
         text_state_tool(
             "set_condition",
-            "Record or update an ephemeral status expected to clear soon (hidden, bleeding, suspicious, inspired) — not durable mood, location, or inventory (use set_fact for those).",
+            "Record or update an ephemeral status expected to clear soon (hidden, bleeding, suspicious, inspired) — not durable mood, location, or inventory (use set_variable for those).",
         ),
         clear_state_tool(
             "clear_condition",
@@ -327,11 +330,13 @@ pub async fn handle_mechanical_tool_call(
 /// Whether a tool name updates tracked state (either the batch tool or one of the
 /// simple per-intent convenience tools).
 pub fn is_state_tool(name: &str) -> bool {
-    name == "apply_state_changes" || SIMPLE_STATE_TOOLS.contains(&name)
+    name == "apply_state_changes"
+        || SIMPLE_STATE_TOOLS.contains(&name)
+        || LEGACY_SIMPLE_STATE_TOOL_ALIASES.contains(&name)
 }
 
 /// Parse any state tool call into validated state-change requests. Handles both the
-/// batch `apply_state_changes` array and the simple per-intent tools (set_fact, etc).
+/// batch `apply_state_changes` array and the simple per-intent tools (set_variable, etc).
 pub fn parse_state_tool_call(call: &ToolCall) -> Vec<dreamwell_types::StateChangeRequest> {
     if call.name == "apply_state_changes" {
         return parse_state_change_args(call);
@@ -353,7 +358,7 @@ pub fn parse_state_change_args(call: &ToolCall) -> Vec<dreamwell_types::StateCha
         .unwrap_or_default()
 }
 
-/// Translate a simple per-intent state tool call (set_fact, adjust_resource, …) into
+/// Translate a simple per-intent state tool call (set_variable, adjust_resource, …) into
 /// a single `StateChangeRequest`. Returns `None` for unknown tools or missing key.
 fn parse_simple_state_tool(call: &ToolCall) -> Option<dreamwell_types::StateChangeRequest> {
     use dreamwell_types::{StateChangeRequest, StateKind, StateOp};
@@ -385,8 +390,10 @@ fn parse_simple_state_tool(call: &ToolCall) -> Option<dreamwell_types::StateChan
     };
 
     match call.name.as_str() {
-        "set_fact" => request(StateKind::Fact, StateOp::Set, value, None),
-        "clear_fact" => request(StateKind::Fact, StateOp::Remove, None, None),
+        "set_variable" | "set_fact" => request(StateKind::Variable, StateOp::Set, value, None),
+        "clear_variable" | "clear_fact" => {
+            request(StateKind::Variable, StateOp::Remove, None, None)
+        }
         "set_condition" => request(StateKind::Condition, StateOp::Set, value, None),
         "clear_condition" => request(StateKind::Condition, StateOp::Remove, None, None),
         "adjust_resource" => request(StateKind::Resource, StateOp::Add, None, delta_field),
@@ -525,6 +532,7 @@ mod tests {
     #[test]
     fn is_state_tool_recognizes_simple_and_batch() {
         assert!(is_state_tool("apply_state_changes"));
+        assert!(is_state_tool("set_variable"));
         assert!(is_state_tool("set_fact"));
         assert!(is_state_tool("advance_clock"));
         assert!(!is_state_tool("roll_dice"));
@@ -570,7 +578,23 @@ mod tests {
     }
 
     #[test]
-    fn set_fact_maps_to_fact_set_request() {
+    fn set_variable_maps_to_variable_set_request() {
+        use dreamwell_types::{StateKind, StateOp};
+        let call = state_call(
+            "set_variable",
+            serde_json::json!({ "target": "world", "key": "location", "value": "tavern" }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].target, "world");
+        assert_eq!(reqs[0].kind, StateKind::Variable);
+        assert_eq!(reqs[0].op, StateOp::Set);
+        assert_eq!(reqs[0].key, "location");
+        assert_eq!(reqs[0].value.as_deref(), Some("tavern"));
+    }
+
+    #[test]
+    fn set_fact_alias_maps_to_variable_set_request() {
         use dreamwell_types::{StateKind, StateOp};
         let call = state_call(
             "set_fact",
@@ -578,11 +602,8 @@ mod tests {
         );
         let reqs = parse_state_tool_call(&call);
         assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].target, "world");
-        assert_eq!(reqs[0].kind, StateKind::Fact);
+        assert_eq!(reqs[0].kind, StateKind::Variable);
         assert_eq!(reqs[0].op, StateOp::Set);
-        assert_eq!(reqs[0].key, "location");
-        assert_eq!(reqs[0].value.as_deref(), Some("tavern"));
     }
 
     #[test]

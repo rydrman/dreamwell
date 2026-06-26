@@ -388,7 +388,7 @@ mod tests {
             },
             CharacterStateDef {
                 key: "mood".into(),
-                kind: StateKind::Fact,
+                kind: StateKind::Variable,
                 initial_value: "wary".into(),
                 ..Default::default()
             },
@@ -403,7 +403,7 @@ mod tests {
     fn merge_game_state_schema_adds_pc_and_npc_entries() {
         let base = vec![TrackedVarDef {
             key: "weather".into(),
-            kind: StateKind::Fact,
+            kind: StateKind::Variable,
             target: "world".into(),
             initial_value: "clear".into(),
             ..Default::default()
@@ -448,13 +448,13 @@ mod tests {
         assert_eq!(npc.target, "Guard");
 
         let world: TrackedVarDef = serde_json::from_value(serde_json::json!({
-            "key": "weather", "kind": "fact"
+            "key": "weather", "kind": "variable"
         }))
         .unwrap();
         assert_eq!(world.target, "world");
 
         let explicit: TrackedVarDef = serde_json::from_value(serde_json::json!({
-            "key": "mood", "kind": "fact", "target": "Maya"
+            "key": "mood", "kind": "variable", "target": "Maya"
         }))
         .unwrap();
         assert_eq!(explicit.target, "Maya");

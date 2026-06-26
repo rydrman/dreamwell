@@ -508,9 +508,9 @@ fn parse_state_kind(s: &str) -> StateKind {
     match s {
         "resource" => StateKind::Resource,
         "condition" => StateKind::Condition,
-        "fact" => StateKind::Fact,
+        "variable" | "fact" => StateKind::Variable,
         "clock" => StateKind::Clock,
-        _ => StateKind::Fact,
+        _ => StateKind::Variable,
     }
 }
 
@@ -1006,7 +1006,7 @@ pub async fn list_variables(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Ch
     let entries = list_chat_state_entries(pool, chat_id).await?;
     Ok(entries
         .into_iter()
-        .filter(|e| e.kind == StateKind::Fact && e.actor_id.is_none())
+        .filter(|e| e.kind == StateKind::Variable && e.actor_id.is_none())
         .map(|e| ChatVariable {
             id: e.id,
             chat_id: e.chat_id,
@@ -1027,7 +1027,7 @@ pub async fn upsert_variable(
 ) -> AppResult<ChatVariable> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO chat_state_entries (chat_id, actor_id, kind, key, value, source_message_id, updated_at) VALUES (?1,NULL,'fact',?2,?3,?4,?5) ON CONFLICT(chat_id, actor_id, kind, key) DO UPDATE SET value=excluded.value, source_message_id=excluded.source_message_id, updated_at=excluded.updated_at",
+        "INSERT INTO chat_state_entries (chat_id, actor_id, kind, key, value, source_message_id, updated_at) VALUES (?1,NULL,'variable',?2,?3,?4,?5) ON CONFLICT(chat_id, actor_id, kind, key) DO UPDATE SET value=excluded.value, source_message_id=excluded.source_message_id, updated_at=excluded.updated_at",
     )
     .bind(chat_id)
     .bind(&key)
@@ -1039,7 +1039,7 @@ pub async fn upsert_variable(
     let entries = list_chat_state_entries(pool, chat_id).await?;
     entries
         .into_iter()
-        .find(|e| e.key == key && e.kind == StateKind::Fact && e.actor_id.is_none())
+        .find(|e| e.key == key && e.kind == StateKind::Variable && e.actor_id.is_none())
         .map(|e| ChatVariable {
             id: e.id,
             chat_id: e.chat_id,
@@ -1064,7 +1064,7 @@ pub async fn upsert_variable_manual(
 
 pub async fn delete_variable(pool: &SqlitePool, chat_id: i64, variable_id: i64) -> AppResult<()> {
     let result = sqlx::query(
-        "DELETE FROM chat_state_entries WHERE chat_id = ?1 AND id = ?2 AND kind = 'fact'",
+        "DELETE FROM chat_state_entries WHERE chat_id = ?1 AND id = ?2 AND kind = 'variable'",
     )
     .bind(chat_id)
     .bind(variable_id)
@@ -1103,7 +1103,7 @@ pub async fn delete_variable_scoped(
     source_message_id: i64,
 ) -> AppResult<()> {
     let _ = sqlx::query(
-        "DELETE FROM chat_state_entries WHERE chat_id = ?1 AND key = ?2 AND source_message_id = ?3 AND kind = 'fact' AND actor_id IS NULL",
+        "DELETE FROM chat_state_entries WHERE chat_id = ?1 AND key = ?2 AND source_message_id = ?3 AND kind = 'variable' AND actor_id IS NULL",
     )
     .bind(chat_id)
     .bind(key)

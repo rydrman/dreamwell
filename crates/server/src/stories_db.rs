@@ -221,9 +221,9 @@ fn parse_story_state_kind(s: &str) -> StateKind {
     match s {
         "resource" => StateKind::Resource,
         "condition" => StateKind::Condition,
-        "fact" => StateKind::Fact,
+        "variable" | "fact" => StateKind::Variable,
         "clock" => StateKind::Clock,
-        _ => StateKind::Fact,
+        _ => StateKind::Variable,
     }
 }
 
@@ -1229,7 +1229,7 @@ pub async fn list_story_variables(
     let entries = list_story_state_entries(pool, story_id).await?;
     Ok(entries
         .into_iter()
-        .filter(|e| e.kind == StateKind::Fact && e.actor_id.is_none())
+        .filter(|e| e.kind == StateKind::Variable && e.actor_id.is_none())
         .map(|e| StoryVariable {
             id: e.id,
             story_id: e.story_id,
@@ -1252,7 +1252,7 @@ pub async fn upsert_story_variable(
 ) -> AppResult<StoryVariable> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO story_state_entries (story_id, actor_id, kind, key, value, source_beat_id, updated_at) VALUES (?1,NULL,'fact',?2,?3,-1,?4) ON CONFLICT(story_id, actor_id, kind, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        "INSERT INTO story_state_entries (story_id, actor_id, kind, key, value, source_beat_id, updated_at) VALUES (?1,NULL,'variable',?2,?3,-1,?4) ON CONFLICT(story_id, actor_id, kind, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
     )
     .bind(story_id)
     .bind(&key)
@@ -1299,7 +1299,7 @@ pub async fn delete_story_variable(
     variable_id: i64,
 ) -> AppResult<()> {
     let result = sqlx::query(
-        "DELETE FROM story_state_entries WHERE story_id = ?1 AND id = ?2 AND kind = 'fact'",
+        "DELETE FROM story_state_entries WHERE story_id = ?1 AND id = ?2 AND kind = 'variable'",
     )
     .bind(story_id)
     .bind(variable_id)
@@ -1331,7 +1331,7 @@ pub async fn delete_story_variable_scoped(
     _source_beat_order: i64,
 ) -> AppResult<()> {
     let _ = sqlx::query(
-        "DELETE FROM story_state_entries WHERE story_id = ?1 AND key = ?2 AND kind = 'fact' AND actor_id IS NULL",
+        "DELETE FROM story_state_entries WHERE story_id = ?1 AND key = ?2 AND kind = 'variable' AND actor_id IS NULL",
     )
     .bind(story_id)
     .bind(key)

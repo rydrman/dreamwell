@@ -61,7 +61,7 @@ fn kind_label(kind: StateKind) -> &'static str {
     match kind {
         StateKind::Resource => "resource",
         StateKind::Condition => "condition",
-        StateKind::Fact => "fact",
+        StateKind::Variable => "variable",
         StateKind::Clock => "clock",
     }
 }
@@ -99,7 +99,7 @@ fn format_state_change_value(sc: &AppliedStateChange) -> String {
             next.map(|n| n.to_string())
                 .unwrap_or_else(|| sc.value.clone().unwrap_or_default())
         }
-        StateKind::Condition | StateKind::Fact => {
+        StateKind::Condition | StateKind::Variable => {
             if sc.op == StateOp::Remove {
                 sc.prev_value.clone().unwrap_or_default()
             } else if let Some(prev) = sc.prev_value.as_ref().filter(|p| !p.is_empty()) {
@@ -260,7 +260,7 @@ fn state_kind_order(kind: StateKind) -> u8 {
     match kind {
         StateKind::Resource => 0,
         StateKind::Condition => 1,
-        StateKind::Fact => 2,
+        StateKind::Variable => 2,
         StateKind::Clock => 3,
     }
 }

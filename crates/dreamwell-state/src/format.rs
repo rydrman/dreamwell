@@ -66,8 +66,8 @@ fn append_state_entries(
             StateKind::Condition => {
                 format!("- {} (condition): {}", entry.key, entry.value)
             }
-            StateKind::Fact => {
-                format!("- {} (fact): {}", entry.key, entry.value)
+            StateKind::Variable => {
+                format!("- {} (variable): {}", entry.key, entry.value)
             }
         };
         if let Some(note) = annotations

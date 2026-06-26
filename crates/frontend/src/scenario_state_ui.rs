@@ -510,11 +510,11 @@ pub fn state_kind_blurb(kind: StateKind) -> &'static str {
         StateKind::Clock => {
             "Stepped progress toward an outcome — investigation 2/4, countdown. Each step fills one segment; often triggers or clears when full."
         }
-        StateKind::Fact => {
-            "Durable text attribute — location, shirt color, has_key. Set when established in play; update when the fiction changes."
+        StateKind::Variable => {
+            "Durable text attribute — location, shirt color, body measurements, has_key. Set when established in play; update when the fiction changes."
         }
         StateKind::Condition => {
-            "Temporary status tag — bleeding, hidden, suspicious. Same storage as a fact, but expected to clear when resolved."
+            "Temporary status tag — bleeding, hidden, suspicious. Same storage as a variable, but expected to clear when resolved."
         }
     }
 }
@@ -523,7 +523,7 @@ fn state_kind_option_label(kind: StateKind) -> &'static str {
     match kind {
         StateKind::Resource => "Resource — numeric with max",
         StateKind::Condition => "Condition — temporary tag",
-        StateKind::Fact => "Fact — durable text",
+        StateKind::Variable => "Variable — durable text",
         StateKind::Clock => "Clock — stepped progress",
     }
 }
@@ -573,7 +573,7 @@ fn kind_select(selected: Option<StateKind>, on_change: Callback<StateKind>) -> H
                     let select: web_sys::HtmlSelectElement = e.target_unchecked_into();
                     let parsed = match select.value().as_str() {
                         "condition" => StateKind::Condition,
-                        "fact" => StateKind::Fact,
+                        "variable" | "fact" => StateKind::Variable,
                         "clock" => StateKind::Clock,
                         "resource" => StateKind::Resource,
                         _ => return,
@@ -590,8 +590,8 @@ fn kind_select(selected: Option<StateKind>, on_change: Callback<StateKind>) -> H
                 <option value="clock" selected={selected == Some(StateKind::Clock)}>
                     { state_kind_option_label(StateKind::Clock) }
                 </option>
-                <option value="fact" selected={selected == Some(StateKind::Fact)}>
-                    { state_kind_option_label(StateKind::Fact) }
+                <option value="variable" selected={selected == Some(StateKind::Variable)}>
+                    { state_kind_option_label(StateKind::Variable) }
                 </option>
                 <option value="condition" selected={selected == Some(StateKind::Condition)}>
                     { state_kind_option_label(StateKind::Condition) }

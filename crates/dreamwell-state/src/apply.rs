@@ -356,7 +356,7 @@ pub fn plan_revert_changes(
                     });
                 }
             }
-            StateKind::Condition | StateKind::Fact => {
+            StateKind::Condition | StateKind::Variable => {
                 if let Some(prev) = &change.prev_value {
                     mutations.push(RevertMutation::RestoreText {
                         actor_id,
@@ -410,7 +410,7 @@ pub fn state_kind_str(kind: StateKind) -> &'static str {
     match kind {
         StateKind::Resource => "resource",
         StateKind::Condition => "condition",
-        StateKind::Fact => "fact",
+        StateKind::Variable => "variable",
         StateKind::Clock => "clock",
     }
 }
@@ -511,7 +511,7 @@ mod tests {
         let plan = plan_state_changes(
             &[StateChangeRequest {
                 target: "Alice".into(),
-                kind: StateKind::Fact,
+                kind: StateKind::Variable,
                 key: "mood".into(),
                 op: StateOp::Set,
                 value: Some("happy".into()),
@@ -528,7 +528,7 @@ mod tests {
     fn fact_set_applies_literal_number_value() {
         let change: StateChangeRequest = serde_json::from_value(serde_json::json!({
             "target": "world",
-            "kind": "fact",
+            "kind": "variable",
             "key": "door_count",
             "op": "set",
             "value": 3
@@ -559,7 +559,7 @@ mod tests {
                 delta: None,
             }],
             &[],
-            &[text_entry(7, "location", StateKind::Fact, "docks")],
+            &[text_entry(7, "location", StateKind::Variable, "docks")],
         );
         assert_eq!(plan.mutations.len(), 2);
         assert!(matches!(
@@ -573,7 +573,7 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(plan.audit[0].prev_kind, Some(StateKind::Fact));
+        assert_eq!(plan.audit[0].prev_kind, Some(StateKind::Variable));
     }
 
     #[test]
@@ -581,7 +581,7 @@ mod tests {
         let plan = plan_state_changes(
             &[StateChangeRequest {
                 target: "world".into(),
-                kind: StateKind::Fact,
+                kind: StateKind::Variable,
                 key: "alert".into(),
                 op: StateOp::Set,
                 value: Some("high".into()),

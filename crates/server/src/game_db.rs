@@ -401,7 +401,7 @@ async fn seed_scenario_state(
             continue;
         }
         sqlx::query(
-            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, source_turn, updated_at) VALUES (?1,NULL,'fact',?2,?3,-1,?4)",
+            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, source_turn, updated_at) VALUES (?1,NULL,'variable',?2,?3,-1,?4)",
         )
         .bind(game_id)
         .bind(key)
@@ -417,7 +417,7 @@ fn state_kind_str(kind: StateKind) -> &'static str {
     match kind {
         StateKind::Resource => "resource",
         StateKind::Condition => "condition",
-        StateKind::Fact => "fact",
+        StateKind::Variable => "variable",
         StateKind::Clock => "clock",
     }
 }
@@ -689,9 +689,9 @@ fn parse_state_kind(s: &str) -> StateKind {
     match s {
         "resource" => StateKind::Resource,
         "condition" => StateKind::Condition,
-        "fact" => StateKind::Fact,
+        "variable" | "fact" => StateKind::Variable,
         "clock" => StateKind::Clock,
-        _ => StateKind::Fact,
+        _ => StateKind::Variable,
     }
 }
 

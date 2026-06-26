@@ -306,7 +306,7 @@ fn default_pc_state_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     html! {
         <details class="scenario-extra-panel">
             <summary>{ format!("Default PC state ({})", draft.pc_initial_state.len()) }</summary>
-            <p class="muted">{"Typed resources, conditions, facts, and clocks seeded on the default player character when a game starts."}</p>
+            <p class="muted">{"Typed resources, conditions, variables, and clocks seeded on the default player character when a game starts."}</p>
             <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::DefaultPc} label="State variables" />
         </details>
     }

@@ -965,7 +965,8 @@ pub enum StateKind {
     #[default]
     Resource,
     Condition,
-    Fact,
+    #[serde(alias = "fact")]
+    Variable,
     Clock,
 }
 

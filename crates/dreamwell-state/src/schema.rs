@@ -7,7 +7,7 @@ pub fn state_changes_schema() -> serde_json::Value {
             "type": "object",
             "properties": {
                 "target": { "type": "string" },
-                "kind": { "type": "string", "enum": ["resource", "condition", "fact", "clock"] },
+                "kind": { "type": "string", "enum": ["resource", "condition", "variable", "clock"] },
                 "key": { "type": "string" },
                 "op": { "type": "string", "enum": ["set", "add", "remove"] },
                 "value": {

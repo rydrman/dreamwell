@@ -15,13 +15,13 @@ use crate::model_fallback::has_inference_provider;
 const GENERATE_CHARACTER_STATE_SYSTEM: &str = r#"You design initial typed game state for one character in a tabletop RPG scenario.
 
 Each state entry tracks one durable attribute the GM can update during play:
-- fact (DEFAULT): short textual truth — mood, role, employer, secret_goal, last_seen_location, inventory items
+- variable (DEFAULT): short textual truth — mood, role, employer, secret_goal, last_seen_location, inventory items, body measurements
 - condition: ephemeral status only (hidden, hostile, armed) — clears when resolved
 - resource: numeric pool with current/max — ONLY when the scenario truly needs a depletable track (health, stress, ammo)
 - clock: progress tracker with segments — ONLY when the scenario needs stepped countdown/progress (suspicion, alarm)
 
 Rules:
-- Prefer fact for most attributes; use resource/clock sparingly and only when numeric tracking is essential
+- Prefer variable for most attributes; use resource/clock sparingly and only when numeric tracking is essential
 - Use snake_case keys; one atomic attribute per key
 - Prefer 3–8 entries that matter at scenario start
 - Match the scenario genre, stakes, and tone
@@ -48,7 +48,7 @@ pub fn character_state_generation_schema() -> serde_json::Value {
                         "key": { "type": "string" },
                         "kind": {
                             "type": "string",
-                            "enum": ["resource", "condition", "fact", "clock"]
+                            "enum": ["resource", "condition", "variable", "clock"]
                         },
                         "description": { "type": "string" },
                         "initial_value": { "type": "string" },
@@ -75,7 +75,7 @@ fn state_kind_label(kind: StateKind) -> &'static str {
     match kind {
         StateKind::Resource => "resource",
         StateKind::Condition => "condition",
-        StateKind::Fact => "fact",
+        StateKind::Variable => "variable",
         StateKind::Clock => "clock",
     }
 }
