@@ -255,29 +255,6 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
         .await?;
     }
 
-    let pc_schema_keys: std::collections::HashSet<&str> = payload
-        .state_schema
-        .iter()
-        .filter(|def| def.target.trim().eq_ignore_ascii_case("pc"))
-        .map(|def| def.key.as_str())
-        .collect();
-    for (key, current, max) in [("health", 5.0, 5.0), ("stress", 0.0, 5.0)] {
-        if pc_schema_keys.contains(key) {
-            continue;
-        }
-        sqlx::query(
-            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, float_value, float_max, source_turn, updated_at) VALUES (?1,?2,'measurement',?3,'',?4,?5,-1,?6)",
-        )
-        .bind(id)
-        .bind(actor_id)
-        .bind(key)
-        .bind(current)
-        .bind(max)
-        .bind(&now)
-        .execute(pool)
-        .await?;
-    }
-
     seed_scenario_state(pool, id, actor_id, &payload, &now).await?;
 
     sqlx::query(
@@ -1896,7 +1873,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_game_skips_default_health_when_schema_defines_it() {
+    async fn create_game_does_not_seed_default_health_or_stress() {
+        let pool = test_pool().await;
+        let detail = create_game(&pool, GameCreate::default())
+            .await
+            .expect("create");
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT key FROM game_state_entries WHERE game_id = ?1 AND key IN ('health', 'stress')",
+        )
+        .bind(detail.game.id)
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_game_seeds_health_from_schema() {
         let pool = test_pool().await;
         let payload = GameCreate {
             pc_name: "Hero".into(),
