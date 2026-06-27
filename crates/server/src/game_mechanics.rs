@@ -3,7 +3,7 @@ use dreamwell_types::{
     MechanicalKind, MechanicalResult,
 };
 
-use crate::game_resolution::roll_system_dice;
+use crate::game_resolution::{parse_dice_expr, roll_system_dice};
 
 pub fn board_space_tags(board: &BoardDef, space: u32) -> Vec<String> {
     for rule in &board.tag_rules {
@@ -78,7 +78,12 @@ pub fn execute_card_draw(
     })
 }
 
+/// Agent `roll_dice` tool: one physical die per call (`1d6`, `1d20`, …).
 pub fn execute_dice_roll(dice_expr: &str, label: &str) -> Option<MechanicalResult> {
+    let (count, _sides) = parse_dice_expr(dice_expr)?;
+    if count != 1 {
+        return None;
+    }
     let roll = roll_system_dice(dice_expr)?;
     Some(MechanicalResult {
         kind: MechanicalKind::DiceRoll,
@@ -268,5 +273,21 @@ mod tests {
         });
         let result = execute_card_draw(&deck, &mut instances, true).expect("draw");
         assert!(matches!(result.data, MechanicalData::CardDraw { .. }));
+    }
+
+    #[test]
+    fn execute_dice_roll_rejects_multi_die_expression() {
+        assert!(execute_dice_roll("4d6", "group").is_none());
+        assert!(execute_dice_roll("2d6", "pair").is_none());
+    }
+
+    #[test]
+    fn execute_dice_roll_accepts_single_die() {
+        let result = execute_dice_roll("1d6", "solo").expect("roll");
+        assert!(matches!(result.data, MechanicalData::DiceRoll { .. }));
+        if let MechanicalData::DiceRoll { rolls, total, .. } = result.data {
+            assert_eq!(rolls.len(), 1);
+            assert_eq!(total, rolls[0]);
+        }
     }
 }

@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{execute_board_move, execute_card_draw, execute_dice_roll};
+use crate::game_resolution::parse_dice_expr;
 use crate::inference::ToolCall;
 
 /// Mechanical tools with descriptions tuned for the inline prose agent.
@@ -10,12 +11,12 @@ pub fn inline_mechanical_tool_specs() -> Vec<Value> {
     vec![
         tool_spec(
             "roll_dice",
-            "Roll dice using a dice expression (e.g. 1d6, 2d6). Returns the individual rolls and total.",
+            "Roll one die (e.g. 1d6, 1d20). Returns the face and total. Call once per die or per person — multi-die expressions like 4d6 are not allowed.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "dice_expr": { "type": "string", "description": "Dice expression such as 1d6 or 2d6" },
-                    "label": { "type": "string", "description": "Short label for this roll (e.g. card effect, encounter)" }
+                    "dice_expr": { "type": "string", "description": "Single-die expression only: 1d6, 1d20, etc. (not 2d6 or 4d6)" },
+                    "label": { "type": "string", "description": "Short label for this roll (e.g. card effect, encounter, actor name)" }
                 },
                 "required": ["dice_expr"]
             }),
@@ -275,7 +276,13 @@ pub async fn handle_mechanical_tool_call(
             let dice_expr = args["dice_expr"].as_str().unwrap_or("1d6");
             let label = args["label"].as_str().unwrap_or("roll").to_string();
             let Some(mut result) = execute_dice_roll(dice_expr, &label) else {
-                return Ok(error_result("invalid dice expression"));
+                let message = parse_dice_expr(dice_expr)
+                    .filter(|(count, _)| *count > 1)
+                    .map(|_| {
+                        "only single-die expressions (e.g. 1d6) are allowed — call roll_dice once per die or person"
+                    })
+                    .unwrap_or("invalid dice expression");
+                return Ok(error_result(message));
             };
             result.sort_order = state.mechanical_results.len() as i64;
             let payload = mechanical_result_json(&result);
@@ -499,6 +506,24 @@ mod tests {
             .unwrap();
         assert!(result.get("error").is_none());
         assert_eq!(state.mechanical_results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn roll_dice_rejects_multi_die_expression() {
+        let mut state = sample_state();
+        let call = ToolCall {
+            id: "t1".into(),
+            name: "roll_dice".into(),
+            arguments: r#"{"dice_expr":"4d6","label":"group roll"}"#.into(),
+        };
+        let result = handle_mechanical_tool_call(&mut state, &call)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.get("error").and_then(|v| v.as_str()),
+            Some("only single-die expressions (e.g. 1d6) are allowed — call roll_dice once per die or person")
+        );
+        assert!(state.mechanical_results.is_empty());
     }
 
     fn state_call(name: &str, args: serde_json::Value) -> ToolCall {

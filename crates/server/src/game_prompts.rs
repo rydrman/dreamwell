@@ -111,6 +111,7 @@ Turn scope (one beat):
 Inline mechanics (use tools, never invent outcomes):
 - board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
 - For movement on a board, use board_move — it rolls the board's move die for you and returns the result. Do NOT call roll_dice to move a piece, and never pair roll_dice with board_move for the same step (that double-rolls). Reserve roll_dice for dice the scenario calls for outside of board movement (card effects, damage, encounter or skill rolls).
+- roll_dice accepts only single-die expressions (1d6, 1d20, …). When several people each roll one die, call roll_dice once per person with 1d6 and a distinct label — never 4d6 for four rollers.
 - Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
 - draw_card requires an explicit deck_id — choose the deck per scenario rules (e.g. map space tags from board_move to the correct deck).
 - One mechanic per cycle: write lead-up prose (no outcome), call exactly one matching tool, then write outcome prose from the tool's actual result before starting the next mechanic. Never batch board_move, draw_card, or roll_dice in the same assistant message.
@@ -181,6 +182,7 @@ Hard rules:
 - Call board_move, draw_card, and roll_dice exactly as the scenario rules require, ONE step at a time, and wait for each tool's real returned result before deciding the next call.
 - Never state or guess an outcome — the tool decides it. React only to the tool's actual returned result.
 - For movement on a board use board_move (it rolls the move die for you and advances the piece). Never call roll_dice to move a piece, and never pair roll_dice with board_move for the same step (that double-rolls). Use roll_dice only for dice the rules call for outside board movement (card effects, damage, encounter or skill rolls).
+- roll_dice accepts only single-die expressions (1d6, 1d20, …). When several actors each roll, call roll_dice once per actor with 1d6 and a distinct label — never NdM with N>1.
 - A card's fixed effect (e.g. "move forward 2 spaces") is NOT a new die roll — apply it as state, do not board_move again for it. Only call board_move / roll_dice when the rules actually call for a die.
 - draw_card needs an explicit deck_id chosen per the scenario rules.
 - Resolve only the mechanics for THIS player action (and any pending effect listed above), then STOP. Do not start a new beat, extra move, or extra draw the player did not take.
