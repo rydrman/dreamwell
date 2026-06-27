@@ -42,6 +42,7 @@ pub fn scenario_create_from_scenario(scenario: &Scenario) -> ScenarioCreate {
         cast: scenario.cast.clone(),
         pc_options: scenario.pc_options.clone(),
         state_schema: scenario.state_schema.clone(),
+        cast_uniform_state: scenario.cast_uniform_state.clone(),
         win_condition: scenario.win_condition.clone(),
         content_flags: scenario.content_flags.clone(),
         source_meta: scenario.source_meta.clone(),

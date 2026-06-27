@@ -2,6 +2,7 @@ use dreamwell_types::{
     AppliedStateChange, ChatActor, ChatStateEntry, GameActor, GameStateEntry, SequencePayload,
     StateKind, StateOp, StoryActor, StoryStateEntry,
 };
+use dreamwell_units::format_measurement_display;
 use web_sys::MouseEvent;
 use yew::prelude::*;
 
@@ -326,43 +327,38 @@ fn scope_heading(actor_id: Option<i64>, actors: &[StateScopeActor]) -> String {
     }
 }
 
-fn format_entry_value(entry: &StateEntryRow) -> (String, bool, Option<f64>) {
+fn format_entry_value(entry: &StateEntryRow) -> (String, Option<String>, bool, Option<f64>) {
     match entry.kind {
         StateKind::Measurement => {
             if entry.float_value.is_none() && entry.float_max.is_none() {
-                return ("(not set)".to_string(), true, None);
+                return ("(not set)".to_string(), None, true, None);
             }
             let current = entry.float_value.unwrap_or(0.0);
-            let unit = entry
-                .unit
-                .as_deref()
-                .filter(|u| !u.is_empty())
-                .map(|u| format!(" {u}"))
-                .unwrap_or_default();
-            if let Some(max) = entry.float_max {
-                let pct = ((current / max) * 100.0).clamp(0.0, 100.0);
-                return (format!("{current}/{max}{unit}"), false, Some(pct));
-            }
-            (format!("{current}{unit}"), false, None)
+            let display =
+                format_measurement_display(current, entry.float_max, entry.unit.as_deref());
+            let pct = entry
+                .float_max
+                .map(|max| ((current / max) * 100.0).clamp(0.0, 100.0));
+            (display.primary, display.secondary, false, pct)
         }
         StateKind::Sequence => {
             if let Some(seq) = SequencePayload::decode(&entry.value) {
                 let active = seq.active_item().unwrap_or("?");
                 let items = seq.items.join(", ");
                 let loop_tag = if seq.r#loop { " (loop)" } else { "" };
-                return (format!("{active} [{items}]{loop_tag}"), false, None);
+                return (format!("{active} [{items}]{loop_tag}"), None, false, None);
             }
             if entry.value.trim().is_empty() {
-                ("(not set)".to_string(), true, None)
+                ("(not set)".to_string(), None, true, None)
             } else {
-                (entry.value.clone(), false, None)
+                (entry.value.clone(), None, false, None)
             }
         }
         _ => {
             if entry.value.trim().is_empty() {
-                ("(empty)".to_string(), true, None)
+                ("(empty)".to_string(), None, true, None)
             } else {
-                (entry.value.clone(), false, None)
+                (entry.value.clone(), None, false, None)
             }
         }
     }
@@ -451,7 +447,7 @@ pub struct StateEntriesPanelProps {
 
 fn render_state_entry_row(entry: &StateEntryRow) -> Html {
     let kind_name = kind_label(entry.kind);
-    let (value_text, value_empty, meter_pct) = format_entry_value(entry);
+    let (value_text, value_alt, value_empty, meter_pct) = format_entry_value(entry);
     html! {
         <li class="state-row state-row--entry" key={entry.id}>
             <span class={classes!("state-chip", "state-chip--kind", format!("state-chip--kind-{kind_name}"))}>
@@ -460,6 +456,9 @@ fn render_state_entry_row(entry: &StateEntryRow) -> Html {
             <span class="state-row-key">{ &entry.key }</span>
             <span class={classes!("state-row-value", value_empty.then_some("state-row-value--empty"))}>
                 { value_text }
+                if let Some(alt) = value_alt {
+                    <span class="state-row-value-alt">{ " · " }{ alt }</span>
+                }
             </span>
             if let Some(pct) = meter_pct {
                 <span class="state-row-meter" aria-hidden="true">

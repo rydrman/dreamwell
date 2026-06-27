@@ -6,7 +6,7 @@ use yew::prelude::*;
 use crate::api;
 use crate::game_presets_ui::GmTonePresetPicker;
 use crate::scenario_state_ui::{
-    editable_character_state_to_saved, editable_tracked_var_to_saved, EditableCharacterStateDef,
+    editable_character_state_to_saved, editable_world_state_to_saved, EditableCharacterStateDef,
     EditableTrackedVarDef, InlineTextField, InlineTextareaField,
 };
 
@@ -356,6 +356,7 @@ pub(crate) struct ScenarioDraft {
     pub(crate) trait_defs: Vec<TraitDef>,
     pub(crate) pc_options: Vec<DraftPcOption>,
     pub(crate) state_schema: Vec<EditableTrackedVarDef>,
+    pub(crate) cast_uniform_state: Vec<EditableCharacterStateDef>,
     pub(crate) content_flags: ContentFlags,
     pub(crate) win_condition: Option<WinCondition>,
     pub(crate) scenario_triggers: Vec<ScenarioTrigger>,
@@ -383,6 +384,7 @@ impl Default for ScenarioDraft {
             trait_defs: Vec::new(),
             pc_options: Vec::new(),
             state_schema: Vec::new(),
+            cast_uniform_state: Vec::new(),
             content_flags: ContentFlags::default(),
             win_condition: None,
             scenario_triggers: Vec::new(),
@@ -429,6 +431,21 @@ impl ScenarioDraft {
         for npc in &mut cast {
             ensure_trait_keys(&mut npc.traits, &columns);
         }
+        let (world_schema, pc_from_schema) =
+            split_legacy_state_schema(scenario.state_schema.clone());
+        let mut pc_initial_state =
+            EditableCharacterStateDef::from_saved_vec(&scenario.pc_initial_state);
+        for def in pc_from_schema {
+            let key = def.key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            if let Some(row) = pc_initial_state.iter_mut().find(|d| d.key == def.key) {
+                *row = EditableCharacterStateDef::from_saved(&def);
+            } else {
+                pc_initial_state.push(EditableCharacterStateDef::from_saved(&def));
+            }
+        }
         Self {
             title: scenario.title.clone(),
             premise: scenario.premise.clone(),
@@ -438,7 +455,7 @@ impl ScenarioDraft {
             opening_guidance: scenario.opening_guidance.clone(),
             pc_name: scenario.pc_name.clone(),
             pc_description: scenario.pc_description.clone(),
-            pc_initial_state: EditableCharacterStateDef::from_saved_vec(&scenario.pc_initial_state),
+            pc_initial_state,
             trait_rows,
             objective: scenario.objective.clone(),
             setup_text: scenario.setup_text.clone(),
@@ -446,7 +463,10 @@ impl ScenarioDraft {
             cast,
             trait_defs: scenario.trait_defs.clone(),
             pc_options,
-            state_schema: EditableTrackedVarDef::from_saved_vec(&scenario.state_schema),
+            state_schema: EditableTrackedVarDef::from_saved_vec(&world_schema),
+            cast_uniform_state: EditableCharacterStateDef::from_saved_vec(
+                &scenario.cast_uniform_state,
+            ),
             content_flags: scenario.content_flags.clone(),
             win_condition: scenario.win_condition.clone(),
             scenario_triggers: scenario.scenario_triggers.clone(),
@@ -473,7 +493,12 @@ impl ScenarioDraft {
         {
             return Some(err);
         }
-        if let Err(err) = editable_tracked_var_to_saved(&self.state_schema, "World state schema") {
+        if let Err(err) = editable_world_state_to_saved(&self.state_schema, "World state") {
+            return Some(err);
+        }
+        if let Err(err) =
+            editable_character_state_to_saved(&self.cast_uniform_state, "Shared character state")
+        {
             return Some(err);
         }
         for (index, npc) in self.cast.iter().enumerate() {
@@ -548,8 +573,13 @@ impl ScenarioDraft {
                 })
                 .collect::<Result<_, _>>()
                 .unwrap_or_default(),
-            state_schema: editable_tracked_var_to_saved(&self.state_schema, "World state schema")
+            state_schema: editable_world_state_to_saved(&self.state_schema, "World state")
                 .unwrap_or_default(),
+            cast_uniform_state: editable_character_state_to_saved(
+                &self.cast_uniform_state,
+                "Shared character state",
+            )
+            .unwrap_or_default(),
             win_condition: self.win_condition.clone(),
             content_flags: self.content_flags.clone(),
             source_meta: self.source_meta.clone(),
@@ -609,8 +639,15 @@ impl ScenarioDraft {
                     .unwrap_or_default(),
             ),
             state_schema: Some(
-                editable_tracked_var_to_saved(&self.state_schema, "World state schema")
+                editable_world_state_to_saved(&self.state_schema, "World state")
                     .unwrap_or_default(),
+            ),
+            cast_uniform_state: Some(
+                editable_character_state_to_saved(
+                    &self.cast_uniform_state,
+                    "Shared character state",
+                )
+                .unwrap_or_default(),
             ),
             win_condition: Some(self.win_condition.clone()),
             content_flags: Some(self.content_flags.clone()),
@@ -1192,6 +1229,7 @@ pub fn game_create_from_scenario(scenario: &Scenario, title: String) -> GameCrea
         state_schema: merge_game_state_schema(
             &scenario.state_schema,
             &scenario.pc_initial_state,
+            &scenario.cast_uniform_state,
             &[],
         ),
         win_condition: scenario.win_condition.clone(),

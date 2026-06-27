@@ -4,9 +4,9 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::scenario_state_ui::{
-    editable_character_state_to_saved, editable_tracked_var_to_saved, text_input, textarea_input,
-    EditableCharacterStateDef, EditableTrackedVarDef, ScenarioStateDefEditor,
-    ScenarioStateFieldUpdate,
+    editable_character_state_to_saved, editable_world_state_to_saved, scenario_unit_datalist,
+    text_input, textarea_input, EditableCharacterStateDef, EditableTrackedVarDef,
+    ScenarioStateDefEditor, ScenarioStateFieldUpdate,
 };
 use crate::scenario_ui::{
     add_trait_column, remove_trait_column, rename_trait_column, synced_trait_values_row,
@@ -23,6 +23,7 @@ fn mutate_draft(draft: &UseStateHandle<ScenarioDraft>, f: impl FnOnce(&mut Scena
 #[derive(Clone, PartialEq)]
 enum CharacterStateOwner {
     DefaultPc,
+    CastUniform,
     CastNpc(usize),
     PcOption(usize),
 }
@@ -40,6 +41,7 @@ fn character_state_entries(
 ) -> Vec<EditableCharacterStateDef> {
     match owner {
         CharacterStateOwner::DefaultPc => draft.pc_initial_state.clone(),
+        CharacterStateOwner::CastUniform => draft.cast_uniform_state.clone(),
         CharacterStateOwner::CastNpc(index) => draft
             .cast
             .get(index)
@@ -53,6 +55,19 @@ fn character_state_entries(
     }
 }
 
+fn saved_uniform_state(draft: &ScenarioDraft) -> Vec<CharacterStateDef> {
+    editable_character_state_to_saved(&draft.cast_uniform_state, "Shared character state")
+        .unwrap_or_default()
+}
+
+fn shows_inherited_shared(owner: &CharacterStateOwner) -> bool {
+    matches!(
+        owner,
+        CharacterStateOwner::DefaultPc
+            | CharacterStateOwner::PcOption(_)
+            | CharacterStateOwner::CastNpc(_)
+    )
+}
 fn character_state_set_all(
     draft: &mut ScenarioDraft,
     owner: &CharacterStateOwner,
@@ -61,6 +76,7 @@ fn character_state_set_all(
     let editable = EditableCharacterStateDef::from_saved_vec(&state);
     match owner {
         CharacterStateOwner::DefaultPc => draft.pc_initial_state = editable,
+        CharacterStateOwner::CastUniform => draft.cast_uniform_state = editable,
         CharacterStateOwner::CastNpc(index) => {
             if let Some(npc) = draft.cast.get_mut(*index) {
                 npc.initial_state = editable;
@@ -93,30 +109,42 @@ fn build_generate_character_state_request(
                 draft.pc_name.clone(),
                 draft.pc_description.clone(),
                 traits,
-                editable_character_state_to_saved(&draft.pc_initial_state, "Default PC state")
-                    .unwrap_or_default(),
+                merge_character_state(
+                    &saved_uniform_state(draft),
+                    &editable_character_state_to_saved(&draft.pc_initial_state, "Default PC state")
+                        .unwrap_or_default(),
+                ),
             )
         }
+        CharacterStateOwner::CastUniform => (
+            "cast_uniform".to_string(),
+            "All characters".to_string(),
+            String::new(),
+            HashMap::new(),
+            saved_uniform_state(draft),
+        ),
         CharacterStateOwner::CastNpc(index) => {
             let npc = draft.cast.get(*index)?;
+            let specific = editable_character_state_to_saved(&npc.initial_state, "Cast state")
+                .unwrap_or_default();
             (
                 "npc".to_string(),
                 npc.name.clone(),
                 npc.content.clone(),
                 npc.traits.clone(),
-                editable_character_state_to_saved(&npc.initial_state, "Cast state")
-                    .unwrap_or_default(),
+                merge_character_state(&saved_uniform_state(draft), &specific),
             )
         }
         CharacterStateOwner::PcOption(index) => {
             let pc = draft.pc_options.get(*index)?;
+            let specific = editable_character_state_to_saved(&pc.initial_state, "PC option state")
+                .unwrap_or_default();
             (
                 "pc_option".to_string(),
                 pc.name.clone(),
                 pc.description.clone(),
                 pc.traits.clone(),
-                editable_character_state_to_saved(&pc.initial_state, "PC option state")
-                    .unwrap_or_default(),
+                merge_character_state(&saved_uniform_state(draft), &specific),
             )
         }
     };
@@ -129,7 +157,7 @@ fn build_generate_character_state_request(
         setting: draft.setting.clone(),
         gm_style: draft.gm_style.clone(),
         objective: draft.objective.clone(),
-        state_schema: editable_tracked_var_to_saved(&draft.state_schema, "World state schema")
+        state_schema: editable_world_state_to_saved(&draft.state_schema, "World state")
             .unwrap_or_default(),
         cast: draft
             .cast
@@ -153,6 +181,11 @@ fn character_state_editor(props: &CharacterStateEditorProps) -> Html {
     let draft = props.draft.clone();
     let owner = props.owner.clone();
     let label = props.label;
+    let inherited_shared = if shows_inherited_shared(&owner) {
+        draft.cast_uniform_state.clone()
+    } else {
+        Vec::new()
+    };
     let entries = character_state_entries(&draft, owner.clone());
     let on_generate = {
         let draft = props.draft.clone();
@@ -190,22 +223,43 @@ fn character_state_editor(props: &CharacterStateEditorProps) -> Html {
             });
         })
     };
+    let show_generate = !matches!(owner, CharacterStateOwner::CastUniform);
     html! {
         <div class="scenario-character-state">
+            if !inherited_shared.is_empty() {
+                <div class="scenario-character-state-shared">
+                    <span class="muted">{ format!("Shared with all characters ({})", inherited_shared.len()) }</span>
+                    { for inherited_shared.iter().enumerate().map(|(index, def)| {
+                        html! {
+                            <div class="scenario-editor-block scenario-editor-block-nested" key={format!("uniform-{index}")}>
+                                <ScenarioStateDefEditor
+                                    view={def.to_view()}
+                                    readonly={true}
+                                    readonly_label="Shared character state"
+                                    on_update={Callback::noop()}
+                                    on_remove={Callback::noop()}
+                                />
+                            </div>
+                        }
+                    }) }
+                </div>
+            }
             <div class="scenario-editor-row">
                 <span class="muted">{ format!("{label} ({})", entries.len()) }</span>
-                <button
-                    type="button"
-                    class="btn secondary btn-compact"
-                    disabled={*generating}
-                    onclick={on_generate}
-                >
-                    if *generating {
-                        {"Generating…"}
-                    } else {
-                        {"Generate with LLM"}
-                    }
-                </button>
+                if show_generate {
+                    <button
+                        type="button"
+                        class="btn secondary btn-compact"
+                        disabled={*generating}
+                        onclick={on_generate}
+                    >
+                        if *generating {
+                            {"Generating…"}
+                        } else {
+                            {"Generate with LLM"}
+                        }
+                    </button>
+                }
             </div>
             { for entries.iter().enumerate().map(|(index, def)| {
                 let owner = owner.clone();
@@ -253,6 +307,7 @@ fn character_state_mut<'a>(
 ) -> Option<&'a mut EditableCharacterStateDef> {
     match owner {
         CharacterStateOwner::DefaultPc => draft.pc_initial_state.get_mut(index),
+        CharacterStateOwner::CastUniform => draft.cast_uniform_state.get_mut(index),
         CharacterStateOwner::CastNpc(npc_index) => draft
             .cast
             .get_mut(*npc_index)
@@ -268,6 +323,9 @@ fn character_state_remove(draft: &mut ScenarioDraft, owner: &CharacterStateOwner
     match owner {
         CharacterStateOwner::DefaultPc => {
             draft.pc_initial_state.remove(index);
+        }
+        CharacterStateOwner::CastUniform => {
+            draft.cast_uniform_state.remove(index);
         }
         CharacterStateOwner::CastNpc(npc_index) => {
             if let Some(npc) = draft.cast.get_mut(*npc_index) {
@@ -289,6 +347,7 @@ fn character_state_push(
 ) {
     match owner {
         CharacterStateOwner::DefaultPc => draft.pc_initial_state.push(def),
+        CharacterStateOwner::CastUniform => draft.cast_uniform_state.push(def),
         CharacterStateOwner::CastNpc(npc_index) => {
             if let Some(npc) = draft.cast.get_mut(*npc_index) {
                 npc.initial_state.push(def);
@@ -302,12 +361,62 @@ fn character_state_push(
     }
 }
 
+fn world_state_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
+    html! {
+        <details class="scenario-extra-panel">
+            <summary>{ format!("World state ({})", draft.state_schema.len()) }</summary>
+            <p class="muted">{"Environment and scene-level state seeded when a game starts (weather, time, global flags)."}</p>
+            { for draft.state_schema.iter().enumerate().map(|(index, def)| {
+                let draft = draft.clone();
+                let view = def.to_view();
+                html! {
+                    <div class="scenario-editor-block" key={index}>
+                        <ScenarioStateDefEditor
+                            view={view}
+                            on_update={Callback::from({
+                                let draft = draft.clone();
+                                move |update: ScenarioStateFieldUpdate| mutate_draft(&draft, |d| {
+                                    if let Some(row) = d.state_schema.get_mut(index) {
+                                        row.apply_update(update);
+                                    }
+                                })
+                            })}
+                            on_remove={Callback::from({
+                                let draft = draft.clone();
+                                move |_| mutate_draft(&draft, |d| {
+                                    d.state_schema.remove(index);
+                                })
+                            })}
+                        />
+                    </div>
+                }
+            }) }
+            <button type="button" class="btn secondary" onclick={{
+                let draft = draft.clone();
+                Callback::from(move |_| mutate_draft(&draft, |d| {
+                    d.state_schema.push(EditableTrackedVarDef::default());
+                }))
+            }}>{"Add state variable"}</button>
+        </details>
+    }
+}
+
+fn shared_character_state_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
+    html! {
+        <details class="scenario-extra-panel">
+            <summary>{ format!("Shared character state ({})", draft.cast_uniform_state.len()) }</summary>
+            <p class="muted">{"State copied onto every player character and cast member at game start. Per-character entries below override by key."}</p>
+            <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::CastUniform} label="Shared variables" />
+        </details>
+    }
+}
+
 fn default_pc_state_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     html! {
         <details class="scenario-extra-panel">
             <summary>{ format!("Default PC state ({})", draft.pc_initial_state.len()) }</summary>
             <p class="muted">{"Typed resources, conditions, variables, and clocks seeded on the default player character when a game starts."}</p>
-            <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::DefaultPc} label="State variables" />
+            <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::DefaultPc} label="Individual state" />
         </details>
     }
 }
@@ -315,12 +424,14 @@ fn default_pc_state_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
 pub fn scenario_advanced_editors(draft: &UseStateHandle<ScenarioDraft>) -> Html {
     html! {
         <div class="scenario-advanced-sections">
+            { scenario_unit_datalist() }
             { trait_defs_editor(draft) }
+            { world_state_editor(draft) }
+            { shared_character_state_editor(draft) }
             { default_pc_state_editor(draft) }
+            { pc_options_editor(draft) }
             { cast_editor(draft) }
             { rules_blocks_editor(draft) }
-            { pc_options_editor(draft) }
-            { state_schema_editor(draft) }
             { win_condition_editor(draft) }
             { content_flags_editor(draft) }
             { scenario_triggers_editor(draft) }
@@ -420,7 +531,7 @@ fn cast_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                             <span class="muted">{"Traits"}</span>
                             { synced_trait_values_row(draft, TraitRowOwner::CastNpc(index)) }
                         </div>
-                        <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::CastNpc(index)} label="Initial state" />
+                        <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::CastNpc(index)} label="Individual state" />
                         <button type="button" class="btn secondary btn-compact" onclick={{
                             let draft = draft.clone();
                             Callback::from(move |_| mutate_draft(&draft, |d| { d.cast.remove(index); }))
@@ -505,7 +616,7 @@ fn pc_options_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                             <span class="muted">{"Traits"}</span>
                             { synced_trait_values_row(draft, TraitRowOwner::PcOption(index)) }
                         </div>
-                        <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::PcOption(index)} label="Initial state" />
+                        <CharacterStateEditor draft={draft.clone()} owner={CharacterStateOwner::PcOption(index)} label="Individual state" />
                         <button type="button" class="btn secondary btn-compact" onclick={{
                             let draft = draft.clone();
                             Callback::from(move |_| mutate_draft(&draft, |d| { d.pc_options.remove(index); }))
@@ -523,46 +634,6 @@ fn pc_options_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
                     });
                 }))
             }}>{"Add PC option"}</button>
-        </details>
-    }
-}
-
-fn state_schema_editor(draft: &UseStateHandle<ScenarioDraft>) -> Html {
-    html! {
-        <details class="scenario-extra-panel">
-            <summary>{ format!("State schema ({})", draft.state_schema.len()) }</summary>
-            <p class="muted">{"World-level state seeded when a game starts. Per-character state belongs on the default PC, PC options, and cast entries above."}</p>
-            { for draft.state_schema.iter().enumerate().map(|(index, def)| {
-                let draft = draft.clone();
-                let view = def.to_view();
-                html! {
-                    <div class="scenario-editor-block" key={index}>
-                        <ScenarioStateDefEditor
-                            view={view}
-                            on_update={Callback::from({
-                                let draft = draft.clone();
-                                move |update: ScenarioStateFieldUpdate| mutate_draft(&draft, |d| {
-                                    if let Some(row) = d.state_schema.get_mut(index) {
-                                        row.apply_update(update);
-                                    }
-                                })
-                            })}
-                            on_remove={Callback::from({
-                                let draft = draft.clone();
-                                move |_| mutate_draft(&draft, |d| {
-                                    d.state_schema.remove(index);
-                                })
-                            })}
-                        />
-                    </div>
-                }
-            }) }
-            <button type="button" class="btn secondary" onclick={{
-                let draft = draft.clone();
-                Callback::from(move |_| mutate_draft(&draft, |d| {
-                    d.state_schema.push(EditableTrackedVarDef::default());
-                }))
-            }}>{"Add state variable"}</button>
         </details>
     }
 }

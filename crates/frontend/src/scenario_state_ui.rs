@@ -1,4 +1,7 @@
 use dreamwell_types::{normalize_target, CharacterStateDef, StateKind, TrackedVarDef};
+use dreamwell_units::{
+    format_measurement_display, friendly_unit_label, normalize_unit, SCENARIO_UNIT_SUGGESTIONS,
+};
 use web_sys::{HtmlInputElement, HtmlTextAreaElement};
 use yew::prelude::*;
 
@@ -94,15 +97,6 @@ pub fn inline_text_field(props: &InlineTextFieldProps) -> Html {
     let value = props.value.clone();
 
     {
-        let editing = editing.clone();
-        let value = value.clone();
-        use_effect_with(value, move |_| {
-            editing.set(false);
-            || ()
-        });
-    }
-
-    {
         let input_ref = input_ref.clone();
         let editing = *editing;
         use_effect_with(editing, move |editing| {
@@ -194,15 +188,6 @@ pub fn inline_textarea_field(props: &InlineTextareaFieldProps) -> Html {
     let value = props.value.clone();
 
     use_fit_textarea!(&textarea_ref, value.clone());
-
-    {
-        let editing = editing.clone();
-        let value = value.clone();
-        use_effect_with(value, move |_| {
-            editing.set(false);
-            || ()
-        });
-    }
 
     {
         let textarea_ref = textarea_ref.clone();
@@ -365,7 +350,12 @@ impl EditableCharacterStateDef {
             initial_float: def
                 .initial_float
                 .or_else(|| def.initial_num.map(|n| n as f64)),
-            unit: def.unit.clone().unwrap_or_default(),
+            unit: def
+                .unit
+                .as_deref()
+                .map(friendly_unit_label)
+                .unwrap_or("")
+                .to_string(),
             sequence_items: def.sequence_items.clone().unwrap_or_default(),
             sequence_loop: def.sequence_loop.unwrap_or(false),
             visibility: def.visibility.clone(),
@@ -395,11 +385,11 @@ impl EditableCharacterStateDef {
             initial_num: self.initial_num,
             initial_max: self.initial_max,
             initial_float: self.initial_float,
-            unit: if self.unit.trim().is_empty() {
+            unit: normalize_unit(if self.unit.trim().is_empty() {
                 None
             } else {
-                Some(self.unit.trim().to_string())
-            },
+                Some(self.unit.trim())
+            }),
             sequence_items: if self.sequence_items.is_empty() {
                 None
             } else {
@@ -423,13 +413,6 @@ impl EditableCharacterStateDef {
         self.sequence_items.clear();
         self.sequence_loop = false;
         self.kind = Some(kind);
-        match kind {
-            StateKind::Measurement if self.initial_max.is_none() => {
-                self.initial_max = Some(5);
-                self.initial_float = Some(0.0);
-            }
-            _ => {}
-        }
     }
 
     pub fn apply_update(&mut self, update: ScenarioStateFieldUpdate) {
@@ -482,7 +465,12 @@ impl EditableTrackedVarDef {
             initial_float: def
                 .initial_float
                 .or_else(|| def.initial_num.map(|n| n as f64)),
-            unit: def.unit.clone().unwrap_or_default(),
+            unit: def
+                .unit
+                .as_deref()
+                .map(friendly_unit_label)
+                .unwrap_or("")
+                .to_string(),
             sequence_items: def.sequence_items.clone().unwrap_or_default(),
             sequence_loop: def.sequence_loop.unwrap_or(false),
             visibility: def.visibility.clone(),
@@ -513,11 +501,11 @@ impl EditableTrackedVarDef {
             initial_num: self.initial_num,
             initial_max: self.initial_max,
             initial_float: self.initial_float,
-            unit: if self.unit.trim().is_empty() {
+            unit: normalize_unit(if self.unit.trim().is_empty() {
                 None
             } else {
-                Some(self.unit.trim().to_string())
-            },
+                Some(self.unit.trim())
+            }),
             sequence_items: if self.sequence_items.is_empty() {
                 None
             } else {
@@ -541,13 +529,6 @@ impl EditableTrackedVarDef {
         self.sequence_items.clear();
         self.sequence_loop = false;
         self.kind = Some(kind);
-        match kind {
-            StateKind::Measurement if self.initial_max.is_none() => {
-                self.initial_max = Some(5);
-                self.initial_float = Some(0.0);
-            }
-            _ => {}
-        }
     }
 
     pub fn apply_update(&mut self, update: ScenarioStateFieldUpdate) {
@@ -582,7 +563,7 @@ impl EditableTrackedVarDef {
             sequence_loop: self.sequence_loop,
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
-            target: Some(normalize_target(&self.target)),
+            target: None,
         }
     }
 }
@@ -607,10 +588,23 @@ pub fn editable_tracked_var_to_saved(
         .map(|rows| rows.into_iter().flatten().collect())
 }
 
+/// World state is always stored with target `world`.
+pub fn editable_world_state_to_saved(
+    defs: &[EditableTrackedVarDef],
+    label: &str,
+) -> Result<Vec<TrackedVarDef>, String> {
+    editable_tracked_var_to_saved(defs, label).map(|mut rows| {
+        for def in &mut rows {
+            def.target = "world".to_string();
+        }
+        rows
+    })
+}
+
 pub fn state_kind_blurb(kind: StateKind) -> &'static str {
     match kind {
         StateKind::Measurement => {
-            "Float value with optional unit and bounds — stress, hit points, distance. Set value and optional min/max during play."
+            "Decimal float with optional unit label — stress, HP, height. Values are plain decimals in that unit (182 cm, 2.5 stress); not feet+inches encoding (5.11 is not 5′11″). Prefer cm for height."
         }
         StateKind::Sequence => {
             "Ordered steps with a cursor — investigation progress, turn order, countdown. Set items and position; step advances the cursor."
@@ -674,6 +668,10 @@ pub struct ScenarioStateDefEditorProps {
     pub view: ScenarioStateDefView,
     pub on_update: Callback<ScenarioStateFieldUpdate>,
     pub on_remove: Callback<()>,
+    #[prop_or(false)]
+    pub readonly: bool,
+    #[prop_or("")]
+    pub readonly_label: &'static str,
 }
 
 fn kind_select(selected: Option<StateKind>, on_change: Callback<StateKind>) -> Html {
@@ -734,6 +732,36 @@ fn target_select(target: &str, on_change: Callback<String>) -> Html {
     }
 }
 
+pub fn scenario_unit_datalist() -> Html {
+    html! {
+        <datalist id="dreamwell-scenario-unit-list">
+            { for SCENARIO_UNIT_SUGGESTIONS.iter().map(|s| html! {
+                <option value={s.code} label={s.label} />
+            }) }
+        </datalist>
+    }
+}
+
+fn unit_input(unit: &str, on_change: Callback<String>) -> Html {
+    html! {
+        <label class="field field-inline">
+            <span class="muted">{"Unit (optional)"}</span>
+            <input
+                type="text"
+                class="input input-compact"
+                list="dreamwell-scenario-unit-list"
+                placeholder="e.g. cm, %, stress"
+                value={unit.to_string()}
+                title="Common aliases like ft, in, and lb normalize to UCUM on save. Decimal values only (182 cm, 71 in)."
+                oninput={Callback::from(move |e: InputEvent| {
+                    let input: HtmlInputElement = e.target_unchecked_into();
+                    on_change.emit(input.value());
+                })}
+            />
+        </label>
+    }
+}
+
 fn measurement_fields(
     initial_float: Option<f64>,
     initial_max: Option<i64>,
@@ -760,7 +788,7 @@ fn measurement_fields(
         <div class="scenario-state-def-fields">
             { optional_f64_input("Starting value", initial_float, on_float) }
             { optional_i64_input("Maximum (optional)", initial_max, on_max) }
-            { text_input("Unit (optional)", unit, on_unit) }
+            { unit_input(unit, on_unit) }
         </div>
     }
 }
@@ -818,14 +846,71 @@ fn text_value_fields(initial_value: &str, on_update: Callback<ScenarioStateField
     })
 }
 
+fn measurement_readonly_display(view: &ScenarioStateDefView) -> Html {
+    let value = view
+        .initial_float
+        .or_else(|| view.initial_num.map(|n| n as f64));
+    let Some(value) = value else {
+        return html! {
+            <div class="scenario-state-def-fields muted">{ "Starting value: —" }</div>
+        };
+    };
+    let unit = if view.unit.trim().is_empty() {
+        None
+    } else {
+        Some(view.unit.as_str())
+    };
+    let display = format_measurement_display(value, view.initial_max.map(|n| n as f64), unit);
+    html! {
+        <div class="scenario-state-def-fields muted">
+            <span>{ "Starting: " }{ display.primary }</span>
+            if let Some(alt) = display.secondary {
+                <span class="state-row-value-alt">{ " · " }{ alt }</span>
+            }
+        </div>
+    }
+}
+
 #[function_component(ScenarioStateDefEditor)]
 pub fn scenario_state_def_editor(props: &ScenarioStateDefEditorProps) -> Html {
     let view = &props.view;
+    let readonly = props.readonly;
     let on_update = props.on_update.clone();
     let on_kind = {
         let on_update = on_update.clone();
         Callback::from(move |kind: StateKind| on_update.emit(ScenarioStateFieldUpdate::Kind(kind)))
     };
+
+    if readonly {
+        return html! {
+            <div class="scenario-state-def scenario-state-def--readonly">
+                if !props.readonly_label.is_empty() {
+                    <div class="muted scenario-state-def-readonly-label">{ props.readonly_label }</div>
+                }
+                <div class="scenario-state-def-header">
+                    <span class="muted">{ "Key" }</span>
+                    <span>{ &view.key }</span>
+                    if let Some(kind) = view.kind {
+                        <span class="muted">{ state_kind_option_label(kind) }</span>
+                    }
+                </div>
+                if let Some(kind) = view.kind {
+                    if !view.description.is_empty() {
+                        <p class="muted">{ &view.description }</p>
+                    }
+                    if kind == StateKind::Measurement {
+                        { measurement_readonly_display(view) }
+                    } else if kind == StateKind::Sequence {
+                        <div class="muted">
+                            { format!("Items: {}", view.sequence_items.join(", ")) }
+                        </div>
+                    } else if !view.initial_value.is_empty() {
+                        <div class="muted">{ format!("Starting value: {}", view.initial_value) }</div>
+                    }
+                }
+            </div>
+        };
+    }
 
     html! {
         <div class="scenario-state-def">

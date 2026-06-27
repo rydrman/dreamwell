@@ -104,8 +104,12 @@ pub fn game_setup_wizard(props: &GameSetupWizardProps) -> Html {
             payload.setup_var_values = setup_values.clone();
             payload.cast_selections = cast_picks.clone();
             payload.invited_cast = invited_cast.clone();
-            payload.state_schema =
-                merge_game_state_schema(&scenario.state_schema, pc_state, &invited_cast);
+            payload.state_schema = merge_game_state_schema(
+                &scenario.state_schema,
+                pc_state,
+                &scenario.cast_uniform_state,
+                &invited_cast,
+            );
             on_create.emit(payload);
             on_close.emit(());
         })

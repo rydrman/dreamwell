@@ -31,7 +31,7 @@ macro_rules! state_kind_rules_text {
   - An ordered list with a cursor (turn order, quest steps, queue) → sequence
 - variable (DEFAULT): durable text attribute — location, mood, inventory, traits, relationships, quest stage, appearance, body descriptions. Use set/remove with value strings. When unsure, use variable.
 - condition: ephemeral status tags expected to clear soon (hidden, bleeding, inspired) — not durable mood, location, or inventory.
-- measurement: a float value, unbounded by default. Optional unit (cm, kg, stress). Use set_measurement_min/max only when bounds matter; clear_measurement wipes value, bounds, and unit.
+- measurement: a float value, unbounded by default. Optional unit label (cm, kg, stress, ft, in, lb — common imperial abbreviations are accepted). Values are decimal in that unit — height=182 unit=cm, height=71 unit=in, not feet+inches like 5.11 for 5′11″. Use set_measurement_min/max only when bounds matter; clear_measurement wipes value, bounds, and unit.
 - sequence: ordered string items with an active cursor. Use set_sequence (non-empty items), step_sequence to advance, clear_sequence to remove.
 - Keep the kind stable: if a key already shows in current state as (measurement)/(sequence)/(variable)/(condition), keep using that same kind.
 
@@ -41,7 +41,7 @@ BAD kind picks:
 
 GOOD:
 - variable: mood=excited, location=tavern, build=athletic, shirt_color=green
-- measurement: height=182 unit=cm; stress=2.5
+- measurement: height=182 unit=cm; stress=2.5; height=71 unit=in (five foot eleven in inches)
 - sequence: items=[pc, Maya, guard] for turn order"#
     };
 }

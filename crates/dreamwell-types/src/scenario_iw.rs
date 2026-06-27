@@ -110,27 +110,71 @@ pub struct GenerateCharacterStateResponse {
     pub initial_state: Vec<CharacterStateDef>,
 }
 
+/// Whether a tracked-var target denotes world scope.
+pub fn is_world_target(target: &str) -> bool {
+    let trimmed = target.trim();
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("world")
+}
+
+/// Promote a tracked var into per-character initial state (drops target).
+pub fn tracked_var_to_character_state(def: &TrackedVarDef) -> CharacterStateDef {
+    CharacterStateDef {
+        key: def.key.clone(),
+        kind: def.kind,
+        description: def.description.clone(),
+        initial_value: def.initial_value.clone(),
+        initial_num: def.initial_num,
+        initial_max: def.initial_max,
+        initial_float: def.initial_float,
+        unit: def.unit.clone(),
+        sequence_items: def.sequence_items.clone(),
+        sequence_loop: def.sequence_loop,
+        visibility: def.visibility.clone(),
+        update_hints: def.update_hints.clone(),
+    }
+}
+
+/// Split legacy combined `state_schema` into world-only defs and PC character state.
+pub fn split_legacy_state_schema(
+    schema: Vec<TrackedVarDef>,
+) -> (Vec<TrackedVarDef>, Vec<CharacterStateDef>) {
+    let mut world = Vec::new();
+    let mut pc = Vec::new();
+    for mut def in schema {
+        if is_world_target(&def.target) {
+            def.target = "world".to_string();
+            world.push(def);
+        } else if def.target.eq_ignore_ascii_case("pc") {
+            pc.push(tracked_var_to_character_state(&def));
+        }
+    }
+    (world, pc)
+}
+
 /// Merge world-level schema with per-character initial state for game creation.
 /// Every entry becomes a tracked var bound to a runtime target ("world", "pc", or
 /// an NPC name) — there is no separate scope axis.
 pub fn merge_game_state_schema(
-    base: &[TrackedVarDef],
+    world_state: &[TrackedVarDef],
     pc_state: &[CharacterStateDef],
+    cast_uniform: &[CharacterStateDef],
     invited_cast: &[ScenarioNpc],
 ) -> Vec<TrackedVarDef> {
-    let mut out: Vec<TrackedVarDef> = base
+    let mut out: Vec<TrackedVarDef> = world_state
         .iter()
         .cloned()
         .map(|mut def| {
-            def.target = normalize_target(&def.target);
+            def.target = "world".to_string();
             def
         })
         .collect();
-    for def in pc_state {
+    let merged_pc = merge_character_state(cast_uniform, pc_state);
+    for def in &merged_pc {
         out.push(def.to_tracked_var("pc"));
     }
     for npc in invited_cast {
-        for def in &npc.initial_state {
+        let merged = merge_character_state(cast_uniform, &npc.initial_state);
+        for def in &merged {
             out.push(def.to_tracked_var(npc.name.trim()));
         }
     }
@@ -462,11 +506,46 @@ mod tests {
             }],
             ..ScenarioNpc::default()
         }];
-        let merged = merge_game_state_schema(&base, &pc_state, &invited_cast);
-        assert_eq!(merged.len(), 3);
+        let cast_uniform = vec![CharacterStateDef {
+            key: "loyalty".into(),
+            kind: StateKind::Variable,
+            initial_value: "neutral".into(),
+            ..Default::default()
+        }];
+        let merged = merge_game_state_schema(&base, &pc_state, &cast_uniform, &invited_cast);
+        assert_eq!(merged.len(), 5);
         assert_eq!(merged[0].target, "world");
         assert_eq!(merged[1].target, "pc");
-        assert_eq!(merged[2].target, "Guard");
+        assert_eq!(merged[1].key, "loyalty");
+        assert_eq!(merged[2].target, "pc");
+        assert_eq!(merged[2].key, "resolve");
+        assert_eq!(merged[3].target, "Guard");
+        assert_eq!(merged[3].key, "loyalty");
+        assert_eq!(merged[4].target, "Guard");
+        assert_eq!(merged[4].key, "alertness");
+    }
+
+    #[test]
+    fn split_legacy_state_schema_moves_pc_targets() {
+        let schema = vec![
+            TrackedVarDef {
+                key: "weather".into(),
+                kind: StateKind::Variable,
+                target: "world".into(),
+                ..Default::default()
+            },
+            TrackedVarDef {
+                key: "resolve".into(),
+                kind: StateKind::Measurement,
+                target: "pc".into(),
+                initial_num: Some(3),
+                ..Default::default()
+            },
+        ];
+        let (world, pc) = split_legacy_state_schema(schema);
+        assert_eq!(world.len(), 1);
+        assert_eq!(pc.len(), 1);
+        assert_eq!(pc[0].key, "resolve");
     }
 
     #[test]

@@ -28,11 +28,12 @@ pub use scenario_export::{
     ScenarioExport, SCENARIO_EXPORT_FORMAT,
 };
 pub use scenario_iw::{
-    merge_character_state, merge_game_state_schema, normalize_target, CharacterStateDef,
-    ContentFlags, GameTurnSystemRoll, GenerateCharacterStateRequest,
-    GenerateCharacterStateResponse, GenerateCharacterStateTarget, PcOption, RulesBlock,
-    ScenarioNpc, ScenarioTrigger, SetupVarChoice, SourceMeta, SystemRollRequest, TrackedVarDef,
-    TraitDef, TriggerCondition, TriggerEffect, TurnPlan, WinCondition,
+    merge_character_state, merge_game_state_schema, normalize_target, split_legacy_state_schema,
+    tracked_var_to_character_state, CharacterStateDef, ContentFlags, GameTurnSystemRoll,
+    GenerateCharacterStateRequest, GenerateCharacterStateResponse, GenerateCharacterStateTarget,
+    PcOption, RulesBlock, ScenarioNpc, ScenarioTrigger, SetupVarChoice, SourceMeta,
+    SystemRollRequest, TrackedVarDef, TraitDef, TriggerCondition, TriggerEffect, TurnPlan,
+    WinCondition,
 };
 pub use state_payload::{clamp_measurement, SequencePayload, StepSequenceResult};
 
@@ -1047,6 +1048,9 @@ pub struct Scenario {
     pub pc_options: Vec<PcOption>,
     #[serde(default)]
     pub state_schema: Vec<TrackedVarDef>,
+    /// State copied onto every cast member at game start; per-NPC entries override by key.
+    #[serde(default)]
+    pub cast_uniform_state: Vec<CharacterStateDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub win_condition: Option<WinCondition>,
     #[serde(default)]
@@ -1099,6 +1103,8 @@ pub struct ScenarioCreate {
     pub pc_options: Vec<PcOption>,
     #[serde(default)]
     pub state_schema: Vec<TrackedVarDef>,
+    #[serde(default)]
+    pub cast_uniform_state: Vec<CharacterStateDef>,
     #[serde(default)]
     pub win_condition: Option<WinCondition>,
     #[serde(default)]
@@ -1158,6 +1164,7 @@ pub struct ScenarioUpdate {
     pub cast: Option<Vec<ScenarioNpc>>,
     pub pc_options: Option<Vec<PcOption>>,
     pub state_schema: Option<Vec<TrackedVarDef>>,
+    pub cast_uniform_state: Option<Vec<CharacterStateDef>>,
     pub win_condition: Option<Option<WinCondition>>,
     pub content_flags: Option<ContentFlags>,
     pub source_meta: Option<Option<SourceMeta>>,
