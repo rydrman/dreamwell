@@ -8,13 +8,13 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use dreamwell_types::{
     Game, GameActorUpdate, GameCreate, GameDetail, GameStateEntryUpdate, GameStreamPayload,
     GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse, RewindTurnRequest,
-    SubmitTurnRequest,
+    SubmitTurnRequest, TurnEditField, UpdateTurnRequest,
 };
 
 use crate::character_import::parse_character_import;
@@ -37,6 +37,7 @@ pub fn router() -> Router<AppState> {
         .route("/:id/permanent", delete(permanently_delete_game))
         .route("/:id/stream", get(stream_game))
         .route("/:id/turns", post(submit_turn))
+        .route("/:id/turns/:turn_id", patch(update_turn))
         .route("/:id/turns/:turn_id/continue", post(continue_turn))
         .route("/:id/turns/:turn_id/regenerate", post(regenerate_turn))
         .route("/:id/turns/:turn_id/rewind", post(rewind_turn))
@@ -185,6 +186,44 @@ async fn submit_turn(
     )?;
     let (_turn, job) = db::prepare_submit_turn(&state.pool, id, &payload).await?;
     enqueue_game_generation(&state.queue, job).await?;
+    Ok(Json(db::get_game_detail(&state.pool, id).await?))
+}
+
+async fn update_turn(
+    State(state): State<AppState>,
+    Path((id, turn_id)): Path<(i64, i64)>,
+    Json(payload): Json<UpdateTurnRequest>,
+) -> AppResult<Json<GameDetail>> {
+    let turn = db::get_turn(&state.pool, id, turn_id).await?;
+    if payload.content.trim().is_empty() {
+        return Err(AppError::bad_request("Content cannot be empty"));
+    }
+    for job in db::list_active_jobs_for_game(&state.pool, id).await? {
+        if job.turn_id == Some(turn_id) {
+            return Err(AppError::bad_request(
+                "Cannot edit turn while generation is in progress",
+            ));
+        }
+    }
+    if matches!(payload.field, TurnEditField::Prose)
+        && !turn.is_opening
+        && turn.phase != "done"
+        && turn.phase != "failed"
+    {
+        return Err(AppError::bad_request(
+            "Cannot edit response while turn is still generating",
+        ));
+    }
+    if matches!(payload.field, TurnEditField::PlayerAction) && turn.is_opening {
+        return Err(AppError::bad_request(
+            "Cannot edit opening turn player action",
+        ));
+    }
+    db::update_turn_field(&state.pool, turn_id, payload.field, payload.content.trim()).await?;
+    if matches!(payload.field, TurnEditField::Prose) {
+        db::clear_turn_thoughts(&state.pool, turn_id).await?;
+    }
+    db::touch_game(&state.pool, id).await?;
     Ok(Json(db::get_game_detail(&state.pool, id).await?))
 }
 

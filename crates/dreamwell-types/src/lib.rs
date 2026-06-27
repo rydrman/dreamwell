@@ -1486,6 +1486,19 @@ pub struct RewindTurnRequest {
     pub include_turn: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnEditField {
+    Prose,
+    PlayerAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateTurnRequest {
+    pub field: TurnEditField,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameStreamPayload {
     pub detail: GameDetail,

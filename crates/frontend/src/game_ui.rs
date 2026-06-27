@@ -114,6 +114,9 @@ pub fn game_shell(props: &GameShellProps) -> Html {
     let submitting = use_state(|| false);
     let expanded_phases = use_state(HashSet::<(i64, String)>::new);
     let turn_feed_ref = use_node_ref();
+    let editing = use_state(|| None::<(i64, TurnEditField)>);
+    let edit_text = use_state(String::new);
+    let edit_acting = use_state(|| false);
 
     {
         let detail = detail.clone();
@@ -371,6 +374,48 @@ pub fn game_shell(props: &GameShellProps) -> Html {
         })
     };
 
+    let cancel_edit = {
+        let editing = editing.clone();
+        Callback::from(move |_| editing.set(None))
+    };
+
+    let save_edit = {
+        let editing = editing.clone();
+        let edit_text = edit_text.clone();
+        let edit_acting = edit_acting.clone();
+        let detail = detail.clone();
+        Callback::from(move |_| {
+            let Some((turn_id, field)) = *editing else {
+                return;
+            };
+            let Some(game_id) = game_id else {
+                return;
+            };
+            let content = (*edit_text).trim().to_string();
+            if content.is_empty() || *edit_acting {
+                return;
+            }
+            edit_acting.set(true);
+            let editing = editing.clone();
+            let edit_acting = edit_acting.clone();
+            let detail = detail.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::update_turn(game_id, turn_id, field, &content).await {
+                    Ok(d) => {
+                        editing.set(None);
+                        detail.set(Some(d));
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&format!("Could not save: {err}"));
+                        }
+                    }
+                }
+                edit_acting.set(false);
+            });
+        })
+    };
+
     let toggle_phase = {
         let expanded_phases = expanded_phases.clone();
         Callback::from(move |(turn_id, phase): (i64, String)| {
@@ -512,6 +557,16 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let assistant_rewind_count = turns_after;
                                 let user_rewind_count = turns_after + 1;
                                 let turn_generating = is_last && active_job.is_some();
+                                let can_edit_prose = !turn_generating
+                                    && (is_opening
+                                        || turn.phase == "done"
+                                        || turn.phase == "failed");
+                                let can_edit_player_action = !turn_generating
+                                    && !is_opening
+                                    && !turn.player_action.trim().is_empty();
+                                let editing_prose = *editing == Some((turn_id, TurnEditField::Prose));
+                                let editing_player_action = *editing
+                                    == Some((turn_id, TurnEditField::PlayerAction));
                                 let show_thought_block = show_thoughts
                                     && (!turn.thought_content.is_empty()
                                         || (turn.thought_in_progress && turn_generating));
@@ -521,7 +576,10 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                     || show_fork
                                     || show_align_prose
                                     || show_recheck_state
-                                    || show_assistant_rewind);
+                                    || show_assistant_rewind
+                                    || can_edit_prose);
+                                let show_user_menu = show_user_rewind || can_edit_player_action;
+                                let show_opening_menu = show_assistant_rewind || can_edit_prose;
                                 let display_prose = if turn.prose.is_empty() {
                                     String::new()
                                 } else if is_opening {
@@ -562,28 +620,66 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                             && (!turn.player_action.trim().is_empty()
                                                 || !turn.guidance_notes.trim().is_empty())
                                         {
-                                            <div class="message user">
-                                                if show_user_rewind {
+                                            <div class={classes!("message", "user", editing_player_action.then_some("message--editing"))}>
+                                                if show_user_menu {
                                                     <div class="message-header">
                                                         <div class="message-meta muted">{"You"}</div>
-                                                        <MessageOptionsMenu align_end={true} title="Turn options">
-                                                            <button
-                                                                type="button"
-                                                                class="message-menu-item message-menu-item--rewind"
-                                                                onclick={on_rewind.reform(move |_| (turn_id, true, user_rewind_count))}
-                                                            >
-                                                                { if user_rewind_count == 1 {
-                                                                    "Rewind here (delete this turn)".to_string()
-                                                                } else {
-                                                                    format!(
-                                                                        "Rewind here (delete {user_rewind_count} turns)",
-                                                                    )
-                                                                } }
-                                                            </button>
+                                                        <MessageOptionsMenu align_end={true} title="Turn options" disabled={*edit_acting}>
+                                                            if can_edit_player_action {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={{
+                                                                        let editing = editing.clone();
+                                                                        let edit_text = edit_text.clone();
+                                                                        let player_action = turn.player_action.clone();
+                                                                        Callback::from(move |_| {
+                                                                            edit_text.set(player_action.clone());
+                                                                            editing.set(Some((turn_id, TurnEditField::PlayerAction)));
+                                                                        })
+                                                                    }}
+                                                                >
+                                                                    {"Edit"}
+                                                                </button>
+                                                            }
+                                                            if show_user_rewind {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item message-menu-item--rewind"
+                                                                    onclick={on_rewind.reform(move |_| (turn_id, true, user_rewind_count))}
+                                                                >
+                                                                    { if user_rewind_count == 1 {
+                                                                        "Rewind here (delete this turn)".to_string()
+                                                                    } else {
+                                                                        format!(
+                                                                            "Rewind here (delete {user_rewind_count} turns)",
+                                                                        )
+                                                                    } }
+                                                                </button>
+                                                            }
                                                         </MessageOptionsMenu>
                                                     </div>
                                                 }
-                                                if !turn.player_action.trim().is_empty() {
+                                                if editing_player_action {
+                                                    <textarea
+                                                        class="message-edit-input"
+                                                        value={(*edit_text).clone()}
+                                                        oninput={Callback::from({
+                                                            let edit_text = edit_text.clone();
+                                                            move |e: InputEvent| {
+                                                                let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                                                edit_text.set(input.value());
+                                                            }
+                                                        })}
+                                                        disabled={*edit_acting}
+                                                    />
+                                                    <div class="message-edit-actions">
+                                                        <button type="button" class="btn" onclick={save_edit.clone()} disabled={*edit_acting || edit_text.trim().is_empty()}>
+                                                            { if *edit_acting { "Saving…" } else { "Save" } }
+                                                        </button>
+                                                        <button type="button" class="btn secondary" onclick={cancel_edit.clone()} disabled={*edit_acting}>{"Cancel"}</button>
+                                                    </div>
+                                                } else if !turn.player_action.trim().is_empty() {
                                                     <div class="game-prose markdown-body">
                                                         { render_message_content(&turn.player_action) }
                                                     </div>
@@ -598,14 +694,31 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 }
                                             </div>
                                         }
-                                        <div class="message assistant">
+                                        <div class={classes!("message", "assistant", (editing_prose).then_some("message--editing"))}>
                                             if !is_opening {
                                                 <div class="message-header">
                                                     <div class="message-meta muted">
                                                         { format!("Phase: {}", phase_label(&turn.phase)) }
                                                     </div>
                                                     if can_menu {
-                                                        <MessageOptionsMenu title="Turn options">
+                                                        <MessageOptionsMenu title="Turn options" disabled={*edit_acting}>
+                                                            if can_edit_prose {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={{
+                                                                        let editing = editing.clone();
+                                                                        let edit_text = edit_text.clone();
+                                                                        let prose = turn.prose.clone();
+                                                                        Callback::from(move |_| {
+                                                                            edit_text.set(prose.clone());
+                                                                            editing.set(Some((turn_id, TurnEditField::Prose)));
+                                                                        })
+                                                                    }}
+                                                                >
+                                                                    {"Edit"}
+                                                                </button>
+                                                            }
                                                             if show_continue {
                                                                 <button
                                                                     type="button"
@@ -679,20 +792,39 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                         </MessageOptionsMenu>
                                                     }
                                                 </div>
-                                            } else if show_assistant_rewind {
+                                            } else if show_opening_menu {
                                                 <div class="message-header">
                                                     <div class="message-meta muted">{"Opening"}</div>
-                                                    <MessageOptionsMenu title="Turn options">
-                                                        <button
-                                                            type="button"
-                                                            class="message-menu-item message-menu-item--rewind"
-                                                            onclick={on_rewind.reform(move |_| (turn_id, false, assistant_rewind_count))}
-                                                        >
-                                                            { format!(
-                                                                "Rewind here (delete {assistant_rewind_count} turn{})",
-                                                                if assistant_rewind_count == 1 { "" } else { "s" },
-                                                            ) }
-                                                        </button>
+                                                    <MessageOptionsMenu title="Turn options" disabled={*edit_acting}>
+                                                        if can_edit_prose {
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item"
+                                                                onclick={{
+                                                                    let editing = editing.clone();
+                                                                    let edit_text = edit_text.clone();
+                                                                    let prose = turn.prose.clone();
+                                                                    Callback::from(move |_| {
+                                                                        edit_text.set(prose.clone());
+                                                                        editing.set(Some((turn_id, TurnEditField::Prose)));
+                                                                    })
+                                                                }}
+                                                            >
+                                                                {"Edit"}
+                                                            </button>
+                                                        }
+                                                        if show_assistant_rewind {
+                                                            <button
+                                                                type="button"
+                                                                class="message-menu-item message-menu-item--rewind"
+                                                                onclick={on_rewind.reform(move |_| (turn_id, false, assistant_rewind_count))}
+                                                            >
+                                                                { format!(
+                                                                    "Rewind here (delete {assistant_rewind_count} turn{})",
+                                                                    if assistant_rewind_count == 1 { "" } else { "s" },
+                                                                ) }
+                                                            </button>
+                                                        }
                                                     </MessageOptionsMenu>
                                                 </div>
                                             }
@@ -834,7 +966,26 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 />
                                             }
 
-                                            if !display_prose.is_empty() || turn.phase == "prose" {
+                                            if editing_prose {
+                                                <textarea
+                                                    class="message-edit-input"
+                                                    value={(*edit_text).clone()}
+                                                    oninput={Callback::from({
+                                                        let edit_text = edit_text.clone();
+                                                        move |e: InputEvent| {
+                                                            let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                                            edit_text.set(input.value());
+                                                        }
+                                                    })}
+                                                    disabled={*edit_acting}
+                                                />
+                                                <div class="message-edit-actions">
+                                                    <button type="button" class="btn" onclick={save_edit.clone()} disabled={*edit_acting || edit_text.trim().is_empty()}>
+                                                        { if *edit_acting { "Saving…" } else { "Save" } }
+                                                    </button>
+                                                    <button type="button" class="btn secondary" onclick={cancel_edit.clone()} disabled={*edit_acting}>{"Cancel"}</button>
+                                                </div>
+                                            } else if !display_prose.is_empty() || turn.phase == "prose" {
                                                 <div class="game-prose markdown-body">
                                                     if display_prose.is_empty()
                                                         && show_thought_block
