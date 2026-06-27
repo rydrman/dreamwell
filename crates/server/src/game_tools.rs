@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{execute_board_move, execute_card_draw, execute_dice_roll};
+use crate::game_prompts::ASK_PC_DECISION_RULES;
 use crate::game_resolution::parse_dice_expr;
 use crate::inference::ToolCall;
 
@@ -255,13 +256,15 @@ pub fn is_outcome_tool(name: &str) -> bool {
 fn ask_pc_decision_spec() -> Value {
     tool_spec(
         "ask_pc_decision",
-        "Pause and ask the player a concrete decision question when a card or the scene requires a choice the player has not made. Ends the turn immediately — do not narrate the PC's choice or continue past the question.",
+        &format!(
+            "Pause and ask the player a direct second-person question when the PC must choose something not specified in the player action or GM guidance. Ends the turn immediately — do not narrate the PC's choice or continue past the question. Never ask the player to decide for an NPC.\n\n{ASK_PC_DECISION_RULES}"
+        ),
         serde_json::json!({
             "type": "object",
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "Direct second-person question for the player (e.g. 'Who do you target?')"
+                    "description": "Direct second-person question about the PC only (e.g. 'Who do you target?'). Never ask what an NPC should do."
                 }
             },
             "required": ["question"]
@@ -649,6 +652,18 @@ mod tests {
             name: name.into(),
             arguments: args.to_string(),
         }
+    }
+
+    #[test]
+    fn ask_pc_decision_spec_forbids_npc_questions() {
+        let spec = ask_pc_decision_spec();
+        let description = spec["function"]["description"].as_str().unwrap();
+        assert!(description.contains("Never ask the player to decide for an NPC"));
+        assert!(description.contains("What should Sarah do next?"));
+        let question_desc = spec["function"]["parameters"]["properties"]["question"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(question_desc.contains("Never ask what an NPC should do"));
     }
 
     #[test]
