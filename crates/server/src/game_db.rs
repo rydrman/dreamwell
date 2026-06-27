@@ -7,7 +7,7 @@ use dreamwell_types::{
     Game, GameActor, GameActorUpdate, GameCreate, GameDetail, GameElementsConfig, GameScene,
     GameStateEntry, GameStateEntryUpdate, GameTurn, GameTurnCheck, GameTurnSystemRoll, GameUpdate,
     Job, JobType, MacroContext, MechanicalResult, ResolutionSystem, RulesBlock, ScenarioTrigger,
-    StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnObservability,
+    StateKind, SubmitTurnRequest, TrackedVarDef, TraitDef, TurnEditField, TurnObservability,
 };
 use sqlx::SqlitePool;
 
@@ -1374,9 +1374,23 @@ pub async fn update_turn_phase(pool: &SqlitePool, turn_id: i64, phase: &str) -> 
 }
 
 pub async fn update_turn_prose(pool: &SqlitePool, turn_id: i64, prose: &str) -> AppResult<()> {
+    update_turn_field(pool, turn_id, TurnEditField::Prose, prose).await
+}
+
+pub async fn update_turn_field(
+    pool: &SqlitePool,
+    turn_id: i64,
+    field: TurnEditField,
+    content: &str,
+) -> AppResult<()> {
+    let column = match field {
+        TurnEditField::Prose => "prose",
+        TurnEditField::PlayerAction => "player_action",
+    };
     let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE game_turns SET prose=?1, updated_at=?2 WHERE id=?3")
-        .bind(prose)
+    let sql = format!("UPDATE game_turns SET {column}=?1, updated_at=?2 WHERE id=?3");
+    sqlx::query(&sql)
+        .bind(content)
         .bind(&now)
         .bind(turn_id)
         .execute(pool)
@@ -2106,5 +2120,34 @@ mod tests {
 
         let turn = get_turn(&pool, game_id, turn_id).await.expect("turn");
         assert_eq!(turn.phase, "pending");
+    }
+
+    #[tokio::test]
+    async fn update_turn_field_updates_prose_and_player_action() {
+        let pool = test_pool().await;
+        let detail = create_game(&pool, GameCreate::default())
+            .await
+            .expect("create");
+        let game_id = detail.game.id;
+        let now = chrono::Utc::now().to_rfc3339();
+        let turn_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, prose, thought_content, is_opening, created_at, updated_at) VALUES (?1,1,'look around','','done','Old prose.','hidden thoughts',0,?2,?2) RETURNING id",
+        )
+        .bind(game_id)
+        .bind(&now)
+        .fetch_one(&pool)
+        .await
+        .expect("turn");
+
+        update_turn_field(&pool, turn_id, TurnEditField::Prose, "New prose.")
+            .await
+            .expect("prose");
+        update_turn_field(&pool, turn_id, TurnEditField::PlayerAction, "peek inside")
+            .await
+            .expect("action");
+
+        let turn = get_turn(&pool, game_id, turn_id).await.expect("turn");
+        assert_eq!(turn.prose, "New prose.");
+        assert_eq!(turn.player_action, "peek inside");
     }
 }

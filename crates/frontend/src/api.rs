@@ -956,6 +956,20 @@ pub async fn submit_turn(game_id: i64, payload: &SubmitTurnRequest) -> Result<Ga
     json_body("POST", &format!("/api/games/{game_id}/turns"), payload).await
 }
 
+pub async fn update_turn(
+    game_id: i64,
+    turn_id: i64,
+    field: TurnEditField,
+    content: &str,
+) -> Result<GameDetail, String> {
+    json_body(
+        "PATCH",
+        &format!("/api/games/{game_id}/turns/{turn_id}"),
+        &serde_json::json!({ "field": field, "content": content }),
+    )
+    .await
+}
+
 pub async fn continue_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, String> {
     json_body(
         "POST",
