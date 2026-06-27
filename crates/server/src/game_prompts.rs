@@ -156,8 +156,9 @@ BAD — do not do this:
   After resolving the move, a stranger bursts in and a whole new scene unfolds. (invents an extra beat beyond the player's action)
 
 PC agency:
-- When a card or scene requires a choice the player has not made, call ask_pc_decision with a concrete question BEFORE resolving the effect.
+- When a card or scene requires a PC choice the player has not made, call ask_pc_decision with a direct second-person question BEFORE resolving the effect.
 - Do not pick targets, options, or strategic decisions for the PC.
+- Never ask the player to decide for an NPC — narrate NPC actions yourself.
 
 Tracked state (use the dedicated state tools — one attribute per call):
 - Pick the tool by the value's shape: text or a label → set_variable (or set_condition if it clears soon); a number with a max → set_measurement/set_sequence.
@@ -186,7 +187,7 @@ Hard rules:
 - A card's fixed effect (e.g. "move forward 2 spaces") is NOT a new die roll — apply it as state, do not board_move again for it. Only call board_move / roll_dice when the rules actually call for a die.
 - draw_card needs an explicit deck_id chosen per the scenario rules.
 - Resolve only the mechanics for THIS player action (and any pending effect listed above), then STOP. Do not start a new beat, extra move, or extra draw the player did not take.
-- If the player must make a choice before a mechanic can resolve, call ask_pc_decision with a concrete question and stop.
+- If the PC must make a choice before a mechanic can resolve, call ask_pc_decision with a direct second-person question and stop. Never ask what an NPC should do.
 - When every required mechanic is resolved (or none is needed at all), reply with exactly the word DONE and call no tool.
 
 Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
@@ -238,6 +239,23 @@ Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
 - Do NOT use parentheses like set_variable(key="mood") — those are not parsed.
 - Quote string values that contain spaces or commas: call:set_variable{target:world,key:location,value:"space 36, near finish"}"#;
 
+/// Shared rules for when to pause and ask the human player — PC choices only.
+pub(crate) const ASK_PC_DECISION_RULES: &str = r#"ask_pc_decision (PC choices ONLY):
+- Use ONLY when the player character (PC) must choose something they have not specified in the player action or GM guidance.
+- Ask a direct second-person question about what YOU do, want, say, or target.
+- NEVER ask the player to decide for an NPC — decide NPC actions, reactions, and dialogue yourself per scenario rules.
+- Never ask meta scene-direction questions when the PC has no specific fork to make.
+
+GOOD questions (PC agency):
+- "Who do you target with the spell?"
+- "Do you accept her offer or walk away?"
+- "Which door do you open first?"
+
+BAD questions (NPC agency or meta — do NOT use ask_pc_decision):
+- "What should Sarah do next?" → narrate Sarah's action yourself
+- "How does Brennan react?" → decide Brennan's reaction in prose
+- "What happens next in the scene?" → advance one beat; only ask if the PC faces a specific fork"#;
+
 const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
 - The player action is the PC's intent when present. GM guidance is mandatory direction from the human running the game — not optional flavor.
 - When the player action is empty but GM guidance is present, the guidance IS the turn direction; honor it fully in checks and prose.
@@ -245,10 +263,10 @@ const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase)
 - Do not invent new choices, targets, preferences, dialogue, or strategic decisions for the PC beyond what the player action or GM guidance authorizes.
 - When the PC must make a choice the player did not specify, stop at revealing what needs deciding — do not pick for them.
 - Partial or vague player actions authorize only what they explicitly request; do not extrapolate unstated follow-on choices for the PC.
-- NPC decisions are fair game: decide freely for NPCs per scenario rules."#;
+- NPC decisions are fair game: decide freely for NPCs per scenario rules; never delegate NPC choices to the player via ask_pc_decision."#;
 
 fn game_system_prompt(base: &str) -> String {
-    format!("{base}\n\n{PC_AGENCY_RULES}")
+    format!("{base}\n\n{PC_AGENCY_RULES}\n\n{ASK_PC_DECISION_RULES}")
 }
 
 const SCENE_SUMMARIZE_SYSTEM: &str = r#"Compress game turn prose into a dense fact summary for downstream context.
@@ -610,7 +628,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  Call one mechanic tool at a time and wait for its real result before the next. \
                  A card's fixed move/effect is applied as state by the narrator — do not board_move or roll_dice for it. \
                  When all required mechanics are resolved (or none are needed), reply with exactly DONE and call no tool. \
-                 Use ask_pc_decision if the player must choose before a mechanic can resolve.",
+                 Use ask_pc_decision only when the PC must choose before a mechanic can resolve — never for NPC decisions.",
             );
             if guidance_present {
                 instruction.push_str(
@@ -625,7 +643,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  Begin with the narrative prose — write the full narration FIRST (at least a paragraph); do not start with a tool call or end the turn without prose. \
                  Embed each ⟦mech:N⟧ marker from the canonical list at the point in the story where that outcome belongs; do not restate die faces, card names, or landing spaces in prose — the marker block shows them. \
                  Advance one beat — resolve the player's action and the resolved mechanics — then stop; do not invent extra beats. \
-                 AFTER the prose, call the tracked-state tools for durable changes the narration establishes, and stop with ask_pc_decision only when the PC owes a choice.",
+                 AFTER the prose, call the tracked-state tools for durable changes the narration establishes, and stop with ask_pc_decision only when the PC owes a choice (never for NPC decisions).",
             );
             if guidance_present {
                 instruction.push_str(
@@ -643,7 +661,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
                  For each mechanic: lead-up prose that stops before any outcome → one tool call → outcome prose using the number/text the tool returned. \
                  Never state a die face, space count, or card name before its tool runs, and never let your prose contradict the tool's result; never batch multiple mechanics; \
-                 call tools inline for mechanics and tracked state; stop with ask_pc_decision when the PC owes a choice.",
+                 call tools inline for mechanics and tracked state; stop with ask_pc_decision only when the PC owes a choice (never for NPC decisions).",
             );
             if guidance_present {
                 instruction.push_str(
@@ -2054,6 +2072,8 @@ mod tests {
         let settings = test_settings();
         for messages in [
             build_declare_checks_messages(&game, &detail, &turn, "", &settings),
+            build_mechanics_agent_messages(&game, &detail, &turn, &[], "", &settings),
+            build_prose_narration_messages(&game, &detail, &turn, &[], &[], "", &settings),
             build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings),
         ] {
             let system = messages[0]["content"].as_str().unwrap();
@@ -2062,6 +2082,14 @@ mod tests {
                 "expected PC agency rules in system prompt"
             );
             assert!(system.contains("Do not invent new choices"));
+            assert!(
+                system.contains("What should Sarah do next?"),
+                "expected ask_pc_decision bad example in system prompt"
+            );
+            assert!(
+                system.contains("NEVER ask the player to decide for an NPC"),
+                "expected NPC delegation ban in system prompt"
+            );
         }
     }
 
