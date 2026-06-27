@@ -1,6 +1,6 @@
 use dreamwell_types::{
-    AppliedStateChange, ChatActor, ChatStateEntry, GameActor, GameStateEntry, StateKind, StateOp,
-    StoryActor, StoryStateEntry,
+    AppliedStateChange, ChatActor, ChatStateEntry, GameActor, GameStateEntry, SequencePayload,
+    StateKind, StateOp, StoryActor, StoryStateEntry,
 };
 use web_sys::MouseEvent;
 use yew::prelude::*;
@@ -59,10 +59,10 @@ pub struct StateChangesListProps {
 
 fn kind_label(kind: StateKind) -> &'static str {
     match kind {
-        StateKind::Resource => "resource",
+        StateKind::Measurement => "measurement",
         StateKind::Condition => "condition",
-        StateKind::Fact => "fact",
-        StateKind::Clock => "clock",
+        StateKind::Variable => "variable",
+        StateKind::Sequence => "sequence",
     }
 }
 
@@ -71,6 +71,9 @@ fn op_label(op: StateOp) -> &'static str {
         StateOp::Set => "set",
         StateOp::Add => "add",
         StateOp::Remove => "remove",
+        StateOp::SetMin => "set min",
+        StateOp::SetMax => "set max",
+        StateOp::Step => "step",
     }
 }
 
@@ -79,27 +82,46 @@ fn op_chip_class(op: StateOp) -> &'static str {
         StateOp::Set => "state-chip--op-set",
         StateOp::Add => "state-chip--op-add",
         StateOp::Remove => "state-chip--op-remove",
+        StateOp::SetMin | StateOp::SetMax | StateOp::Step => "state-chip--op-set",
     }
 }
 
 fn format_state_change_value(sc: &AppliedStateChange) -> String {
     match sc.kind {
-        StateKind::Resource | StateKind::Clock => {
-            let next = sc
-                .value
-                .as_deref()
-                .and_then(|v| v.parse::<i64>().ok())
-                .or(match sc.op {
-                    StateOp::Remove => Some(0),
-                    _ => None,
-                });
-            if let (Some(prev), Some(next)) = (sc.prev_num, next) {
-                return format!("{prev} → {next}");
+        StateKind::Measurement => {
+            if let Some(prev) = sc.prev_num {
+                let next = sc
+                    .value
+                    .as_deref()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .or(sc.delta.map(|d| d as f64));
+                if let Some(next) = next {
+                    return format!("{prev} → {next}");
+                }
             }
-            next.map(|n| n.to_string())
-                .unwrap_or_else(|| sc.value.clone().unwrap_or_default())
+            sc.value
+                .clone()
+                .or_else(|| sc.delta.map(|d| d.to_string()))
+                .unwrap_or_default()
         }
-        StateKind::Condition | StateKind::Fact => {
+        StateKind::Sequence => {
+            if sc.op == StateOp::Step {
+                sc.delta
+                    .map(|d| {
+                        if d == 1 {
+                            "forward".to_string()
+                        } else if d == -1 {
+                            "back".to_string()
+                        } else {
+                            format!("{d:+}")
+                        }
+                    })
+                    .unwrap_or_else(|| "step".to_string())
+            } else {
+                sc.value.clone().unwrap_or_default()
+            }
+        }
+        StateKind::Condition | StateKind::Variable => {
             if sc.op == StateOp::Remove {
                 sc.prev_value.clone().unwrap_or_default()
             } else if let Some(prev) = sc.prev_value.as_ref().filter(|p| !p.is_empty()) {
@@ -210,8 +232,9 @@ pub struct StateEntryRow {
     pub kind: StateKind,
     pub key: String,
     pub value: String,
-    pub num_value: Option<i64>,
-    pub max_value: Option<i64>,
+    pub float_value: Option<f64>,
+    pub float_max: Option<f64>,
+    pub unit: Option<String>,
 }
 
 impl From<&ChatStateEntry> for StateEntryRow {
@@ -222,8 +245,9 @@ impl From<&ChatStateEntry> for StateEntryRow {
             kind: entry.kind,
             key: entry.key.clone(),
             value: entry.value.clone(),
-            num_value: entry.num_value,
-            max_value: entry.max_value,
+            float_value: entry.float_value,
+            float_max: entry.float_max,
+            unit: entry.unit.clone(),
         }
     }
 }
@@ -236,8 +260,9 @@ impl From<&StoryStateEntry> for StateEntryRow {
             kind: entry.kind,
             key: entry.key.clone(),
             value: entry.value.clone(),
-            num_value: entry.num_value,
-            max_value: entry.max_value,
+            float_value: entry.float_value,
+            float_max: entry.float_max,
+            unit: entry.unit.clone(),
         }
     }
 }
@@ -250,18 +275,19 @@ impl From<&GameStateEntry> for StateEntryRow {
             kind: entry.kind,
             key: entry.key.clone(),
             value: entry.value.clone(),
-            num_value: entry.num_value,
-            max_value: entry.max_value,
+            float_value: entry.float_value,
+            float_max: entry.float_max,
+            unit: entry.unit.clone(),
         }
     }
 }
 
 fn state_kind_order(kind: StateKind) -> u8 {
     match kind {
-        StateKind::Resource => 0,
+        StateKind::Measurement => 0,
         StateKind::Condition => 1,
-        StateKind::Fact => 2,
-        StateKind::Clock => 3,
+        StateKind::Variable => 2,
+        StateKind::Sequence => 3,
     }
 }
 
@@ -301,21 +327,44 @@ fn scope_heading(actor_id: Option<i64>, actors: &[StateScopeActor]) -> String {
 }
 
 fn format_entry_value(entry: &StateEntryRow) -> (String, bool, Option<f64>) {
-    if matches!(entry.kind, StateKind::Resource | StateKind::Clock) {
-        if entry.num_value.is_none() && entry.max_value.is_none() {
-            return ("(not set)".to_string(), true, None);
+    match entry.kind {
+        StateKind::Measurement => {
+            if entry.float_value.is_none() && entry.float_max.is_none() {
+                return ("(not set)".to_string(), true, None);
+            }
+            let current = entry.float_value.unwrap_or(0.0);
+            let unit = entry
+                .unit
+                .as_deref()
+                .filter(|u| !u.is_empty())
+                .map(|u| format!(" {u}"))
+                .unwrap_or_default();
+            if let Some(max) = entry.float_max {
+                let pct = ((current / max) * 100.0).clamp(0.0, 100.0);
+                return (format!("{current}/{max}{unit}"), false, Some(pct));
+            }
+            (format!("{current}{unit}"), false, None)
         }
-        let current = entry.num_value.unwrap_or(0);
-        let default_max = if entry.kind == StateKind::Clock { 4 } else { 5 };
-        let max = entry.max_value.unwrap_or(default_max).max(1);
-        let pct = ((current as f64 / max as f64) * 100.0).clamp(0.0, 100.0);
-        return (format!("{current}/{max}"), false, Some(pct));
-    }
-
-    if entry.value.trim().is_empty() {
-        ("(empty)".to_string(), true, None)
-    } else {
-        (entry.value.clone(), false, None)
+        StateKind::Sequence => {
+            if let Some(seq) = SequencePayload::decode(&entry.value) {
+                let active = seq.active_item().unwrap_or("?");
+                let items = seq.items.join(", ");
+                let loop_tag = if seq.r#loop { " (loop)" } else { "" };
+                return (format!("{active} [{items}]{loop_tag}"), false, None);
+            }
+            if entry.value.trim().is_empty() {
+                ("(not set)".to_string(), true, None)
+            } else {
+                (entry.value.clone(), false, None)
+            }
+        }
+        _ => {
+            if entry.value.trim().is_empty() {
+                ("(empty)".to_string(), true, None)
+            } else {
+                (entry.value.clone(), false, None)
+            }
+        }
     }
 }
 

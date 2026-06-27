@@ -124,7 +124,7 @@ Inline mechanics (use tools, never invent outcomes):
 Tool call syntax (embed calls in prose — use this exact format):
 - call:tool_name{key:value,key2:value2}
 - Do NOT use function-call parentheses like draw_card(deck_id="events") — those are not parsed.
-- Quote string values that contain spaces or commas: call:set_fact{target:world,key:location,value:"space 36, near finish"}
+- Quote string values that contain spaces or commas: call:set_variable{target:world,key:location,value:"space 36, near finish"}
 
 Example rhythm (follow this interleaved pattern):
 GOOD — lead-up prose that stops before the outcome, then one tool, then outcome prose from the tool's actual result, repeat:
@@ -139,9 +139,9 @@ GOOD — lead-up prose that stops before the outcome, then one tool, then outcom
   You scoop up the board's move die and toss it across the board.   (lead-up stops before naming how far you go — board_move rolls and moves)
   call:board_move{actor:pc}
   It carries you four spaces up to the gap near the finish line.   (outcome prose uses board_move's returned roll and position)
-  call:set_fact{target:world,key:location,value:"space 36, near finish"}
-  call:set_fact{target:pc,key:mood,value:excited}
-  call:adjust_resource{target:Sophie,key:arousal,delta:2}
+  call:set_variable{target:world,key:location,value:"space 36, near finish"}
+  call:set_variable{target:pc,key:mood,value:excited}
+  call:set_measurement{target:Sophie,key:arousal,delta:2}
   Your pulse kicks up as the crowd cheers from the sidelines.
 
 BAD — do not do this:
@@ -150,9 +150,9 @@ BAD — do not do this:
   call:roll_dice{dice_expr:1d6,label:move}call:board_move{actor:pc} (roll_dice + board_move for the same step double-rolls — board_move rolls the move die itself)
   The die tumbles to a four. call:roll_dice{dice_expr:1d6,label:nerve test} (number stated in prose BEFORE the tool runs — and the tool may return a different number)
   It settles on a four; call:roll_dice returns 6 (prose number must MATCH the tool result, never contradict it)
-  adjust_resource(target="Sophie", key="arousal", delta=2) (parentheses syntax — not parsed)
-  call:adjust_resource{target:pc,key:mood,delta:1} (mood/location/traits are facts — use set_fact)
-  You're excited and standing near the finish line now. (location and mood only in prose — no set_fact call)
+  set_measurement(target="Sophie", key="arousal", delta=2) (parentheses syntax — not parsed)
+  call:set_measurement{target:pc,key:mood,delta:1} (mood/location/traits are facts — use set_variable)
+  You're excited and standing near the finish line now. (location and mood only in prose — no set_variable call)
   After resolving the move, a stranger bursts in and a whole new scene unfolds. (invents an extra beat beyond the player's action)
 
 PC agency:
@@ -160,15 +160,15 @@ PC agency:
 - Do not pick targets, options, or strategic decisions for the PC.
 
 Tracked state (use the dedicated state tools — one attribute per call):
-- Pick the tool by the value's shape: text or a label → set_fact (or set_condition if it clears soon); a number with a max → adjust_resource/set_clock.
-- DEFAULT to set_fact for durable attributes: location, mood, inventory, traits, relationships, quest stage, appearance. When unsure, use set_fact — not adjust_resource.
-- call:set_fact{target,key,value} / call:clear_fact{target,key}: durable text facts (see above).
+- Pick the tool by the value's shape: text or a label → set_variable (or set_condition if it clears soon); a number with a max → set_measurement/set_sequence.
+- DEFAULT to set_variable for durable attributes: location, mood, inventory, traits, relationships, quest stage, appearance. When unsure, use set_variable — not set_measurement.
+- call:set_variable{target,key,value} / call:clear_variable{target,key}: durable text variables (see above).
 - call:set_condition{target,key,value} / call:clear_condition{target,key}: ephemeral statuses only (hidden, bleeding, inspired) — not durable mood or location.
-- call:adjust_resource{target,key,delta} / call:set_resource{target,key,value}: numeric tracks with a max (stress, hit points, supply) — numbers only, never text like mood or location.
-- call:advance_clock{target,key,delta} / call:set_clock{target,key,value}: segmented numeric progress clocks (countdown, investigation).
-- Keep a key's kind stable: if current state already shows a key as (fact)/(resource)/(clock)/(condition), keep using the matching tool.
+- call:set_measurement{target,key,value,unit?} / call:set_measurement_min / call:set_measurement_max / call:clear_measurement: float measurements only — never text like mood or location.
+- call:set_sequence{target,key,items,position?,loop?} / call:step_sequence{target,key,delta} / call:clear_sequence: ordered lists with a cursor (turn order, quest steps).
+- Keep a key's kind stable: if current state already shows a key as (variable)/(measurement)/(sequence)/(condition), keep using the matching tool.
 - target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
-- When the scene establishes or changes durable tracked facts OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
+- When the scene establishes or changes durable tracked variables OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
 
 Ending the turn:
 - When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
@@ -225,9 +225,9 @@ Turn scope (one beat):
 - Do NOT invent extra beats: no new arrivals, scene changes, time skips, or unprompted follow-on actions the player did not take.
 
 Tracked state (use the dedicated state tools — one attribute per call):
-- When the narration establishes or changes a durable fact (location, mood, inventory, traits, relationships, quest stage) OR applies a resolved card/mechanic effect, call the matching state tool — do not only mention it in prose. The tool is the source of truth.
-- DEFAULT to set_fact for durable text attributes. Use set_condition for ephemeral statuses (hidden, bleeding); adjust_resource/set_resource for numeric tracks with a max; advance_clock/set_clock for progress clocks.
-- Keep a key's kind stable: if current state already shows a key as (fact)/(resource)/(clock)/(condition), keep using the matching tool.
+- When the narration establishes or changes a durable variable (location, mood, inventory, traits, relationships, quest stage) OR applies a resolved card/mechanic effect, call the matching state tool — do not only mention it in prose. The tool is the source of truth.
+- DEFAULT to set_variable for durable text attributes. Use set_condition for ephemeral statuses; set_measurement for floats; set_sequence/step_sequence for ordered lists.
+- Keep a key's kind stable: if current state already shows a key as (variable)/(measurement)/(sequence)/(condition), keep using the matching tool.
 - target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
 
 Ending the turn:
@@ -235,8 +235,8 @@ Ending the turn:
 - Plain prose and state/ask tool calls only — no JSON, no headers, no meta commentary.
 
 Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
-- Do NOT use parentheses like set_fact(key="mood") — those are not parsed.
-- Quote string values that contain spaces or commas: call:set_fact{target:world,key:location,value:"space 36, near finish"}"#;
+- Do NOT use parentheses like set_variable(key="mood") — those are not parsed.
+- Quote string values that contain spaces or commas: call:set_variable{target:world,key:location,value:"space 36, near finish"}"#;
 
 const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
 - The player action is the PC's intent when present. GM guidance is mandatory direction from the human running the game — not optional flavor.
@@ -1508,7 +1508,7 @@ mod tests {
         let mut game = sample_game();
         game.state_schema = vec![dreamwell_types::TrackedVarDef {
             key: "alarm".into(),
-            kind: dreamwell_types::StateKind::Clock,
+            kind: dreamwell_types::StateKind::Sequence,
             target: "world".into(),
             description: "Guard alarm".into(),
             update_hints: "raise when the PC is seen".into(),
@@ -1519,11 +1519,15 @@ mod tests {
             id: 1,
             game_id: game.id,
             actor_id: None,
-            kind: dreamwell_types::StateKind::Clock,
+            kind: dreamwell_types::StateKind::Sequence,
             key: "alarm".into(),
-            value: String::new(),
-            num_value: Some(1),
-            max_value: Some(4),
+            value: r#"{"items":["1","2","3","4"],"position":1,"loop":false}"#.into(),
+            num_value: None,
+            max_value: None,
+            float_value: None,
+            float_min: None,
+            float_max: None,
+            unit: None,
             source_turn: -1,
             updated_at: Utc::now(),
         }];
@@ -1532,9 +1536,7 @@ mod tests {
             build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &test_settings());
         let user = messages[1]["content"].as_str().unwrap();
         assert!(user.contains("Current state:"));
-        assert!(
-            user.contains("- alarm (clock): 1/4 [Guard alarm; update: raise when the PC is seen]")
-        );
+        assert!(user.contains("- alarm (sequence): 2 [1, 2, 3, 4]"));
         // No separate schema block — the var rides alongside the live value.
         assert!(!user.contains("Tracked state schema"));
     }
@@ -1662,12 +1664,12 @@ mod tests {
         assert!(system.contains("deck_id"));
         assert!(system.contains("ask_pc_decision"));
         assert!(system.contains("Example rhythm"));
-        assert!(system.contains("call:set_fact"));
+        assert!(system.contains("call:set_variable"));
         assert!(system.contains("call:set_condition"));
-        assert!(system.contains("call:adjust_resource"));
-        assert!(system.contains("no set_fact call"));
+        assert!(system.contains("call:set_measurement"));
+        assert!(system.contains("no set_variable call"));
         assert!(system.contains("one beat"));
-        assert!(system.contains("DEFAULT to set_fact"));
+        assert!(system.contains("DEFAULT to set_variable"));
         assert!(system.contains("parentheses syntax"));
         assert!(system.contains("One mechanic per cycle"));
         let user = msgs[1]["content"].as_str().unwrap();

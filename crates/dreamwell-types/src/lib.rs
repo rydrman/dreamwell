@@ -8,6 +8,7 @@ mod macros;
 mod scenario_export;
 mod scenario_iw;
 mod serde_helpers;
+mod state_payload;
 
 pub use game_elements::{
     prose_check_marker, prose_mech_marker, prose_state_marker, BoardDef, BoardTagRule, CardDef,
@@ -33,6 +34,7 @@ pub use scenario_iw::{
     ScenarioNpc, ScenarioTrigger, SetupVarChoice, SourceMeta, SystemRollRequest, TrackedVarDef,
     TraitDef, TriggerCondition, TriggerEffect, TurnPlan, WinCondition,
 };
+pub use state_payload::{clamp_measurement, SequencePayload, StepSequenceResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -338,8 +340,18 @@ pub struct ChatStateEntry {
     pub kind: StateKind,
     pub key: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_value: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_value: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
     pub source_message_id: i64,
     pub updated_at: DateTime<Utc>,
 }
@@ -349,6 +361,10 @@ pub struct ChatStateEntryUpdate {
     pub value: Option<String>,
     pub num_value: Option<i64>,
     pub max_value: Option<i64>,
+    pub float_value: Option<f64>,
+    pub float_min: Option<f64>,
+    pub float_max: Option<f64>,
+    pub unit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -502,8 +518,18 @@ pub struct StoryStateEntry {
     pub kind: StateKind,
     pub key: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_value: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_value: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
     pub source_beat_id: i64,
     pub updated_at: DateTime<Utc>,
 }
@@ -513,6 +539,10 @@ pub struct StoryStateEntryUpdate {
     pub value: Option<String>,
     pub num_value: Option<i64>,
     pub max_value: Option<i64>,
+    pub float_value: Option<f64>,
+    pub float_min: Option<f64>,
+    pub float_max: Option<f64>,
+    pub unit: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -963,10 +993,13 @@ pub enum CheckTier {
 #[serde(rename_all = "lowercase")]
 pub enum StateKind {
     #[default]
-    Resource,
+    #[serde(alias = "fact")]
+    Variable,
     Condition,
-    Fact,
-    Clock,
+    #[serde(alias = "resource", alias = "gauge")]
+    Measurement,
+    #[serde(alias = "clock")]
+    Sequence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -975,6 +1008,9 @@ pub enum StateOp {
     Set,
     Add,
     Remove,
+    SetMin,
+    SetMax,
+    Step,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1213,8 +1249,18 @@ pub struct GameStateEntry {
     pub kind: StateKind,
     pub key: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_value: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_value: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
     pub source_turn: i64,
     pub updated_at: DateTime<Utc>,
 }
@@ -1406,6 +1452,10 @@ pub struct GameStateEntryUpdate {
     pub value: Option<String>,
     pub num_value: Option<i64>,
     pub max_value: Option<i64>,
+    pub float_value: Option<f64>,
+    pub float_min: Option<f64>,
+    pub float_max: Option<f64>,
+    pub unit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1479,6 +1529,20 @@ pub struct StateChangeRequest {
     pub value: Option<String>,
     #[serde(default)]
     pub delta: Option<i64>,
+    #[serde(default)]
+    pub float_value: Option<f64>,
+    #[serde(default)]
+    pub float_min: Option<f64>,
+    #[serde(default)]
+    pub float_max: Option<f64>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub sequence_items: Option<Vec<String>>,
+    #[serde(default)]
+    pub sequence_position: Option<i64>,
+    #[serde(default)]
+    pub sequence_loop: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

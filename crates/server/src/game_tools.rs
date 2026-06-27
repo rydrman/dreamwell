@@ -52,10 +52,23 @@ pub fn inline_mechanical_tool_specs() -> Vec<Value> {
 /// inline prose agent only ever supplies target/key/value — far simpler than the
 /// batch `apply_state_changes` blob.
 pub const SIMPLE_STATE_TOOLS: &[&str] = &[
-    "set_fact",
-    "clear_fact",
+    "set_variable",
+    "clear_variable",
     "set_condition",
     "clear_condition",
+    "set_measurement",
+    "set_measurement_min",
+    "set_measurement_max",
+    "clear_measurement",
+    "set_sequence",
+    "step_sequence",
+    "clear_sequence",
+];
+
+/// Legacy tool names kept for backward compatibility with older model outputs.
+const LEGACY_SIMPLE_STATE_TOOL_ALIASES: &[&str] = &[
+    "set_fact",
+    "clear_fact",
     "adjust_resource",
     "set_resource",
     "advance_clock",
@@ -104,14 +117,9 @@ fn clear_state_tool(name: &str, description: &str) -> Value {
     )
 }
 
-fn numeric_state_tool(
-    name: &str,
-    description: &str,
-    amount_field: &str,
-    amount_desc: &str,
-) -> Value {
+fn float_state_tool(name: &str, description: &str, amount_field: &str, amount_desc: &str) -> Value {
     let value_prop = serde_json::json!({
-        amount_field: { "type": "integer", "description": amount_desc }
+        amount_field: { "type": "number", "description": amount_desc }
     });
     tool_spec(
         name,
@@ -124,48 +132,86 @@ fn numeric_state_tool(
     )
 }
 
+fn measurement_tool(name: &str, description: &str) -> Value {
+    tool_spec(
+        name,
+        description,
+        serde_json::json!({
+            "type": "object",
+            "properties": state_target_key_props(serde_json::json!({
+                "value": { "type": "number", "description": "The measurement value (a float)." },
+                "unit": { "type": "string", "description": "Optional unit label (UCUM code like cm, kg, or custom like stress)." }
+            })),
+            "required": ["target", "key", "value"]
+        }),
+    )
+}
+
+fn sequence_set_tool() -> Value {
+    tool_spec(
+        "set_sequence",
+        "Define or replace an ordered sequence with a cursor (turn order, quest steps, queue). items must be a non-empty array of string labels.",
+        serde_json::json!({
+            "type": "object",
+            "properties": state_target_key_props(serde_json::json!({
+                "items": { "type": "array", "items": { "type": "string" }, "description": "Ordered labels, at least one." },
+                "position": { "type": "integer", "description": "Active index (defaults to 0)." },
+                "loop": { "type": "boolean", "description": "Whether step_sequence wraps at the ends." }
+            })),
+            "required": ["target", "key", "items"]
+        }),
+    )
+}
+
 /// Specs for the simple per-intent state tools offered to the inline prose agent.
 pub fn simple_state_tool_specs() -> Vec<Value> {
     vec![
         text_state_tool(
-            "set_fact",
-            "Default for most state updates. Record or update a durable text fact (location, mood, inventory, traits, quest stage). Call whenever narration establishes or changes a lasting attribute — the tool is the source of truth, not the prose.",
+            "set_variable",
+            "Default for most state updates. Record or update a durable text variable (location, mood, inventory, traits, quest stage, appearance, body measurements). Call whenever narration establishes or changes a lasting attribute — the tool is the source of truth, not the prose.",
         ),
         clear_state_tool(
-            "clear_fact",
-            "Remove a durable fact that is no longer true (an item is dropped, a location is left behind).",
+            "clear_variable",
+            "Remove a durable variable that is no longer true (an item is dropped, a location is left behind).",
         ),
         text_state_tool(
             "set_condition",
-            "Record or update an ephemeral status expected to clear soon (hidden, bleeding, suspicious, inspired) — not durable mood, location, or inventory (use set_fact for those).",
+            "Record or update an ephemeral status expected to clear soon (hidden, bleeding, suspicious, inspired) — not durable mood, location, or inventory (use set_variable for those).",
         ),
         clear_state_tool(
             "clear_condition",
             "Remove a temporary status once it ends (no longer hidden, bleeding stops).",
         ),
-        numeric_state_tool(
-            "adjust_resource",
-            "Change a numeric resource track (a count with a max, e.g. stress 2/5, hit points) by a relative amount. Numeric tracks only — never for text attributes like mood or location. If the key already exists, it must already be a resource.",
-            "delta",
-            "Signed amount to add (negative to subtract), e.g. 1 or -2.",
+        measurement_tool(
+            "set_measurement",
+            "Set a float measurement (stress, height, arousal, distance). Unbounded by default — use set_measurement_min/max only when bounds matter. Never for text attributes like mood or appearance (use set_variable).",
         ),
-        numeric_state_tool(
-            "set_resource",
-            "Set a numeric resource track (a count with a max) to an exact value (e.g. supply = 3). Numeric tracks only — not text attributes.",
+        float_state_tool(
+            "set_measurement_min",
+            "Set the minimum bound for a measurement. Cleared only by clear_measurement.",
             "value",
-            "The exact value to set the resource to.",
+            "Minimum allowed value.",
         ),
-        numeric_state_tool(
-            "advance_clock",
-            "Advance (or rewind) a segmented progress clock (numeric progress toward an outcome, e.g. investigation 2/4) by a relative number of segments.",
-            "delta",
-            "Signed number of segments to add (negative to rewind), e.g. 1 or -1.",
-        ),
-        numeric_state_tool(
-            "set_clock",
-            "Set a segmented progress clock to an exact number of filled segments.",
+        float_state_tool(
+            "set_measurement_max",
+            "Set the maximum bound for a measurement. Cleared only by clear_measurement.",
             "value",
-            "The exact number of filled segments to set.",
+            "Maximum allowed value.",
+        ),
+        clear_state_tool(
+            "clear_measurement",
+            "Remove a measurement and its value, bounds, and unit.",
+        ),
+        sequence_set_tool(),
+        float_state_tool(
+            "step_sequence",
+            "Advance (or rewind) the sequence cursor by delta steps. Wraps when loop=true on the sequence.",
+            "delta",
+            "Signed steps to move the cursor, e.g. 1 or -1.",
+        ),
+        clear_state_tool(
+            "clear_sequence",
+            "Remove a sequence entirely.",
         ),
     ]
 }
@@ -334,11 +380,13 @@ pub async fn handle_mechanical_tool_call(
 /// Whether a tool name updates tracked state (either the batch tool or one of the
 /// simple per-intent convenience tools).
 pub fn is_state_tool(name: &str) -> bool {
-    name == "apply_state_changes" || SIMPLE_STATE_TOOLS.contains(&name)
+    name == "apply_state_changes"
+        || SIMPLE_STATE_TOOLS.contains(&name)
+        || LEGACY_SIMPLE_STATE_TOOL_ALIASES.contains(&name)
 }
 
 /// Parse any state tool call into validated state-change requests. Handles both the
-/// batch `apply_state_changes` array and the simple per-intent tools (set_fact, etc).
+/// batch `apply_state_changes` array and the simple per-intent tools (set_variable, etc).
 pub fn parse_state_tool_call(call: &ToolCall) -> Vec<dreamwell_types::StateChangeRequest> {
     if call.name == "apply_state_changes" {
         return parse_state_change_args(call);
@@ -360,10 +408,11 @@ pub fn parse_state_change_args(call: &ToolCall) -> Vec<dreamwell_types::StateCha
         .unwrap_or_default()
 }
 
-/// Translate a simple per-intent state tool call (set_fact, adjust_resource, …) into
+/// Translate a simple per-intent state tool call (set_variable, adjust_resource, …) into
 /// a single `StateChangeRequest`. Returns `None` for unknown tools or missing key.
 fn parse_simple_state_tool(call: &ToolCall) -> Option<dreamwell_types::StateChangeRequest> {
     use dreamwell_types::{StateChangeRequest, StateKind, StateOp};
+    use dreamwell_units::normalize_unit;
 
     let args: Value =
         serde_json::from_str(&call.arguments).unwrap_or(Value::Object(Default::default()));
@@ -378,28 +427,96 @@ fn parse_simple_state_tool(call: &ToolCall) -> Option<dreamwell_types::StateChan
         .filter(|s| !s.trim().is_empty())?;
     let value = args.get("value").and_then(value_as_string);
     let delta_field = args.get("delta").and_then(value_as_i64);
-    let value_as_num = args.get("value").and_then(value_as_i64);
-
-    let request = |kind: StateKind, op: StateOp, value: Option<String>, delta: Option<i64>| {
-        Some(StateChangeRequest {
-            target: target.clone(),
-            kind,
-            key: key.clone(),
-            op,
-            value,
-            delta,
+    let float_value = args.get("value").and_then(value_as_f64);
+    let float_min = args.get("value").and_then(value_as_f64);
+    let float_max = args.get("value").and_then(value_as_f64);
+    let unit = args
+        .get("unit")
+        .and_then(value_as_string)
+        .and_then(|u| normalize_unit(Some(&u)));
+    let sequence_items = args.get("items").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
         })
+    });
+    let sequence_position = args.get("position").and_then(value_as_i64);
+    let sequence_loop = args.get("loop").and_then(|v| v.as_bool());
+
+    let req = |kind: StateKind, op: StateOp| StateChangeRequest {
+        target: target.clone(),
+        kind,
+        key: key.clone(),
+        op,
+        value: None,
+        delta: None,
+        float_value: None,
+        float_min: None,
+        float_max: None,
+        unit: None,
+        sequence_items: None,
+        sequence_position: None,
+        sequence_loop: None,
     };
 
     match call.name.as_str() {
-        "set_fact" => request(StateKind::Fact, StateOp::Set, value, None),
-        "clear_fact" => request(StateKind::Fact, StateOp::Remove, None, None),
-        "set_condition" => request(StateKind::Condition, StateOp::Set, value, None),
-        "clear_condition" => request(StateKind::Condition, StateOp::Remove, None, None),
-        "adjust_resource" => request(StateKind::Resource, StateOp::Add, None, delta_field),
-        "set_resource" => request(StateKind::Resource, StateOp::Set, None, value_as_num),
-        "advance_clock" => request(StateKind::Clock, StateOp::Add, None, delta_field),
-        "set_clock" => request(StateKind::Clock, StateOp::Set, None, value_as_num),
+        "set_variable" | "set_fact" => {
+            let mut r = req(StateKind::Variable, StateOp::Set);
+            r.value = value;
+            Some(r)
+        }
+        "clear_variable" | "clear_fact" => Some(req(StateKind::Variable, StateOp::Remove)),
+        "set_condition" => {
+            let mut r = req(StateKind::Condition, StateOp::Set);
+            r.value = value;
+            Some(r)
+        }
+        "clear_condition" => Some(req(StateKind::Condition, StateOp::Remove)),
+        "set_measurement" | "set_resource" => {
+            let mut r = req(StateKind::Measurement, StateOp::Set);
+            r.float_value = float_value.or_else(|| delta_field.map(|d| d as f64));
+            r.unit = unit;
+            Some(r)
+        }
+        "set_measurement_min" => {
+            let mut r = req(StateKind::Measurement, StateOp::SetMin);
+            r.float_min = float_min;
+            Some(r)
+        }
+        "set_measurement_max" => {
+            let mut r = req(StateKind::Measurement, StateOp::SetMax);
+            r.float_max = float_max;
+            Some(r)
+        }
+        "clear_measurement" => Some(req(StateKind::Measurement, StateOp::Remove)),
+        "set_sequence" | "set_clock" => {
+            let mut r = req(StateKind::Sequence, StateOp::Set);
+            r.sequence_items = sequence_items;
+            r.sequence_position = sequence_position
+                .or_else(|| value.as_deref().and_then(|s| s.trim().parse::<i64>().ok()));
+            r.sequence_loop = sequence_loop;
+            Some(r)
+        }
+        "step_sequence" | "advance_clock" => {
+            let mut r = req(StateKind::Sequence, StateOp::Step);
+            r.delta = delta_field.or(Some(1));
+            Some(r)
+        }
+        "clear_sequence" => Some(req(StateKind::Sequence, StateOp::Remove)),
+        "adjust_resource" => {
+            let mut r = req(StateKind::Measurement, StateOp::Add);
+            r.delta = delta_field;
+            Some(r)
+        }
+        _ => None,
+    }
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
         _ => None,
     }
 }
@@ -550,6 +667,7 @@ mod tests {
     #[test]
     fn is_state_tool_recognizes_simple_and_batch() {
         assert!(is_state_tool("apply_state_changes"));
+        assert!(is_state_tool("set_variable"));
         assert!(is_state_tool("set_fact"));
         assert!(is_state_tool("advance_clock"));
         assert!(!is_state_tool("roll_dice"));
@@ -595,7 +713,23 @@ mod tests {
     }
 
     #[test]
-    fn set_fact_maps_to_fact_set_request() {
+    fn set_variable_maps_to_variable_set_request() {
+        use dreamwell_types::{StateKind, StateOp};
+        let call = state_call(
+            "set_variable",
+            serde_json::json!({ "target": "world", "key": "location", "value": "tavern" }),
+        );
+        let reqs = parse_state_tool_call(&call);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].target, "world");
+        assert_eq!(reqs[0].kind, StateKind::Variable);
+        assert_eq!(reqs[0].op, StateOp::Set);
+        assert_eq!(reqs[0].key, "location");
+        assert_eq!(reqs[0].value.as_deref(), Some("tavern"));
+    }
+
+    #[test]
+    fn set_fact_alias_maps_to_variable_set_request() {
         use dreamwell_types::{StateKind, StateOp};
         let call = state_call(
             "set_fact",
@@ -603,11 +737,8 @@ mod tests {
         );
         let reqs = parse_state_tool_call(&call);
         assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].target, "world");
-        assert_eq!(reqs[0].kind, StateKind::Fact);
+        assert_eq!(reqs[0].kind, StateKind::Variable);
         assert_eq!(reqs[0].op, StateOp::Set);
-        assert_eq!(reqs[0].key, "location");
-        assert_eq!(reqs[0].value.as_deref(), Some("tavern"));
     }
 
     #[test]
@@ -632,7 +763,7 @@ mod tests {
             serde_json::json!({ "target": "pc", "key": "stress", "delta": -2 }),
         );
         let reqs = parse_state_tool_call(&call);
-        assert_eq!(reqs[0].kind, StateKind::Resource);
+        assert_eq!(reqs[0].kind, StateKind::Measurement);
         assert_eq!(reqs[0].op, StateOp::Add);
         assert_eq!(reqs[0].delta, Some(-2));
     }
@@ -646,7 +777,7 @@ mod tests {
         );
         let reqs = parse_state_tool_call(&call);
         assert_eq!(reqs[0].op, StateOp::Set);
-        assert_eq!(reqs[0].delta, Some(3));
+        assert_eq!(reqs[0].float_value, Some(3.0));
     }
 
     #[test]
@@ -657,8 +788,8 @@ mod tests {
             serde_json::json!({ "target": "world", "key": "alarm", "value": "2" }),
         );
         let reqs = parse_state_tool_call(&call);
-        assert_eq!(reqs[0].kind, StateKind::Clock);
-        assert_eq!(reqs[0].delta, Some(2));
+        assert_eq!(reqs[0].kind, StateKind::Sequence);
+        assert_eq!(reqs[0].sequence_position, Some(2));
     }
 
     #[test]

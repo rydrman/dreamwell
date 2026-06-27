@@ -176,7 +176,7 @@ Turn complete → optional scene summary refresh
       {"target": "pc", "kind": "resource", "key": "stress", "op": "add", "delta": 1},
       {"target": "pc", "kind": "condition", "key": "hidden", "op": "set", "value": "true"},
       {"target": "world", "kind": "clock", "key": "alarm", "op": "add", "delta": 1},
-      {"target": "world", "kind": "fact", "key": "warehouse_side_door", "op": "set", "value": "unlocked"}
+      {"target": "world", "kind": "variable", "key": "warehouse_side_door", "op": "set", "value": "unlocked"}
     ]
   }
   ```
@@ -267,7 +267,7 @@ CREATE TABLE game_state_entries (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     game_id       INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     actor_id      INTEGER REFERENCES game_actors(id) ON DELETE CASCADE, -- NULL = world scope
-    kind          TEXT NOT NULL,            -- 'resource' | 'condition' | 'fact' | 'clock'
+    kind          TEXT NOT NULL,            -- 'resource' | 'condition' | 'variable' | 'clock'
     key           TEXT NOT NULL,
     value         TEXT NOT NULL DEFAULT '', -- string value / fact text / condition flag
     num_value     INTEGER,                  -- resources & clocks: current
@@ -349,7 +349,7 @@ structs (~296–376):
 
 - `enum ResolutionSystem { Pbta2d6 }` (extensible).
 - `enum CheckTier { Fail, Mixed, Strong }`.
-- `enum StateKind { Resource, Condition, Fact, Clock }`.
+- `enum StateKind { Resource, Condition, Variable, Clock }`.
 - `enum StateOp { Set, Add, Remove }`.
 - Structs: `Game`, `GameActor`, `GameStateEntry`, `GameTurn`, `GameTurnCheck`,
   `GameScene`, `GameDetail { game, actors, state, turns, scenes }`,
@@ -414,7 +414,7 @@ invalidation pattern from stories):
    (analog of `prose_summary`), used once turns scroll out of the verbatim
    window. Invalidated when earlier turns change (mirror
    `invalidate_prose_summaries_from`).
-4. **Durable facts:** `kind='fact'` state entries surface relevant world canon
+4. **Durable variables:** `kind='variable'` state entries surface relevant world canon
    without replaying full prose. (Optional later: keyword/vector retrieval.)
 
 This directly addresses "improved memory": typed durable state + compressed

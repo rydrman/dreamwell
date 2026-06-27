@@ -7,9 +7,9 @@ pub fn state_changes_schema() -> serde_json::Value {
             "type": "object",
             "properties": {
                 "target": { "type": "string" },
-                "kind": { "type": "string", "enum": ["resource", "condition", "fact", "clock"] },
+                "kind": { "type": "string", "enum": ["measurement", "condition", "variable", "sequence"] },
                 "key": { "type": "string" },
-                "op": { "type": "string", "enum": ["set", "add", "remove"] },
+                "op": { "type": "string", "enum": ["set", "add", "remove", "setmin", "setmax", "step"] },
                 "value": {
                     "oneOf": [
                         { "type": "string" },
@@ -18,7 +18,14 @@ pub fn state_changes_schema() -> serde_json::Value {
                         { "type": "null" }
                     ]
                 },
-                "delta": { "type": "integer" }
+                "delta": { "type": "integer" },
+                "float_value": { "type": "number" },
+                "float_min": { "type": "number" },
+                "float_max": { "type": "number" },
+                "unit": { "type": "string" },
+                "sequence_items": { "type": "array", "items": { "type": "string" } },
+                "sequence_position": { "type": "integer" },
+                "sequence_loop": { "type": "boolean" }
             },
             "required": ["target", "kind", "key", "op"]
         }

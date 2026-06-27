@@ -103,7 +103,7 @@ pub async fn list_story_state_entries(
     story_id: i64,
 ) -> AppResult<Vec<StoryStateEntry>> {
     let rows = sqlx::query_as::<_, StoryStateRow>(
-        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, source_beat_id, updated_at FROM story_state_entries WHERE story_id = ?1 ORDER BY kind ASC, key ASC",
+        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_beat_id, updated_at FROM story_state_entries WHERE story_id = ?1 ORDER BY kind ASC, key ASC",
     )
     .bind(story_id)
     .fetch_all(pool)
@@ -118,7 +118,7 @@ pub async fn update_story_state_entry(
     payload: StoryStateEntryUpdate,
 ) -> AppResult<StoryStateEntry> {
     let row = sqlx::query_as::<_, StoryStateRow>(
-        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, source_beat_id, updated_at FROM story_state_entries WHERE id = ?1 AND story_id = ?2",
+        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_beat_id, updated_at FROM story_state_entries WHERE id = ?1 AND story_id = ?2",
     )
     .bind(entry_id)
     .bind(story_id)
@@ -212,6 +212,10 @@ fn story_state_from_row(row: StoryStateRow) -> AppResult<StoryStateEntry> {
         value: row.value,
         num_value: row.num_value,
         max_value: row.max_value,
+        float_value: row.float_value,
+        float_min: row.float_min,
+        float_max: row.float_max,
+        unit: row.unit,
         source_beat_id: row.source_beat_id,
         updated_at: parse_dt(&row.updated_at)?,
     })
@@ -219,11 +223,11 @@ fn story_state_from_row(row: StoryStateRow) -> AppResult<StoryStateEntry> {
 
 fn parse_story_state_kind(s: &str) -> StateKind {
     match s {
-        "resource" => StateKind::Resource,
         "condition" => StateKind::Condition,
-        "fact" => StateKind::Fact,
-        "clock" => StateKind::Clock,
-        _ => StateKind::Fact,
+        "variable" | "fact" => StateKind::Variable,
+        "measurement" | "resource" | "gauge" => StateKind::Measurement,
+        "sequence" | "clock" => StateKind::Sequence,
+        _ => StateKind::Variable,
     }
 }
 
@@ -1229,7 +1233,7 @@ pub async fn list_story_variables(
     let entries = list_story_state_entries(pool, story_id).await?;
     Ok(entries
         .into_iter()
-        .filter(|e| e.kind == StateKind::Fact && e.actor_id.is_none())
+        .filter(|e| e.kind == StateKind::Variable && e.actor_id.is_none())
         .map(|e| StoryVariable {
             id: e.id,
             story_id: e.story_id,
@@ -1252,7 +1256,7 @@ pub async fn upsert_story_variable(
 ) -> AppResult<StoryVariable> {
     let now = Utc::now().to_rfc3339();
     sqlx::query(
-        "INSERT INTO story_state_entries (story_id, actor_id, kind, key, value, source_beat_id, updated_at) VALUES (?1,NULL,'fact',?2,?3,-1,?4) ON CONFLICT(story_id, actor_id, kind, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        "INSERT INTO story_state_entries (story_id, actor_id, kind, key, value, source_beat_id, updated_at) VALUES (?1,NULL,'variable',?2,?3,-1,?4) ON CONFLICT(story_id, actor_id, kind, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
     )
     .bind(story_id)
     .bind(&key)
@@ -1299,7 +1303,7 @@ pub async fn delete_story_variable(
     variable_id: i64,
 ) -> AppResult<()> {
     let result = sqlx::query(
-        "DELETE FROM story_state_entries WHERE story_id = ?1 AND id = ?2 AND kind = 'fact'",
+        "DELETE FROM story_state_entries WHERE story_id = ?1 AND id = ?2 AND kind = 'variable'",
     )
     .bind(story_id)
     .bind(variable_id)
@@ -1331,7 +1335,7 @@ pub async fn delete_story_variable_scoped(
     _source_beat_order: i64,
 ) -> AppResult<()> {
     let _ = sqlx::query(
-        "DELETE FROM story_state_entries WHERE story_id = ?1 AND key = ?2 AND kind = 'fact' AND actor_id IS NULL",
+        "DELETE FROM story_state_entries WHERE story_id = ?1 AND key = ?2 AND kind = 'variable' AND actor_id IS NULL",
     )
     .bind(story_id)
     .bind(key)
@@ -1477,6 +1481,10 @@ struct StoryStateRow {
     value: String,
     num_value: Option<i64>,
     max_value: Option<i64>,
+    float_value: Option<f64>,
+    float_min: Option<f64>,
+    float_max: Option<f64>,
+    unit: Option<String>,
     source_beat_id: i64,
     updated_at: String,
 }

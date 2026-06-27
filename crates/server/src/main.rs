@@ -26,6 +26,7 @@ mod routes;
 mod scenario_character_state;
 mod scenario_db;
 mod scenario_import;
+mod state_persist;
 mod state_recheck;
 mod story_beat_mechanical;
 mod story_beat_prose_recheck;

@@ -1,0 +1,8 @@
+[package]
+name = "dreamwell-units"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+ucum = { package = "ucum-units", version = "0.1" }

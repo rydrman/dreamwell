@@ -1,47 +1,52 @@
 use std::collections::HashMap;
 
-use dreamwell_types::{SessionActor, StateEntry, StateKind};
+use dreamwell_types::{SequencePayload, SessionActor, StateEntry, StateKind};
+
+fn actor_label(actor_id: Option<i64>, actors: &[SessionActor]) -> Option<String> {
+    actor_id.and_then(|id| actors.iter().find(|a| a.id == id).map(|a| a.name.clone()))
+}
 
 pub fn build_state_block(state: &[StateEntry], actors: &[SessionActor]) -> String {
     build_state_block_annotated(state, actors, &HashMap::new())
 }
 
 /// Like [`build_state_block`], but appends an authoring note (e.g. a scenario var's
-/// update hint) to each entry whose `(actor_id, key)` is present in `annotations`.
-/// This lets scenario-authored metadata ride alongside the live value instead of
-/// being presented as a separate "schema" block.
+/// description) after each matching entry's value line.
 pub fn build_state_block_annotated(
     state: &[StateEntry],
     actors: &[SessionActor],
     annotations: &HashMap<(Option<i64>, String), String>,
 ) -> String {
     let mut lines = Vec::new();
-    for actor in actors {
-        let actor_state: Vec<_> = state
-            .iter()
-            .filter(|e| e.actor_id == Some(actor.id))
-            .collect();
-        if actor_state.is_empty() {
-            continue;
-        }
-        lines.push(format!("## {} ({})", actor.name, actor.role));
-        if !actor.description.is_empty() {
-            lines.push(actor.description.clone());
-        }
-        if !actor.skills.is_empty() {
-            let skills: Vec<_> = actor
-                .skills
-                .iter()
-                .map(|(k, v)| format!("{k}: {v:+}"))
-                .collect();
-            lines.push(format!("Skills: {}", skills.join(", ")));
-        }
-        append_state_entries(&mut lines, &actor_state, annotations);
+    let mut by_actor: HashMap<Option<i64>, Vec<&StateEntry>> = HashMap::new();
+    for entry in state {
+        by_actor.entry(entry.actor_id).or_default().push(entry);
     }
-    let world_state: Vec<_> = state.iter().filter(|e| e.actor_id.is_none()).collect();
-    if !world_state.is_empty() {
-        lines.push("## World".to_string());
-        append_state_entries(&mut lines, &world_state, annotations);
+
+    if let Some(world) = by_actor.remove(&None) {
+        lines.push("World:".to_string());
+        append_state_entries(&mut lines, &world, annotations);
+    }
+
+    for actor in actors {
+        if let Some(entries) = by_actor.remove(&Some(actor.id)) {
+            lines.push(format!("{}:", actor.name));
+            if !actor.skills.is_empty() {
+                let skills: Vec<String> = actor
+                    .skills
+                    .iter()
+                    .map(|(name, value)| format!("{name}: {value:+}"))
+                    .collect();
+                lines.push(format!("  Skills: {}", skills.join(", ")));
+            }
+            append_state_entries(&mut lines, &entries, annotations);
+        }
+    }
+
+    for (actor_id, entries) in by_actor {
+        let label = actor_label(actor_id, actors).unwrap_or_else(|| "Unknown".to_string());
+        lines.push(format!("{label}:"));
+        append_state_entries(&mut lines, &entries, annotations);
     }
     lines.join("\n")
 }
@@ -53,21 +58,40 @@ fn append_state_entries(
 ) {
     for entry in entries {
         let mut line = match entry.kind {
-            StateKind::Resource => {
-                let current = entry.num_value.unwrap_or(0);
-                let max = entry.max_value.unwrap_or(current);
-                format!("- {} (resource): {}/{}", entry.key, current, max)
+            StateKind::Measurement => {
+                let value = entry.float_value.unwrap_or(0.0);
+                let bounds = match (entry.float_min, entry.float_max) {
+                    (Some(min), Some(max)) => format!(" ({}–{})", min, max),
+                    (None, Some(max)) => format!(" (≤{})", max),
+                    (Some(min), None) => format!(" (≥{})", min),
+                    (None, None) => String::new(),
+                };
+                let unit = entry
+                    .unit
+                    .as_deref()
+                    .filter(|u| !u.is_empty())
+                    .map(|u| format!(" {}", u))
+                    .unwrap_or_default();
+                format!("- {} (measurement): {}{}{}", entry.key, value, unit, bounds)
             }
-            StateKind::Clock => {
-                let current = entry.num_value.unwrap_or(0);
-                let segments = entry.max_value.unwrap_or(4);
-                format!("- {} (clock): {}/{}", entry.key, current, segments)
+            StateKind::Sequence => {
+                if let Some(seq) = SequencePayload::decode(&entry.value) {
+                    let active = seq.active_item().unwrap_or("?");
+                    let items = seq.items.join(", ");
+                    let loop_tag = if seq.r#loop { " loop" } else { "" };
+                    format!(
+                        "- {} (sequence): {} [{}]{}",
+                        entry.key, active, items, loop_tag
+                    )
+                } else {
+                    format!("- {} (sequence): (invalid)", entry.key)
+                }
             }
             StateKind::Condition => {
                 format!("- {} (condition): {}", entry.key, entry.value)
             }
-            StateKind::Fact => {
-                format!("- {} (fact): {}", entry.key, entry.value)
+            StateKind::Variable => {
+                format!("- {} (variable): {}", entry.key, entry.value)
             }
         };
         if let Some(note) = annotations
@@ -87,7 +111,7 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn build_state_block_includes_actor_and_skills() {
+    fn build_state_block_includes_measurement_and_sequence() {
         let actor = SessionActor {
             id: 1,
             game_id: 1,
@@ -99,21 +123,42 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        let state = vec![StateEntry {
-            id: 1,
-            game_id: 1,
-            actor_id: Some(1),
-            kind: StateKind::Resource,
-            key: "stress".to_string(),
-            value: String::new(),
-            num_value: Some(2),
-            max_value: Some(5),
-            source_turn: 1,
-            updated_at: Utc::now(),
-        }];
+        let state = vec![
+            StateEntry {
+                id: 1,
+                game_id: 1,
+                actor_id: Some(1),
+                kind: StateKind::Measurement,
+                key: "stress".to_string(),
+                value: String::new(),
+                num_value: None,
+                max_value: None,
+                float_value: Some(2.5),
+                float_min: None,
+                float_max: Some(5.0),
+                unit: Some("stress".to_string()),
+                source_turn: 1,
+                updated_at: Utc::now(),
+            },
+            StateEntry {
+                id: 2,
+                game_id: 1,
+                actor_id: None,
+                kind: StateKind::Sequence,
+                key: "turn".to_string(),
+                value: r#"{"items":["pc","maya"],"position":0,"loop":true}"#.to_string(),
+                num_value: None,
+                max_value: None,
+                float_value: None,
+                float_min: None,
+                float_max: None,
+                unit: None,
+                source_turn: 1,
+                updated_at: Utc::now(),
+            },
+        ];
         let block = build_state_block(&state, &[actor]);
-        assert!(block.contains("Alex"));
-        assert!(block.contains("Finesse: +1"));
-        assert!(block.contains("stress"));
+        assert!(block.contains("stress (measurement): 2.5"));
+        assert!(block.contains("turn (sequence): pc"));
     }
 }

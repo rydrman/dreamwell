@@ -33,6 +33,35 @@ pub fn optional_i64_input(
     }
 }
 
+pub fn optional_f64_input(
+    label: &str,
+    value: Option<f64>,
+    on_change: Callback<Option<f64>>,
+) -> Html {
+    let display = value.map(|v| v.to_string()).unwrap_or_default();
+    html! {
+        <label class="field field-inline">
+            <span class="muted">{ label }</span>
+            <input
+                type="number"
+                step="any"
+                class="input input-compact"
+                value={display}
+                oninput={Callback::from(move |e: InputEvent| {
+                    let input: HtmlInputElement = e.target_unchecked_into();
+                    let raw = input.value();
+                    let parsed = if raw.trim().is_empty() {
+                        None
+                    } else {
+                        raw.parse::<f64>().ok()
+                    };
+                    on_change.emit(parsed);
+                })}
+            />
+        </label>
+    }
+}
+
 fn start_edit_on_click(editing: UseStateHandle<bool>) -> Callback<MouseEvent> {
     Callback::from(move |e: MouseEvent| {
         e.stop_propagation();
@@ -277,6 +306,10 @@ pub struct EditableCharacterStateDef {
     pub initial_value: String,
     pub initial_num: Option<i64>,
     pub initial_max: Option<i64>,
+    pub initial_float: Option<f64>,
+    pub unit: String,
+    pub sequence_items: Vec<String>,
+    pub sequence_loop: bool,
     pub visibility: String,
     pub update_hints: String,
 }
@@ -292,6 +325,10 @@ pub struct EditableTrackedVarDef {
     pub initial_value: String,
     pub initial_num: Option<i64>,
     pub initial_max: Option<i64>,
+    pub initial_float: Option<f64>,
+    pub unit: String,
+    pub sequence_items: Vec<String>,
+    pub sequence_loop: bool,
     pub visibility: String,
     pub update_hints: String,
 }
@@ -306,6 +343,10 @@ impl Default for EditableTrackedVarDef {
             initial_value: String::new(),
             initial_num: None,
             initial_max: None,
+            initial_float: None,
+            unit: String::new(),
+            sequence_items: Vec::new(),
+            sequence_loop: false,
             visibility: String::new(),
             update_hints: String::new(),
         }
@@ -321,6 +362,12 @@ impl EditableCharacterStateDef {
             initial_value: def.initial_value.clone(),
             initial_num: def.initial_num,
             initial_max: def.initial_max,
+            initial_float: def
+                .initial_float
+                .or_else(|| def.initial_num.map(|n| n as f64)),
+            unit: def.unit.clone().unwrap_or_default(),
+            sequence_items: def.sequence_items.clone().unwrap_or_default(),
+            sequence_loop: def.sequence_loop.unwrap_or(false),
             visibility: def.visibility.clone(),
             update_hints: def.update_hints.clone(),
         }
@@ -347,6 +394,18 @@ impl EditableCharacterStateDef {
             initial_value: self.initial_value.clone(),
             initial_num: self.initial_num,
             initial_max: self.initial_max,
+            initial_float: self.initial_float,
+            unit: if self.unit.trim().is_empty() {
+                None
+            } else {
+                Some(self.unit.trim().to_string())
+            },
+            sequence_items: if self.sequence_items.is_empty() {
+                None
+            } else {
+                Some(self.sequence_items.clone())
+            },
+            sequence_loop: Some(self.sequence_loop),
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
         }))
@@ -359,10 +418,16 @@ impl EditableCharacterStateDef {
         self.initial_value.clear();
         self.initial_num = None;
         self.initial_max = None;
+        self.initial_float = None;
+        self.unit.clear();
+        self.sequence_items.clear();
+        self.sequence_loop = false;
         self.kind = Some(kind);
         match kind {
-            StateKind::Clock if self.initial_max.is_none() => self.initial_max = Some(4),
-            StateKind::Resource if self.initial_max.is_none() => self.initial_max = Some(5),
+            StateKind::Measurement if self.initial_max.is_none() => {
+                self.initial_max = Some(5);
+                self.initial_float = Some(0.0);
+            }
             _ => {}
         }
     }
@@ -376,6 +441,10 @@ impl EditableCharacterStateDef {
             ScenarioStateFieldUpdate::InitialValue(value) => self.initial_value = value,
             ScenarioStateFieldUpdate::InitialNum(value) => self.initial_num = value,
             ScenarioStateFieldUpdate::InitialMax(value) => self.initial_max = value,
+            ScenarioStateFieldUpdate::InitialFloat(value) => self.initial_float = value,
+            ScenarioStateFieldUpdate::Unit(value) => self.unit = value,
+            ScenarioStateFieldUpdate::SequenceItems(value) => self.sequence_items = value,
+            ScenarioStateFieldUpdate::SequenceLoop(value) => self.sequence_loop = value,
             ScenarioStateFieldUpdate::Visibility(value) => self.visibility = value,
             ScenarioStateFieldUpdate::UpdateHints(value) => self.update_hints = value,
         }
@@ -389,6 +458,10 @@ impl EditableCharacterStateDef {
             initial_value: self.initial_value.clone(),
             initial_num: self.initial_num,
             initial_max: self.initial_max,
+            initial_float: self.initial_float,
+            unit: self.unit.clone(),
+            sequence_items: self.sequence_items.clone(),
+            sequence_loop: self.sequence_loop,
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
             target: None,
@@ -406,6 +479,12 @@ impl EditableTrackedVarDef {
             initial_value: def.initial_value.clone(),
             initial_num: def.initial_num,
             initial_max: def.initial_max,
+            initial_float: def
+                .initial_float
+                .or_else(|| def.initial_num.map(|n| n as f64)),
+            unit: def.unit.clone().unwrap_or_default(),
+            sequence_items: def.sequence_items.clone().unwrap_or_default(),
+            sequence_loop: def.sequence_loop.unwrap_or(false),
             visibility: def.visibility.clone(),
             update_hints: def.update_hints.clone(),
         }
@@ -433,6 +512,18 @@ impl EditableTrackedVarDef {
             initial_value: self.initial_value.clone(),
             initial_num: self.initial_num,
             initial_max: self.initial_max,
+            initial_float: self.initial_float,
+            unit: if self.unit.trim().is_empty() {
+                None
+            } else {
+                Some(self.unit.trim().to_string())
+            },
+            sequence_items: if self.sequence_items.is_empty() {
+                None
+            } else {
+                Some(self.sequence_items.clone())
+            },
+            sequence_loop: Some(self.sequence_loop),
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
         }))
@@ -445,10 +536,16 @@ impl EditableTrackedVarDef {
         self.initial_value.clear();
         self.initial_num = None;
         self.initial_max = None;
+        self.initial_float = None;
+        self.unit.clear();
+        self.sequence_items.clear();
+        self.sequence_loop = false;
         self.kind = Some(kind);
         match kind {
-            StateKind::Clock if self.initial_max.is_none() => self.initial_max = Some(4),
-            StateKind::Resource if self.initial_max.is_none() => self.initial_max = Some(5),
+            StateKind::Measurement if self.initial_max.is_none() => {
+                self.initial_max = Some(5);
+                self.initial_float = Some(0.0);
+            }
             _ => {}
         }
     }
@@ -462,6 +559,10 @@ impl EditableTrackedVarDef {
             ScenarioStateFieldUpdate::InitialValue(value) => self.initial_value = value,
             ScenarioStateFieldUpdate::InitialNum(value) => self.initial_num = value,
             ScenarioStateFieldUpdate::InitialMax(value) => self.initial_max = value,
+            ScenarioStateFieldUpdate::InitialFloat(value) => self.initial_float = value,
+            ScenarioStateFieldUpdate::Unit(value) => self.unit = value,
+            ScenarioStateFieldUpdate::SequenceItems(value) => self.sequence_items = value,
+            ScenarioStateFieldUpdate::SequenceLoop(value) => self.sequence_loop = value,
             ScenarioStateFieldUpdate::Visibility(value) => self.visibility = value,
             ScenarioStateFieldUpdate::UpdateHints(value) => self.update_hints = value,
         }
@@ -475,6 +576,10 @@ impl EditableTrackedVarDef {
             initial_value: self.initial_value.clone(),
             initial_num: self.initial_num,
             initial_max: self.initial_max,
+            initial_float: self.initial_float,
+            unit: self.unit.clone(),
+            sequence_items: self.sequence_items.clone(),
+            sequence_loop: self.sequence_loop,
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
             target: Some(normalize_target(&self.target)),
@@ -504,27 +609,27 @@ pub fn editable_tracked_var_to_saved(
 
 pub fn state_kind_blurb(kind: StateKind) -> &'static str {
     match kind {
-        StateKind::Resource => {
-            "Numeric track with a maximum — stress 2/5, hit points, supply. During play the GM adjusts it with add/set/remove."
+        StateKind::Measurement => {
+            "Float value with optional unit and bounds — stress, hit points, distance. Set value and optional min/max during play."
         }
-        StateKind::Clock => {
-            "Stepped progress toward an outcome — investigation 2/4, countdown. Each step fills one segment; often triggers or clears when full."
+        StateKind::Sequence => {
+            "Ordered steps with a cursor — investigation progress, turn order, countdown. Set items and position; step advances the cursor."
         }
-        StateKind::Fact => {
-            "Durable text attribute — location, shirt color, has_key. Set when established in play; update when the fiction changes."
+        StateKind::Variable => {
+            "Durable text attribute — location, shirt color, body measurements, has_key. Set when established in play; update when the fiction changes."
         }
         StateKind::Condition => {
-            "Temporary status tag — bleeding, hidden, suspicious. Same storage as a fact, but expected to clear when resolved."
+            "Temporary status tag — bleeding, hidden, suspicious. Same storage as a variable, but expected to clear when resolved."
         }
     }
 }
 
 fn state_kind_option_label(kind: StateKind) -> &'static str {
     match kind {
-        StateKind::Resource => "Resource — numeric with max",
+        StateKind::Measurement => "Measurement — float with optional unit",
         StateKind::Condition => "Condition — temporary tag",
-        StateKind::Fact => "Fact — durable text",
-        StateKind::Clock => "Clock — stepped progress",
+        StateKind::Variable => "Variable — durable text",
+        StateKind::Sequence => "Sequence — ordered steps",
     }
 }
 
@@ -536,6 +641,10 @@ pub struct ScenarioStateDefView {
     pub initial_value: String,
     pub initial_num: Option<i64>,
     pub initial_max: Option<i64>,
+    pub initial_float: Option<f64>,
+    pub unit: String,
+    pub sequence_items: Vec<String>,
+    pub sequence_loop: bool,
     pub visibility: String,
     pub update_hints: String,
     /// `Some(target)` shows the world/PC target selector (tracked-var editor);
@@ -552,6 +661,10 @@ pub enum ScenarioStateFieldUpdate {
     InitialValue(String),
     InitialNum(Option<i64>),
     InitialMax(Option<i64>),
+    InitialFloat(Option<f64>),
+    Unit(String),
+    SequenceItems(Vec<String>),
+    SequenceLoop(bool),
     Visibility(String),
     UpdateHints(String),
 }
@@ -573,9 +686,9 @@ fn kind_select(selected: Option<StateKind>, on_change: Callback<StateKind>) -> H
                     let select: web_sys::HtmlSelectElement = e.target_unchecked_into();
                     let parsed = match select.value().as_str() {
                         "condition" => StateKind::Condition,
-                        "fact" => StateKind::Fact,
-                        "clock" => StateKind::Clock,
-                        "resource" => StateKind::Resource,
+                        "variable" | "fact" => StateKind::Variable,
+                        "sequence" | "clock" => StateKind::Sequence,
+                        "measurement" | "resource" | "gauge" => StateKind::Measurement,
                         _ => return,
                     };
                     on_change.emit(parsed);
@@ -584,14 +697,14 @@ fn kind_select(selected: Option<StateKind>, on_change: Callback<StateKind>) -> H
                 <option value="" selected={selected.is_none()} disabled={true}>
                     {"Choose type…"}
                 </option>
-                <option value="resource" selected={selected == Some(StateKind::Resource)}>
-                    { state_kind_option_label(StateKind::Resource) }
+                <option value="measurement" selected={selected == Some(StateKind::Measurement)}>
+                    { state_kind_option_label(StateKind::Measurement) }
                 </option>
-                <option value="clock" selected={selected == Some(StateKind::Clock)}>
-                    { state_kind_option_label(StateKind::Clock) }
+                <option value="sequence" selected={selected == Some(StateKind::Sequence)}>
+                    { state_kind_option_label(StateKind::Sequence) }
                 </option>
-                <option value="fact" selected={selected == Some(StateKind::Fact)}>
-                    { state_kind_option_label(StateKind::Fact) }
+                <option value="variable" selected={selected == Some(StateKind::Variable)}>
+                    { state_kind_option_label(StateKind::Variable) }
                 </option>
                 <option value="condition" selected={selected == Some(StateKind::Condition)}>
                     { state_kind_option_label(StateKind::Condition) }
@@ -621,26 +734,16 @@ fn target_select(target: &str, on_change: Callback<String>) -> Html {
     }
 }
 
-fn numeric_fields(
-    kind: StateKind,
-    initial_num: Option<i64>,
+fn measurement_fields(
+    initial_float: Option<f64>,
     initial_max: Option<i64>,
+    unit: &str,
     on_update: Callback<ScenarioStateFieldUpdate>,
 ) -> Html {
-    let current_label = if kind == StateKind::Clock {
-        "Filled segments"
-    } else {
-        "Starting value"
-    };
-    let max_label = if kind == StateKind::Clock {
-        "Total segments"
-    } else {
-        "Maximum"
-    };
-    let on_num = {
+    let on_float = {
         let on_update = on_update.clone();
-        Callback::from(move |value: Option<i64>| {
-            on_update.emit(ScenarioStateFieldUpdate::InitialNum(value))
+        Callback::from(move |value: Option<f64>| {
+            on_update.emit(ScenarioStateFieldUpdate::InitialFloat(value))
         })
     };
     let on_max = {
@@ -649,10 +752,59 @@ fn numeric_fields(
             on_update.emit(ScenarioStateFieldUpdate::InitialMax(value))
         })
     };
+    let on_unit = {
+        let on_update = on_update.clone();
+        Callback::from(move |value: String| on_update.emit(ScenarioStateFieldUpdate::Unit(value)))
+    };
     html! {
         <div class="scenario-state-def-fields">
-            { optional_i64_input(current_label, initial_num, on_num) }
-            { optional_i64_input(max_label, initial_max, on_max) }
+            { optional_f64_input("Starting value", initial_float, on_float) }
+            { optional_i64_input("Maximum (optional)", initial_max, on_max) }
+            { text_input("Unit (optional)", unit, on_unit) }
+        </div>
+    }
+}
+
+fn sequence_fields(
+    items: &[String],
+    position: Option<i64>,
+    loop_enabled: bool,
+    on_update: Callback<ScenarioStateFieldUpdate>,
+) -> Html {
+    let items_text = items.join("\n");
+    let on_items = {
+        let on_update = on_update.clone();
+        Callback::from(move |value: String| {
+            let parsed = value
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            on_update.emit(ScenarioStateFieldUpdate::SequenceItems(parsed))
+        })
+    };
+    let on_position = {
+        let on_update = on_update.clone();
+        Callback::from(move |value: Option<i64>| {
+            on_update.emit(ScenarioStateFieldUpdate::InitialNum(value))
+        })
+    };
+    let on_loop = {
+        let on_update = on_update.clone();
+        Callback::from(move |e: Event| {
+            let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+            on_update.emit(ScenarioStateFieldUpdate::SequenceLoop(input.checked()))
+        })
+    };
+    html! {
+        <div class="scenario-state-def-fields">
+            { textarea_input("Items (one per line)", &items_text, on_items) }
+            { optional_i64_input("Starting position (0-based)", position, on_position) }
+            <label class="field field-inline">
+                <span class="muted">{"Loop"}</span>
+                <input type="checkbox" checked={loop_enabled} onchange={on_loop} />
+            </label>
         </div>
     }
 }
@@ -703,8 +855,10 @@ pub fn scenario_state_def_editor(props: &ScenarioStateDefEditorProps) -> Html {
                     let on_update = on_update.clone();
                     Callback::from(move |value: String| on_update.emit(ScenarioStateFieldUpdate::Description(value)))
                 }) }
-                if matches!(kind, StateKind::Resource | StateKind::Clock) {
-                    { numeric_fields(kind, view.initial_num, view.initial_max, on_update.clone()) }
+                if kind == StateKind::Measurement {
+                    { measurement_fields(view.initial_float, view.initial_max, &view.unit, on_update.clone()) }
+                } else if kind == StateKind::Sequence {
+                    { sequence_fields(&view.sequence_items, view.initial_num, view.sequence_loop, on_update.clone()) }
                 } else {
                     { text_value_fields(&view.initial_value, on_update.clone()) }
                 }

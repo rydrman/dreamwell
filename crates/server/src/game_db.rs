@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
+use dreamwell_state::state_kind_str;
 use dreamwell_types::{
     normalize_game_traits, substitute_macros, AppliedStateChange, ElementInstances, EngineMode,
     Game, GameActor, GameActorUpdate, GameCreate, GameDetail, GameElementsConfig, GameScene,
@@ -254,29 +255,6 @@ pub async fn create_game(pool: &SqlitePool, payload: GameCreate) -> AppResult<Ga
         .await?;
     }
 
-    let pc_schema_keys: std::collections::HashSet<&str> = payload
-        .state_schema
-        .iter()
-        .filter(|def| def.target.trim().eq_ignore_ascii_case("pc"))
-        .map(|def| def.key.as_str())
-        .collect();
-    for (key, current, max) in [("health", 5, 5), ("stress", 0, 5)] {
-        if pc_schema_keys.contains(key) {
-            continue;
-        }
-        sqlx::query(
-            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, num_value, max_value, source_turn, updated_at) VALUES (?1,?2,'resource',?3,?4,?5,-1,?6)",
-        )
-        .bind(id)
-        .bind(actor_id)
-        .bind(key)
-        .bind(current)
-        .bind(max)
-        .bind(&now)
-        .execute(pool)
-        .await?;
-    }
-
     seed_scenario_state(pool, id, actor_id, &payload, &now).await?;
 
     sqlx::query(
@@ -366,18 +344,42 @@ async fn seed_scenario_state(
         if target_is_named_actor && actor_id.is_none() {
             continue;
         }
-        if matches!(def.kind, StateKind::Resource | StateKind::Clock) {
-            let max_value = def.initial_max.or(num_value);
+        if def.kind == StateKind::Measurement {
+            let float_value = def
+                .initial_float
+                .or_else(|| def.initial_num.map(|n| n as f64))
+                .or_else(|| value.parse::<f64>().ok());
+            let float_max = def.initial_max.map(|n| n as f64);
             sqlx::query(
-                "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, max_value, source_turn, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,-1,?8)",
+                "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, float_value, float_min, float_max, unit, source_turn, updated_at) VALUES (?1,?2,?3,?4,'',?5,NULL,?6,?7,-1,?8)",
             )
             .bind(game_id)
             .bind(actor_id)
             .bind(kind)
             .bind(&def.key)
-            .bind(&value)
-            .bind(num_value)
-            .bind(max_value)
+            .bind(float_value)
+            .bind(float_max)
+            .bind(def.unit.as_deref())
+            .bind(now)
+            .execute(pool)
+            .await?;
+        } else if def.kind == StateKind::Sequence {
+            let items = def.sequence_items.clone().unwrap_or_default();
+            let Some(payload) = dreamwell_types::SequencePayload::new(
+                items,
+                def.initial_num,
+                def.sequence_loop.unwrap_or(false),
+            ) else {
+                continue;
+            };
+            sqlx::query(
+                "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, source_turn, updated_at) VALUES (?1,?2,?3,?4,?5,-1,?6)",
+            )
+            .bind(game_id)
+            .bind(actor_id)
+            .bind(kind)
+            .bind(&def.key)
+            .bind(payload.encode())
             .bind(now)
             .execute(pool)
             .await?;
@@ -401,7 +403,7 @@ async fn seed_scenario_state(
             continue;
         }
         sqlx::query(
-            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, source_turn, updated_at) VALUES (?1,NULL,'fact',?2,?3,-1,?4)",
+            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, source_turn, updated_at) VALUES (?1,NULL,'variable',?2,?3,-1,?4)",
         )
         .bind(game_id)
         .bind(key)
@@ -411,15 +413,6 @@ async fn seed_scenario_state(
         .await?;
     }
     Ok(())
-}
-
-fn state_kind_str(kind: StateKind) -> &'static str {
-    match kind {
-        StateKind::Resource => "resource",
-        StateKind::Condition => "condition",
-        StateKind::Fact => "fact",
-        StateKind::Clock => "clock",
-    }
 }
 
 async fn seed_opening_turn(
@@ -662,7 +655,7 @@ pub async fn update_actor(
 
 async fn list_state_entries(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<GameStateEntry>> {
     let rows = sqlx::query_as::<_, StateRow>(
-        "SELECT id, game_id, actor_id, kind, key, value, num_value, max_value, source_turn, updated_at FROM game_state_entries WHERE game_id = ?1 ORDER BY kind ASC, key ASC",
+        "SELECT id, game_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_turn, updated_at FROM game_state_entries WHERE game_id = ?1 ORDER BY kind ASC, key ASC",
     )
     .bind(game_id)
     .fetch_all(pool)
@@ -680,6 +673,10 @@ fn state_from_row(row: StateRow) -> AppResult<GameStateEntry> {
         value: row.value,
         num_value: row.num_value,
         max_value: row.max_value,
+        float_value: row.float_value,
+        float_min: row.float_min,
+        float_max: row.float_max,
+        unit: row.unit,
         source_turn: row.source_turn,
         updated_at: parse_dt(&row.updated_at)?,
     })
@@ -687,11 +684,11 @@ fn state_from_row(row: StateRow) -> AppResult<GameStateEntry> {
 
 fn parse_state_kind(s: &str) -> StateKind {
     match s {
-        "resource" => StateKind::Resource,
         "condition" => StateKind::Condition,
-        "fact" => StateKind::Fact,
-        "clock" => StateKind::Clock,
-        _ => StateKind::Fact,
+        "variable" | "fact" => StateKind::Variable,
+        "measurement" | "resource" | "gauge" => StateKind::Measurement,
+        "sequence" | "clock" => StateKind::Sequence,
+        _ => StateKind::Variable,
     }
 }
 
@@ -702,7 +699,7 @@ pub async fn update_state_entry(
     payload: GameStateEntryUpdate,
 ) -> AppResult<GameStateEntry> {
     let row = sqlx::query_as::<_, StateRow>(
-        "SELECT id, game_id, actor_id, kind, key, value, num_value, max_value, source_turn, updated_at FROM game_state_entries WHERE id = ?1 AND game_id = ?2",
+        "SELECT id, game_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_turn, updated_at FROM game_state_entries WHERE id = ?1 AND game_id = ?2",
     )
     .bind(entry_id)
     .bind(game_id)
@@ -1203,7 +1200,7 @@ pub async fn fork_game_at_turn(
     for entry in &detail.state {
         let kind = state_kind_str(entry.kind);
         sqlx::query(
-            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, max_value, source_turn, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO game_state_entries (game_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_turn, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         )
         .bind(new_id)
         .bind(entry.actor_id.and_then(|id| actor_map.get(&id).copied()))
@@ -1212,6 +1209,10 @@ pub async fn fork_game_at_turn(
         .bind(&entry.value)
         .bind(entry.num_value)
         .bind(entry.max_value)
+        .bind(entry.float_value)
+        .bind(entry.float_min)
+        .bind(entry.float_max)
+        .bind(&entry.unit)
         .bind(entry.source_turn)
         .bind(&now)
         .execute(pool)
@@ -1704,6 +1705,10 @@ struct StateRow {
     value: String,
     num_value: Option<i64>,
     max_value: Option<i64>,
+    float_value: Option<f64>,
+    float_min: Option<f64>,
+    float_max: Option<f64>,
+    unit: Option<String>,
     source_turn: i64,
     updated_at: String,
 }
@@ -1825,14 +1830,14 @@ mod tests {
             state_schema: vec![
                 TrackedVarDef {
                     key: "Leader_Position".into(),
-                    kind: StateKind::Resource,
+                    kind: StateKind::Measurement,
                     target: "world".into(),
                     initial_num: Some(3),
                     ..Default::default()
                 },
                 TrackedVarDef {
                     key: "health".into(),
-                    kind: StateKind::Resource,
+                    kind: StateKind::Measurement,
                     target: "pc".into(),
                     initial_num: Some(8),
                     initial_max: Some(10),
@@ -1854,26 +1859,43 @@ mod tests {
         .expect("world row");
         assert!(world_actor.is_none());
 
-        let (pc_actor, num, max): (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
-            "SELECT actor_id, num_value, max_value FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
-        )
-        .bind(game_id)
-        .fetch_one(&pool)
-        .await
-        .expect("health row");
+        let (pc_actor, float_value, float_max): (Option<i64>, Option<f64>, Option<f64>) =
+            sqlx::query_as(
+                "SELECT actor_id, float_value, float_max FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
+            )
+            .bind(game_id)
+            .fetch_one(&pool)
+            .await
+            .expect("health row");
         assert_eq!(pc_actor, Some(pc_id));
-        assert_eq!(num, Some(8));
-        assert_eq!(max, Some(10));
+        assert_eq!(float_value, Some(8.0));
+        assert_eq!(float_max, Some(10.0));
     }
 
     #[tokio::test]
-    async fn create_game_skips_default_health_when_schema_defines_it() {
+    async fn create_game_does_not_seed_default_health_or_stress() {
+        let pool = test_pool().await;
+        let detail = create_game(&pool, GameCreate::default())
+            .await
+            .expect("create");
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT key FROM game_state_entries WHERE game_id = ?1 AND key IN ('health', 'stress')",
+        )
+        .bind(detail.game.id)
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_game_seeds_health_from_schema() {
         let pool = test_pool().await;
         let payload = GameCreate {
             pc_name: "Hero".into(),
             state_schema: vec![TrackedVarDef {
                 key: "health".into(),
-                kind: StateKind::Resource,
+                kind: StateKind::Measurement,
                 target: "pc".into(),
                 initial_num: Some(3),
                 initial_max: Some(3),
@@ -1882,15 +1904,15 @@ mod tests {
             ..Default::default()
         };
         let detail = create_game(&pool, payload).await.expect("create");
-        let health_rows: Vec<(Option<i64>, Option<i64>)> = sqlx::query_as(
-            "SELECT num_value, max_value FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
+        let health_rows: Vec<(Option<f64>, Option<f64>)> = sqlx::query_as(
+            "SELECT float_value, float_max FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
         )
         .bind(detail.game.id)
         .fetch_all(&pool)
         .await
         .expect("health");
         assert_eq!(health_rows.len(), 1);
-        assert_eq!(health_rows[0], (Some(3), Some(3)));
+        assert_eq!(health_rows[0], (Some(3.0), Some(3.0)));
     }
 
     #[tokio::test]
@@ -1982,10 +2004,15 @@ mod tests {
             }],
             state_schema: vec![TrackedVarDef {
                 key: "alertness".into(),
-                kind: StateKind::Clock,
+                kind: StateKind::Sequence,
                 target: "Guard".into(),
                 initial_num: Some(2),
-                initial_max: Some(4),
+                sequence_items: Some(vec![
+                    "calm".into(),
+                    "watchful".into(),
+                    "alert".into(),
+                    "alarm".into(),
+                ]),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1994,16 +2021,17 @@ mod tests {
             .await
             .expect("seed");
 
-        let (actor_id, num, max): (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
-            "SELECT actor_id, num_value, max_value FROM game_state_entries WHERE game_id = ?1 AND key = 'alertness'",
+        let (actor_id, value): (Option<i64>, String) = sqlx::query_as(
+            "SELECT actor_id, value FROM game_state_entries WHERE game_id = ?1 AND key = 'alertness'",
         )
         .bind(game_id)
         .fetch_one(&pool)
         .await
         .expect("alertness");
         assert_eq!(actor_id, Some(guard_id));
-        assert_eq!(num, Some(2));
-        assert_eq!(max, Some(4));
+        let seq = dreamwell_types::SequencePayload::decode(&value).expect("sequence payload");
+        assert_eq!(seq.position, 2);
+        assert_eq!(seq.items.len(), 4);
     }
 
     #[test]
