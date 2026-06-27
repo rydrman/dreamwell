@@ -28,29 +28,35 @@ pub enum UnitClass {
 /// UCUM for foot/inch/pound (and `ft` alone parses as femtotonne), so we normalize first.
 const COMMON_UNIT_ALIASES: &[(&str, &str)] = &[
     ("ft", "[ft_i]"),
+    ("ft_i", "[ft_i]"),
     ("foot", "[ft_i]"),
     ("feet", "[ft_i]"),
     ("in", "[in_i]"),
+    ("in_i", "[in_i]"),
     ("inch", "[in_i]"),
     ("inches", "[in_i]"),
     ("yd", "[yd_i]"),
+    ("yd_i", "[yd_i]"),
     ("yard", "[yd_i]"),
     ("yards", "[yd_i]"),
     ("mi", "[mi_us]"),
+    ("mi_us", "[mi_us]"),
     ("mile", "[mi_us]"),
     ("miles", "[mi_us]"),
     ("lb", "[lb_av]"),
+    ("lb_av", "[lb_av]"),
     ("lbs", "[lb_av]"),
     ("pound", "[lb_av]"),
     ("pounds", "[lb_av]"),
     ("oz", "[oz_av]"),
+    ("oz_av", "[oz_av]"),
     ("ounce", "[oz_av]"),
     ("ounces", "[oz_av]"),
     ("f", "[degF]"),
-    ("fahrenheit", "[degF]"),
     ("degf", "[degF]"),
-    ("deg f", "[degF]"),
     ("deg_f", "[degF]"),
+    ("fahrenheit", "[degF]"),
+    ("deg f", "[degF]"),
     ("c", "Cel"),
     ("celsius", "Cel"),
     ("degc", "Cel"),
@@ -148,7 +154,8 @@ pub fn friendly_unit_label(unit: &str) -> &str {
 mod display;
 
 pub use display::{
-    format_feet_inches, format_measurement_display, format_measurement_value, MeasurementDisplay,
+    format_feet_inches, format_measurement_change_display, format_measurement_display,
+    format_measurement_value, MeasurementDisplay,
 };
 
 /// Parse an optional unit string into a normalized class for storage and UI.
@@ -345,6 +352,19 @@ mod tests {
         assert_eq!(friendly_unit_label("[ft_i]"), "ft");
         assert_eq!(friendly_unit_label("[lb_av]"), "lb");
         assert_eq!(friendly_unit_label("stress"), "stress");
+    }
+
+    #[test]
+    fn bracketless_ucum_aliases_resolve() {
+        for (input, expected) in [("in_i", "[in_i]"), ("ft_i", "[ft_i]"), ("lb_av", "[lb_av]")] {
+            let class = classify_unit(Some(input));
+            assert!(
+                matches!(class, UnitClass::Ucum { ref canonical, .. } if canonical == expected),
+                "{input} should canonicalize to {expected}, got {class:?}"
+            );
+        }
+        let display = format_measurement_value(71.0, Some("in_i"));
+        assert_eq!(display.primary, "5′11″");
     }
 
     #[test]

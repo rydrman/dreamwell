@@ -232,6 +232,30 @@ pub fn format_measurement_display(
     }
 }
 
+/// Format a before→after measurement change for state-change rows.
+pub fn format_measurement_change_display(
+    prev: Option<f64>,
+    next: Option<f64>,
+    unit: Option<&str>,
+) -> MeasurementDisplay {
+    match (prev, next) {
+        (Some(p), Some(n)) => {
+            let prev_display = format_measurement_value(p, unit);
+            let next_display = format_measurement_value(n, unit);
+            MeasurementDisplay {
+                primary: format!("{} → {}", prev_display.primary, next_display.primary),
+                secondary: merge_secondaries(prev_display.secondary, next_display.secondary),
+            }
+        }
+        (None, Some(n)) => format_measurement_value(n, unit),
+        (Some(p), None) => format_measurement_value(p, unit),
+        (None, None) => MeasurementDisplay {
+            primary: String::new(),
+            secondary: None,
+        },
+    }
+}
+
 fn merge_secondaries(current: Option<String>, max: Option<String>) -> Option<String> {
     match (current, max) {
         (Some(c), Some(m)) => Some(format!("{} / {}", c, m)),
@@ -304,6 +328,13 @@ mod tests {
     fn bounded_measurement_formats_both_ends() {
         let display = format_measurement_display(3.0, Some(5.0), Some("kg"));
         assert_eq!(display.primary, "3 kg / 5 kg");
+        assert!(display.secondary.is_some());
+    }
+
+    #[test]
+    fn measurement_change_formats_transition_with_units() {
+        let display = format_measurement_change_display(Some(71.0), Some(72.0), Some("[in_i]"));
+        assert_eq!(display.primary, "5′11″ → 6′");
         assert!(display.secondary.is_some());
     }
 
