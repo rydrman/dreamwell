@@ -16,6 +16,7 @@ bytes = "1"
 chrono = { workspace = true }
 dreamwell-state = { workspace = true }
 dreamwell-types = { workspace = true }
+dreamwell-units = { workspace = true }
 dynamo-parsers = "2.1"
 futures-util = "0.3"
 png = "0.17"

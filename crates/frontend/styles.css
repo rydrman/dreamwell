@@ -3215,7 +3215,7 @@ details.plan-beats-list {
   color: var(--muted);
 }
 
-.state-chip--kind-resource {
+.state-chip--kind-measurement {
   color: #6cb;
 }
 
@@ -3227,7 +3227,7 @@ details.plan-beats-list {
   color: #9ad;
 }
 
-.state-chip--kind-clock {
+.state-chip--kind-sequence {
   color: #b8c;
 }
 

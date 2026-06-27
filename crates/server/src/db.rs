@@ -458,7 +458,7 @@ pub async fn list_chat_state_entries(
     chat_id: i64,
 ) -> AppResult<Vec<ChatStateEntry>> {
     let rows = sqlx::query_as::<_, ChatStateRow>(
-        "SELECT id, chat_id, actor_id, kind, key, value, num_value, max_value, source_message_id, updated_at FROM chat_state_entries WHERE chat_id = ?1 ORDER BY kind ASC, key ASC",
+        "SELECT id, chat_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_message_id, updated_at FROM chat_state_entries WHERE chat_id = ?1 ORDER BY kind ASC, key ASC",
     )
     .bind(chat_id)
     .fetch_all(pool)
@@ -473,7 +473,7 @@ pub async fn update_chat_state_entry(
     payload: ChatStateEntryUpdate,
 ) -> AppResult<ChatStateEntry> {
     let row = sqlx::query_as::<_, ChatStateRow>(
-        "SELECT id, chat_id, actor_id, kind, key, value, num_value, max_value, source_message_id, updated_at FROM chat_state_entries WHERE id = ?1 AND chat_id = ?2",
+        "SELECT id, chat_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_message_id, updated_at FROM chat_state_entries WHERE id = ?1 AND chat_id = ?2",
     )
     .bind(entry_id)
     .bind(chat_id)
@@ -506,10 +506,10 @@ pub async fn update_chat_state_entry(
 
 fn parse_state_kind(s: &str) -> StateKind {
     match s {
-        "resource" => StateKind::Resource,
         "condition" => StateKind::Condition,
         "variable" | "fact" => StateKind::Variable,
-        "clock" => StateKind::Clock,
+        "measurement" | "resource" | "gauge" => StateKind::Measurement,
+        "sequence" | "clock" => StateKind::Sequence,
         _ => StateKind::Variable,
     }
 }
@@ -538,6 +538,10 @@ fn chat_state_from_row(row: ChatStateRow) -> AppResult<ChatStateEntry> {
         value: row.value,
         num_value: row.num_value,
         max_value: row.max_value,
+        float_value: row.float_value,
+        float_min: row.float_min,
+        float_max: row.float_max,
+        unit: row.unit,
         source_message_id: row.source_message_id,
         updated_at: parse_dt(&row.updated_at)?,
     })
@@ -2232,6 +2236,10 @@ struct ChatStateRow {
     value: String,
     num_value: Option<i64>,
     max_value: Option<i64>,
+    float_value: Option<f64>,
+    float_min: Option<f64>,
+    float_max: Option<f64>,
+    unit: Option<String>,
     source_message_id: i64,
     updated_at: String,
 }

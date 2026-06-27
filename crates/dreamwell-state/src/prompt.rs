@@ -26,32 +26,33 @@ macro_rules! state_kind_rules_text {
     () => {
         r#"State kind rules (one slot per target+key — pick the right kind once and keep it):
 - Pick by the value's shape, not the topic:
-  - Text or a label (excited, tavern, green, has_key, allied) → variable (or condition if it clears soon)
-  - A number with a maximum (3/5 stress, 2/4 countdown) → resource or clock
-- variable (DEFAULT): durable text attribute — location, mood, inventory, traits, relationships, quest stage, appearance, body measurements. Use set/remove with value strings. When unsure, use variable.
+  - Text or a label (excited, tavern, green, has_key, allied, athletic) → variable (or condition if it clears soon)
+  - A float number (height, stress level, arousal) → measurement
+  - An ordered list with a cursor (turn order, quest steps, queue) → sequence
+- variable (DEFAULT): durable text attribute — location, mood, inventory, traits, relationships, quest stage, appearance, body descriptions. Use set/remove with value strings. When unsure, use variable.
 - condition: ephemeral status tags expected to clear soon (hidden, bleeding, inspired) — not durable mood, location, or inventory.
-- resource: a numeric track with a ceiling — stress 2/5, hit points, supply. Use only when the value is a count with a max; never for a text attribute like mood, location, or measurements.
-- clock: numeric progress in segments toward an outcome — countdown 2/4, investigation clock.
-- Keep the kind stable: if a key already shows in current state as (resource)/(clock)/(variable)/(condition), keep using that same kind — do not flip a text variable into a resource or vice versa.
+- measurement: a float value, unbounded by default. Optional unit (cm, kg, stress). Use set_measurement_min/max only when bounds matter; clear_measurement wipes value, bounds, and unit.
+- sequence: ordered string items with an active cursor. Use set_sequence (non-empty items), step_sequence to advance, clear_sequence to remove.
+- Keep the kind stable: if a key already shows in current state as (measurement)/(sequence)/(variable)/(condition), keep using that same kind.
 
 BAD kind picks:
-- resource/clock for mood, location, shirt_color, body measurements, or any text attribute
+- measurement/sequence for mood, location, shirt_color, or prose descriptions (use variable)
 - changing a key's kind away from what current state already shows
 
 GOOD:
-- variable: mood=excited, location=tavern, shirt_color=green, height=6'2"
-- resource: stress +1 (a counted track with a max)"#
+- variable: mood=excited, location=tavern, build=athletic, shirt_color=green
+- measurement: height=182 unit=cm; stress=2.5
+- sequence: items=[pc, Maya, guard] for turn order"#
     };
 }
 
 pub const STATE_CHANGE_RULES: &str = concat!(
     r#"State change rules:
-- kind: resource|condition|variable|clock; op: set|add|remove
+- kind: measurement|condition|variable|sequence; op: set|add|remove|setmin|setmax|step
 - One atomic scalar per (target, key) — keys are unique per target regardless of kind
 - Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
 - value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"
-- Resource/clock use numeric delta or set values; conditions/variables use value strings
-- Resource and clock values clamp to 0..max
+- Measurements use float values; variables/conditions use value strings
 
 "#,
     state_kind_rules_text!()
@@ -60,13 +61,12 @@ pub const STATE_CHANGE_RULES: &str = concat!(
 pub const STATE_CHANGE_PROMPT: &str = concat!(
     r#"State change rules:
 - target: "pc" for the player character, "world" for global scope, or a named NPC
-- kind: resource|condition|variable|clock; op: set|add|remove
+- kind: measurement|condition|variable|sequence; op: set|add|remove|setmin|setmax|step
 - One atomic scalar per (target, key) — keys are unique per target regardless of kind
 - Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
 - value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"
 - Prefer actor targets over world for anything about a specific person
-- Resource/clock use numeric delta or set values; conditions/variables use value strings
-- Resource and clock values clamp to 0..max
+- Measurements use float values; variables/conditions use value strings
 
 "#,
     state_kind_rules_text!(),
@@ -82,7 +82,7 @@ pub const PLAN_BEAT_RULES: &str = r#"Plan beat rules:
 - GOOD (specific): "Answer whether the cellar door is still locked and mention the key on the windowsill", "Have the character agree to meet at the bridge at dusk", "Describe the smell of rain on the coat they asked about"
 - Typically 3–6 beats for a normal reply; fewer when the user message is simple
 - Do not plan future turns, unprompted plot twists, or beats that ignore what the user just said
-- State changes should capture durable variables the beats establish — prefer set_variable and named actor targets; use resource/clock only for genuinely numeric tracks (a count with a max), one attribute per key"#;
+- State changes should capture durable variables the beats establish — prefer set_variable and named actor targets; use measurement/sequence only when genuinely numeric or ordered lists"#;
 
 pub const RECHECK_SYSTEM_PROMPT: &str = r#"You review prose against typed session state.
 
@@ -96,7 +96,7 @@ Rules:
 - Output ONLY valid JSON matching the schema
 
 When adding or correcting entries:
-- Default to kind=variable for durable text attributes; use resource/clock only for genuinely numeric tracks (a count with a max), and keep a key's existing kind stable
+- Default to kind=variable for durable text attributes; use measurement/sequence only when appropriate, and keep a key's existing kind stable
 - Prefer actor targets ("pc" or a named NPC) for variables about a specific person — not world
 - One atomic attribute per key; split packed world entries onto the right actor
 - Use short snake_case keys; values hold only the attribute, not full sentences"#;
@@ -111,7 +111,7 @@ mod tests {
         assert!(STATE_CHANGE_PROMPT.contains("shirt_color"));
         assert!(STATE_CHANGE_PROMPT.contains("Prefer actor targets"));
         assert!(STATE_CHANGE_PROMPT.contains("variable (DEFAULT)"));
-        assert!(STATE_CHANGE_PROMPT.contains("never for a text attribute"));
+        assert!(STATE_CHANGE_PROMPT.contains("measurement/sequence for mood"));
     }
 
     #[test]

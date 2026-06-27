@@ -1,27 +1,37 @@
 use std::collections::HashMap;
 
 use dreamwell_types::{
-    AppliedStateChange, SessionActor, StateChangeRequest, StateEntry, StateKind, StateOp,
+    clamp_measurement, AppliedStateChange, SequencePayload, SessionActor, StateChangeRequest,
+    StateEntry, StateKind, StateOp,
 };
 
 use crate::resolve::{normalize_target, resolve_actor_id};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EntryMutation {
     Insert {
         actor_id: Option<i64>,
         kind: StateKind,
         key: String,
         value: String,
-        num_value: Option<i64>,
-        max_value: Option<i64>,
-    },
-    UpdateNumeric {
-        entry_id: i64,
-        num_value: i64,
-        max_value: i64,
+        float_value: Option<f64>,
+        float_min: Option<f64>,
+        float_max: Option<f64>,
+        unit: Option<String>,
     },
     UpdateText {
+        entry_id: i64,
+        value: String,
+    },
+    UpdateMeasurement {
+        entry_id: i64,
+        float_value: Option<f64>,
+        float_min: Option<f64>,
+        float_max: Option<f64>,
+        unit: Option<String>,
+        clear: bool,
+    },
+    UpdateSequence {
         entry_id: i64,
         value: String,
     },
@@ -47,8 +57,19 @@ pub struct ApplyPlan {
     pub audit: Vec<AppliedStateChange>,
 }
 
-fn is_numeric_kind(kind: StateKind) -> bool {
-    matches!(kind, StateKind::Resource | StateKind::Clock)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KindFamily {
+    Text,
+    Measurement,
+    Sequence,
+}
+
+fn kind_family(kind: StateKind) -> KindFamily {
+    match kind {
+        StateKind::Variable | StateKind::Condition => KindFamily::Text,
+        StateKind::Measurement => KindFamily::Measurement,
+        StateKind::Sequence => KindFamily::Sequence,
+    }
 }
 
 pub fn plan_state_changes(
@@ -101,10 +122,10 @@ pub fn plan_state_changes(
         let slot = (actor_id, change.key.clone());
         let existing = index.get(&slot).copied();
 
-        let (applied, change_mutations) = if is_numeric_kind(change.kind) {
-            plan_numeric_with_collision(change, actor_id, existing)
-        } else {
-            plan_text_with_collision(change, actor_id, existing)
+        let (applied, change_mutations) = match kind_family(change.kind) {
+            KindFamily::Text => plan_text_with_collision(change, actor_id, existing),
+            KindFamily::Measurement => plan_measurement_with_collision(change, actor_id, existing),
+            KindFamily::Sequence => plan_sequence_with_collision(change, actor_id, existing),
         };
 
         for mutation in &change_mutations {
@@ -123,38 +144,46 @@ pub fn plan_state_changes(
     }
 }
 
-fn plan_numeric_with_collision(
+fn plan_with_collision<F>(
     change: &StateChangeRequest,
     actor_id: Option<i64>,
     existing: Option<&StateEntry>,
-) -> (AppliedStateChange, Vec<EntryMutation>) {
+    same_family: impl Fn(&StateKind) -> bool,
+    plan_same: F,
+    plan_new: F,
+) -> (AppliedStateChange, Vec<EntryMutation>)
+where
+    F: Fn(
+        &StateChangeRequest,
+        Option<i64>,
+        Option<&StateEntry>,
+    ) -> (AppliedStateChange, Vec<EntryMutation>),
+{
     let Some(existing) = existing else {
-        let (applied, mutation) = plan_numeric_change(change, actor_id, None);
-        return (applied, mutation.into_iter().collect());
+        let (applied, mutations) = plan_new(change, actor_id, None);
+        return (applied, mutations);
     };
 
-    if is_numeric_kind(existing.kind) {
-        let (applied, mutation) = plan_numeric_change(change, actor_id, Some(existing));
-        let mut mutations: Vec<EntryMutation> = mutation.into_iter().collect();
+    if same_family(&existing.kind) {
+        let (applied, mutations) = plan_same(change, actor_id, Some(existing));
+        let mut out = mutations;
         if existing.kind != change.kind {
-            mutations.push(EntryMutation::UpdateKind {
+            out.push(EntryMutation::UpdateKind {
                 entry_id: existing.id,
                 kind: change.kind,
             });
         }
-        return (applied, mutations);
+        return (applied, out);
     }
 
-    let (mut applied, insert) = plan_numeric_change(change, actor_id, None);
+    let (mut applied, new_mutations) = plan_new(change, actor_id, None);
     applied.prev_kind = Some(existing.kind);
     applied.prev_value = Some(existing.value.clone());
-    applied.prev_num = existing.num_value;
+    applied.prev_num = existing.float_value.map(|v| v.round() as i64);
     let mut mutations = vec![EntryMutation::Delete {
         entry_id: existing.id,
     }];
-    if let Some(m) = insert {
-        mutations.push(m);
-    }
+    mutations.extend(new_mutations);
     (applied, mutations)
 }
 
@@ -163,99 +192,51 @@ fn plan_text_with_collision(
     actor_id: Option<i64>,
     existing: Option<&StateEntry>,
 ) -> (AppliedStateChange, Vec<EntryMutation>) {
-    let Some(existing) = existing else {
-        let (applied, mutation) = plan_text_change(change, actor_id, None);
-        return (applied, mutation.into_iter().collect());
-    };
-
-    if !is_numeric_kind(existing.kind) {
-        let (applied, mutation) = plan_text_change(change, actor_id, Some(existing));
-        let mut mutations: Vec<EntryMutation> = mutation.into_iter().collect();
-        if existing.kind != change.kind {
-            mutations.push(EntryMutation::UpdateKind {
-                entry_id: existing.id,
-                kind: change.kind,
-            });
-        }
-        return (applied, mutations);
-    }
-
-    let (mut applied, insert) = plan_text_change(change, actor_id, None);
-    applied.prev_kind = Some(existing.kind);
-    applied.prev_value = Some(existing.value.clone());
-    applied.prev_num = existing.num_value;
-    let mut mutations = vec![EntryMutation::Delete {
-        entry_id: existing.id,
-    }];
-    if let Some(m) = insert {
-        mutations.push(m);
-    }
-    (applied, mutations)
+    plan_with_collision(
+        change,
+        actor_id,
+        existing,
+        |kind| matches!(kind, StateKind::Variable | StateKind::Condition),
+        plan_text_change,
+        plan_text_change,
+    )
 }
 
-fn plan_numeric_change(
+fn plan_measurement_with_collision(
     change: &StateChangeRequest,
     actor_id: Option<i64>,
     existing: Option<&StateEntry>,
-) -> (AppliedStateChange, Option<EntryMutation>) {
-    let prev_kind = existing.map(|e| e.kind);
-    let prev_num = existing.and_then(|e| e.num_value);
-    let prev_value = existing.map(|e| e.value.clone());
-    let max = existing
-        .and_then(|e| e.max_value)
-        .or_else(|| {
-            if change.kind == StateKind::Clock {
-                Some(4)
-            } else {
-                change.delta.map(|_| 5).or(Some(5))
-            }
-        })
-        .unwrap_or(5);
+) -> (AppliedStateChange, Vec<EntryMutation>) {
+    plan_with_collision(
+        change,
+        actor_id,
+        existing,
+        |kind| *kind == StateKind::Measurement,
+        plan_measurement_change,
+        plan_measurement_change,
+    )
+}
 
-    let current = prev_num.unwrap_or(0);
-    let new_num = match change.op {
-        StateOp::Set => change.delta.unwrap_or(num_value_from_value(change)),
-        StateOp::Add => current + change.delta.unwrap_or(0),
-        StateOp::Remove => 0,
-    };
-    let clamped = new_num.clamp(0, max);
-
-    let mutation = if let Some(entry) = existing {
-        Some(EntryMutation::UpdateNumeric {
-            entry_id: entry.id,
-            num_value: clamped,
-            max_value: max,
-        })
-    } else {
-        Some(EntryMutation::Insert {
-            actor_id,
-            kind: change.kind,
-            key: change.key.clone(),
-            value: String::new(),
-            num_value: Some(clamped),
-            max_value: Some(max),
-        })
-    };
-
-    let applied = AppliedStateChange {
-        target: change.target.clone(),
-        kind: change.kind,
-        key: change.key.clone(),
-        op: change.op,
-        value: Some(clamped.to_string()),
-        delta: change.delta,
-        prev_value,
-        prev_num,
-        prev_kind,
-    };
-    (applied, mutation)
+fn plan_sequence_with_collision(
+    change: &StateChangeRequest,
+    actor_id: Option<i64>,
+    existing: Option<&StateEntry>,
+) -> (AppliedStateChange, Vec<EntryMutation>) {
+    plan_with_collision(
+        change,
+        actor_id,
+        existing,
+        |kind| *kind == StateKind::Sequence,
+        plan_sequence_change,
+        plan_sequence_change,
+    )
 }
 
 fn plan_text_change(
     change: &StateChangeRequest,
     actor_id: Option<i64>,
     existing: Option<&StateEntry>,
-) -> (AppliedStateChange, Option<EntryMutation>) {
+) -> (AppliedStateChange, Vec<EntryMutation>) {
     let prev_kind = existing.map(|e| e.kind);
     let prev_value = existing.map(|e| e.value.clone());
     let new_value = match change.op {
@@ -266,24 +247,30 @@ fn plan_text_change(
             change.value.as_deref().unwrap_or("")
         ),
         StateOp::Remove => String::new(),
+        _ => change.value.clone().unwrap_or_default(),
     };
 
     let mutation = if change.op == StateOp::Remove && new_value.is_empty() {
-        existing.map(|entry| EntryMutation::Delete { entry_id: entry.id })
+        existing
+            .map(|entry| EntryMutation::Delete { entry_id: entry.id })
+            .into_iter()
+            .collect()
     } else if let Some(entry) = existing {
-        Some(EntryMutation::UpdateText {
+        vec![EntryMutation::UpdateText {
             entry_id: entry.id,
             value: new_value.clone(),
-        })
+        }]
     } else {
-        Some(EntryMutation::Insert {
+        vec![EntryMutation::Insert {
             actor_id,
             kind: change.kind,
             key: change.key.clone(),
             value: new_value.clone(),
-            num_value: None,
-            max_value: None,
-        })
+            float_value: None,
+            float_min: None,
+            float_max: None,
+            unit: None,
+        }]
     };
 
     let applied = AppliedStateChange {
@@ -294,7 +281,212 @@ fn plan_text_change(
         value: Some(new_value),
         delta: None,
         prev_value,
-        prev_num: existing.and_then(|e| e.num_value),
+        prev_num: existing.and_then(|e| e.float_value.map(|v| v.round() as i64)),
+        prev_kind,
+    };
+    (applied, mutation)
+}
+
+fn float_from_change(change: &StateChangeRequest) -> Option<f64> {
+    change.float_value.or_else(|| {
+        change
+            .value
+            .as_deref()
+            .and_then(|v| v.parse::<f64>().ok())
+            .or_else(|| change.delta.map(|d| d as f64))
+    })
+}
+
+fn plan_measurement_change(
+    change: &StateChangeRequest,
+    actor_id: Option<i64>,
+    existing: Option<&StateEntry>,
+) -> (AppliedStateChange, Vec<EntryMutation>) {
+    let prev_kind = existing.map(|e| e.kind);
+    let prev_value = existing.map(|e| e.value.clone());
+    let prev_num = existing.and_then(|e| e.float_value.map(|v| v.round() as i64));
+
+    let (float_value, float_min, float_max, unit, clear) = match change.op {
+        StateOp::Remove => (None, None, None, None, true),
+        StateOp::SetMin => (
+            existing.and_then(|e| e.float_value),
+            float_from_change(change),
+            existing.and_then(|e| e.float_max),
+            existing.and_then(|e| e.unit.clone()),
+            false,
+        ),
+        StateOp::SetMax => (
+            existing.and_then(|e| e.float_value),
+            existing.and_then(|e| e.float_min),
+            float_from_change(change),
+            existing.and_then(|e| e.unit.clone()),
+            false,
+        ),
+        StateOp::Set => {
+            let raw = float_from_change(change).unwrap_or(0.0);
+            let min = existing.and_then(|e| e.float_min);
+            let max = existing.and_then(|e| e.float_max);
+            let value = clamp_measurement(raw, min, max);
+            (
+                Some(value),
+                min,
+                max,
+                change
+                    .unit
+                    .clone()
+                    .or_else(|| existing.and_then(|e| e.unit.clone())),
+                false,
+            )
+        }
+        StateOp::Add => {
+            let current = existing.and_then(|e| e.float_value).unwrap_or(0.0);
+            let raw = current + change.delta.unwrap_or(0) as f64;
+            let min = existing.and_then(|e| e.float_min);
+            let max = existing.and_then(|e| e.float_max);
+            let value = clamp_measurement(raw, min, max);
+            (
+                Some(value),
+                min,
+                max,
+                existing.and_then(|e| e.unit.clone()),
+                false,
+            )
+        }
+        _ => (
+            existing.and_then(|e| e.float_value),
+            existing.and_then(|e| e.float_min),
+            existing.and_then(|e| e.float_max),
+            existing.and_then(|e| e.unit.clone()),
+            false,
+        ),
+    };
+
+    let display_value = float_value
+        .map(|v| v.to_string())
+        .or_else(|| prev_num.map(|n| n.to_string()));
+
+    let mutation = if clear {
+        existing
+            .map(|entry| EntryMutation::Delete { entry_id: entry.id })
+            .into_iter()
+            .collect()
+    } else if let Some(entry) = existing {
+        vec![EntryMutation::UpdateMeasurement {
+            entry_id: entry.id,
+            float_value,
+            float_min,
+            float_max,
+            unit: unit.clone(),
+            clear: false,
+        }]
+    } else {
+        vec![EntryMutation::Insert {
+            actor_id,
+            kind: StateKind::Measurement,
+            key: change.key.clone(),
+            value: String::new(),
+            float_value,
+            float_min,
+            float_max,
+            unit: unit.clone(),
+        }]
+    };
+
+    let applied = AppliedStateChange {
+        target: change.target.clone(),
+        kind: StateKind::Measurement,
+        key: change.key.clone(),
+        op: change.op,
+        value: display_value,
+        delta: change.delta,
+        prev_value,
+        prev_num,
+        prev_kind,
+    };
+    (applied, mutation)
+}
+
+fn plan_sequence_change(
+    change: &StateChangeRequest,
+    actor_id: Option<i64>,
+    existing: Option<&StateEntry>,
+) -> (AppliedStateChange, Vec<EntryMutation>) {
+    let prev_kind = existing.map(|e| e.kind);
+    let prev_value = existing.map(|e| e.value.clone());
+    let prev_num = existing
+        .and_then(|e| SequencePayload::decode(&e.value))
+        .map(|s| s.position);
+
+    let encoded = if change.op == StateOp::Remove {
+        None
+    } else if change.op == StateOp::Step {
+        let Some(entry) = existing else {
+            return (
+                AppliedStateChange {
+                    target: change.target.clone(),
+                    kind: StateKind::Sequence,
+                    key: change.key.clone(),
+                    op: change.op,
+                    value: None,
+                    delta: change.delta,
+                    prev_value,
+                    prev_num,
+                    prev_kind,
+                },
+                vec![],
+            );
+        };
+        let mut seq = SequencePayload::decode(&entry.value).unwrap_or_else(|| {
+            SequencePayload::new(vec!["step".into()], Some(0), false).expect("fallback")
+        });
+        let _ = seq.step(change.delta.unwrap_or(1));
+        Some(seq.encode())
+    } else {
+        let items = change.sequence_items.clone().unwrap_or_default();
+        let payload = SequencePayload::new(
+            items,
+            change.sequence_position,
+            change.sequence_loop.unwrap_or(false),
+        );
+        payload.map(|p| p.encode())
+    };
+
+    let mutation = if change.op == StateOp::Remove {
+        existing
+            .map(|entry| EntryMutation::Delete { entry_id: entry.id })
+            .into_iter()
+            .collect()
+    } else if let Some(value) = encoded.clone() {
+        if let Some(entry) = existing {
+            vec![EntryMutation::UpdateSequence {
+                entry_id: entry.id,
+                value,
+            }]
+        } else {
+            vec![EntryMutation::Insert {
+                actor_id,
+                kind: StateKind::Sequence,
+                key: change.key.clone(),
+                value,
+                float_value: None,
+                float_min: None,
+                float_max: None,
+                unit: None,
+            }]
+        }
+    } else {
+        vec![]
+    };
+
+    let applied = AppliedStateChange {
+        target: change.target.clone(),
+        kind: StateKind::Sequence,
+        key: change.key.clone(),
+        op: change.op,
+        value: encoded,
+        delta: change.delta,
+        prev_value,
+        prev_num,
         prev_kind,
     };
     (applied, mutation)
@@ -319,13 +511,13 @@ pub fn plan_revert_changes(
                 kind: change.kind,
                 key: change.key.clone(),
             });
-            if is_numeric_kind(prev_kind) {
-                if let Some(num_value) = change.prev_num {
-                    mutations.push(RevertMutation::RestoreNumeric {
+            if matches!(prev_kind, StateKind::Measurement | StateKind::Sequence) {
+                if let Some(value) = &change.prev_value {
+                    mutations.push(RevertMutation::RestoreStructured {
                         actor_id,
                         kind: prev_kind,
                         key: change.key.clone(),
-                        num_value,
+                        value: value.clone(),
                     });
                 }
             } else if let Some(value) = &change.prev_value {
@@ -340,14 +532,22 @@ pub fn plan_revert_changes(
         }
 
         match change.kind {
-            StateKind::Resource | StateKind::Clock => {
-                if let Some(prev) = change.prev_num {
-                    mutations.push(RevertMutation::RestoreNumeric {
-                        actor_id,
-                        kind: change.kind,
-                        key: change.key.clone(),
-                        num_value: prev,
-                    });
+            StateKind::Measurement | StateKind::Sequence => {
+                if let Some(prev) = &change.prev_value {
+                    if prev.is_empty() {
+                        mutations.push(RevertMutation::DeleteByKey {
+                            actor_id,
+                            kind: change.kind,
+                            key: change.key.clone(),
+                        });
+                    } else {
+                        mutations.push(RevertMutation::RestoreStructured {
+                            actor_id,
+                            kind: change.kind,
+                            key: change.key.clone(),
+                            value: prev.clone(),
+                        });
+                    }
                 } else {
                     mutations.push(RevertMutation::DeleteByKey {
                         actor_id,
@@ -379,11 +579,11 @@ pub fn plan_revert_changes(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevertMutation {
-    RestoreNumeric {
+    RestoreStructured {
         actor_id: Option<i64>,
         kind: StateKind,
         key: String,
-        num_value: i64,
+        value: String,
     },
     RestoreText {
         actor_id: Option<i64>,
@@ -398,20 +598,12 @@ pub enum RevertMutation {
     },
 }
 
-fn num_value_from_value(change: &StateChangeRequest) -> i64 {
-    change
-        .value
-        .as_deref()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-}
-
 pub fn state_kind_str(kind: StateKind) -> &'static str {
     match kind {
-        StateKind::Resource => "resource",
+        StateKind::Measurement => "measurement",
         StateKind::Condition => "condition",
         StateKind::Variable => "variable",
-        StateKind::Clock => "clock",
+        StateKind::Sequence => "sequence",
     }
 }
 
@@ -419,51 +611,6 @@ pub fn state_kind_str(kind: StateKind) -> &'static str {
 mod tests {
     use super::*;
     use chrono::Utc;
-
-    fn entry(id: i64, key: &str, num: i64, max: i64) -> StateEntry {
-        StateEntry {
-            id,
-            game_id: 1,
-            actor_id: None,
-            kind: StateKind::Resource,
-            key: key.to_string(),
-            value: String::new(),
-            num_value: Some(num),
-            max_value: Some(max),
-            source_turn: 1,
-            updated_at: Utc::now(),
-        }
-    }
-
-    fn pc_entry(key: &str, num: i64, max: i64) -> StateEntry {
-        StateEntry {
-            id: 1,
-            game_id: 1,
-            actor_id: Some(1),
-            kind: StateKind::Resource,
-            key: key.to_string(),
-            value: String::new(),
-            num_value: Some(num),
-            max_value: Some(max),
-            source_turn: 1,
-            updated_at: Utc::now(),
-        }
-    }
-
-    fn text_entry(id: i64, key: &str, kind: StateKind, value: &str) -> StateEntry {
-        StateEntry {
-            id,
-            game_id: 1,
-            actor_id: None,
-            kind,
-            key: key.to_string(),
-            value: value.to_string(),
-            num_value: None,
-            max_value: None,
-            source_turn: 1,
-            updated_at: Utc::now(),
-        }
-    }
 
     fn actor() -> SessionActor {
         SessionActor {
@@ -479,121 +626,100 @@ mod tests {
         }
     }
 
+    fn measurement_entry(key: &str, value: f64, max: Option<f64>) -> StateEntry {
+        StateEntry {
+            id: 1,
+            game_id: 1,
+            actor_id: Some(1),
+            kind: StateKind::Measurement,
+            key: key.to_string(),
+            value: String::new(),
+            num_value: None,
+            max_value: None,
+            float_value: Some(value),
+            float_min: None,
+            float_max: max,
+            unit: None,
+            source_turn: 1,
+            updated_at: Utc::now(),
+        }
+    }
+
     #[test]
-    fn add_clamps_to_max() {
+    fn measurement_clamps_to_max() {
         let plan = plan_state_changes(
             &[StateChangeRequest {
                 target: "pc".into(),
-                kind: StateKind::Resource,
+                kind: StateKind::Measurement,
                 key: "stress".into(),
-                op: StateOp::Add,
+                op: StateOp::Set,
                 value: None,
-                delta: Some(10),
+                delta: None,
+                float_value: Some(9.0),
+                float_min: None,
+                float_max: None,
+                unit: None,
+                sequence_items: None,
+                sequence_position: None,
+                sequence_loop: None,
             }],
             &[actor()],
-            &[pc_entry("stress", 2, 5)],
+            &[measurement_entry("stress", 2.0, Some(5.0))],
         );
-        assert_eq!(plan.mutations.len(), 1);
         assert!(matches!(
             plan.mutations[0],
-            EntryMutation::UpdateNumeric {
-                num_value: 5,
-                max_value: 5,
+            EntryMutation::UpdateMeasurement {
+                float_value: Some(5.0),
                 ..
             }
         ));
-        assert_eq!(plan.audit[0].value.as_deref(), Some("5"));
-        assert_eq!(plan.audit[0].prev_num, Some(2));
     }
 
     #[test]
-    fn unknown_target_schedules_vivify() {
+    fn sequence_rejects_empty_set() {
         let plan = plan_state_changes(
             &[StateChangeRequest {
-                target: "Alice".into(),
+                target: "world".into(),
+                kind: StateKind::Sequence,
+                key: "initiative".into(),
+                op: StateOp::Set,
+                value: None,
+                delta: None,
+                float_value: None,
+                float_min: None,
+                float_max: None,
+                unit: None,
+                sequence_items: Some(vec![]),
+                sequence_position: None,
+                sequence_loop: None,
+            }],
+            &[],
+            &[],
+        );
+        assert!(plan.mutations.is_empty());
+    }
+
+    #[test]
+    fn variable_set_still_works() {
+        let plan = plan_state_changes(
+            &[StateChangeRequest {
+                target: "pc".into(),
                 kind: StateKind::Variable,
                 key: "mood".into(),
                 op: StateOp::Set,
-                value: Some("happy".into()),
+                value: Some("calm".into()),
                 delta: None,
+                float_value: None,
+                float_min: None,
+                float_max: None,
+                unit: None,
+                sequence_items: None,
+                sequence_position: None,
+                sequence_loop: None,
             }],
             &[actor()],
             &[],
         );
-        assert_eq!(plan.vivify.len(), 1);
-        assert_eq!(plan.vivify[0].name, "Alice");
-    }
-
-    #[test]
-    fn fact_set_applies_literal_number_value() {
-        let change: StateChangeRequest = serde_json::from_value(serde_json::json!({
-            "target": "world",
-            "kind": "variable",
-            "key": "door_count",
-            "op": "set",
-            "value": 3
-        }))
-        .unwrap();
-        assert_eq!(change.value.as_deref(), Some("3"));
-
-        let plan = plan_state_changes(&[change], &[], &[]);
         assert_eq!(plan.mutations.len(), 1);
-        assert!(matches!(
-            plan.mutations[0],
-            EntryMutation::Insert {
-                value: ref v,
-                ..
-            } if v == "3"
-        ));
-    }
-
-    #[test]
-    fn same_key_different_kind_updates_existing_text_slot() {
-        let plan = plan_state_changes(
-            &[StateChangeRequest {
-                target: "world".into(),
-                kind: StateKind::Condition,
-                key: "location".into(),
-                op: StateOp::Set,
-                value: Some("harbor".into()),
-                delta: None,
-            }],
-            &[],
-            &[text_entry(7, "location", StateKind::Variable, "docks")],
-        );
-        assert_eq!(plan.mutations.len(), 2);
-        assert!(matches!(
-            plan.mutations[0],
-            EntryMutation::UpdateText { .. }
-        ));
-        assert!(matches!(
-            plan.mutations[1],
-            EntryMutation::UpdateKind {
-                kind: StateKind::Condition,
-                ..
-            }
-        ));
-        assert_eq!(plan.audit[0].prev_kind, Some(StateKind::Variable));
-    }
-
-    #[test]
-    fn same_key_cross_family_replaces_numeric_with_text() {
-        let plan = plan_state_changes(
-            &[StateChangeRequest {
-                target: "world".into(),
-                kind: StateKind::Variable,
-                key: "alert".into(),
-                op: StateOp::Set,
-                value: Some("high".into()),
-                delta: None,
-            }],
-            &[],
-            &[entry(9, "alert", 3, 5)],
-        );
-        assert_eq!(plan.mutations.len(), 2);
-        assert!(matches!(plan.mutations[0], EntryMutation::Delete { .. }));
-        assert!(matches!(plan.mutations[1], EntryMutation::Insert { .. }));
-        assert_eq!(plan.audit[0].prev_kind, Some(StateKind::Resource));
-        assert_eq!(plan.audit[0].prev_num, Some(3));
     }
 }

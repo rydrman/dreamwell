@@ -17,11 +17,11 @@ const GENERATE_CHARACTER_STATE_SYSTEM: &str = r#"You design initial typed game s
 Each state entry tracks one durable attribute the GM can update during play:
 - variable (DEFAULT): short textual truth — mood, role, employer, secret_goal, last_seen_location, inventory items, body measurements
 - condition: ephemeral status only (hidden, hostile, armed) — clears when resolved
-- resource: numeric pool with current/max — ONLY when the scenario truly needs a depletable track (health, stress, ammo)
-- clock: progress tracker with segments — ONLY when the scenario needs stepped countdown/progress (suspicion, alarm)
+- measurement: float value, optionally bounded — ONLY when a numeric level matters (height, stress, arousal)
+- sequence: ordered list with cursor — ONLY for turn order, quest steps, queues
 
 Rules:
-- Prefer variable for most attributes; use resource/clock sparingly and only when numeric tracking is essential
+- Prefer variable for most attributes; use measurement/sequence sparingly
 - Use snake_case keys; one atomic attribute per key
 - Prefer 3–8 entries that matter at scenario start
 - Match the scenario genre, stakes, and tone
@@ -48,7 +48,7 @@ pub fn character_state_generation_schema() -> serde_json::Value {
                         "key": { "type": "string" },
                         "kind": {
                             "type": "string",
-                            "enum": ["resource", "condition", "variable", "clock"]
+                            "enum": ["measurement", "condition", "variable", "sequence"]
                         },
                         "description": { "type": "string" },
                         "initial_value": { "type": "string" },
@@ -73,10 +73,10 @@ fn max_retries() -> u32 {
 
 fn state_kind_label(kind: StateKind) -> &'static str {
     match kind {
-        StateKind::Resource => "resource",
+        StateKind::Measurement => "measurement",
         StateKind::Condition => "condition",
         StateKind::Variable => "variable",
-        StateKind::Clock => "clock",
+        StateKind::Sequence => "sequence",
     }
 }
 
@@ -260,7 +260,7 @@ mod tests {
             objective: "Get out alive".into(),
             state_schema: vec![TrackedVarDef {
                 key: "alarm".into(),
-                kind: StateKind::Clock,
+                kind: StateKind::Sequence,
                 target: "world".into(),
                 ..Default::default()
             }],
@@ -277,7 +277,7 @@ mod tests {
             },
             existing_state: vec![CharacterStateDef {
                 key: "alertness".into(),
-                kind: StateKind::Clock,
+                kind: StateKind::Sequence,
                 initial_num: Some(1),
                 initial_max: Some(4),
                 ..Default::default()

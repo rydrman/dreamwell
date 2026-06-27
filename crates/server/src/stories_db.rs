@@ -103,7 +103,7 @@ pub async fn list_story_state_entries(
     story_id: i64,
 ) -> AppResult<Vec<StoryStateEntry>> {
     let rows = sqlx::query_as::<_, StoryStateRow>(
-        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, source_beat_id, updated_at FROM story_state_entries WHERE story_id = ?1 ORDER BY kind ASC, key ASC",
+        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_beat_id, updated_at FROM story_state_entries WHERE story_id = ?1 ORDER BY kind ASC, key ASC",
     )
     .bind(story_id)
     .fetch_all(pool)
@@ -118,7 +118,7 @@ pub async fn update_story_state_entry(
     payload: StoryStateEntryUpdate,
 ) -> AppResult<StoryStateEntry> {
     let row = sqlx::query_as::<_, StoryStateRow>(
-        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, source_beat_id, updated_at FROM story_state_entries WHERE id = ?1 AND story_id = ?2",
+        "SELECT id, story_id, actor_id, kind, key, value, num_value, max_value, float_value, float_min, float_max, unit, source_beat_id, updated_at FROM story_state_entries WHERE id = ?1 AND story_id = ?2",
     )
     .bind(entry_id)
     .bind(story_id)
@@ -212,6 +212,10 @@ fn story_state_from_row(row: StoryStateRow) -> AppResult<StoryStateEntry> {
         value: row.value,
         num_value: row.num_value,
         max_value: row.max_value,
+        float_value: row.float_value,
+        float_min: row.float_min,
+        float_max: row.float_max,
+        unit: row.unit,
         source_beat_id: row.source_beat_id,
         updated_at: parse_dt(&row.updated_at)?,
     })
@@ -219,10 +223,10 @@ fn story_state_from_row(row: StoryStateRow) -> AppResult<StoryStateEntry> {
 
 fn parse_story_state_kind(s: &str) -> StateKind {
     match s {
-        "resource" => StateKind::Resource,
         "condition" => StateKind::Condition,
         "variable" | "fact" => StateKind::Variable,
-        "clock" => StateKind::Clock,
+        "measurement" | "resource" | "gauge" => StateKind::Measurement,
+        "sequence" | "clock" => StateKind::Sequence,
         _ => StateKind::Variable,
     }
 }
@@ -1477,6 +1481,10 @@ struct StoryStateRow {
     value: String,
     num_value: Option<i64>,
     max_value: Option<i64>,
+    float_value: Option<f64>,
+    float_min: Option<f64>,
+    float_max: Option<f64>,
+    unit: Option<String>,
     source_beat_id: i64,
     updated_at: String,
 }

@@ -784,6 +784,7 @@ dependencies = [
  "chrono",
  "dreamwell-state",
  "dreamwell-types",
+ "dreamwell-units",
  "dynamo-parsers",
  "futures-util",
  "http-body-util",
@@ -822,6 +823,14 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "dreamwell-units"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "ucum-units",
 ]
 
 [[package]]
@@ -3190,6 +3199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4227,6 +4245,16 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "ucum-units"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8517b2be1e65d326377c30e1e828c1c071924d51daa7902c571099b981c9a84e"
+dependencies = [
+ "roxmltree",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "unic-char-property"

@@ -23,6 +23,14 @@ pub struct CharacterStateDef {
     pub initial_num: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_max: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_float: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_items: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_loop: Option<bool>,
     #[serde(default)]
     pub visibility: String,
     #[serde(default)]
@@ -41,6 +49,10 @@ impl CharacterStateDef {
             initial_value: self.initial_value.clone(),
             initial_num: self.initial_num,
             initial_max: self.initial_max,
+            initial_float: self.initial_float,
+            unit: self.unit.clone(),
+            sequence_items: self.sequence_items.clone(),
+            sequence_loop: self.sequence_loop,
             visibility: self.visibility.clone(),
             update_hints: self.update_hints.clone(),
         }
@@ -195,6 +207,14 @@ pub struct TrackedVarDef {
     pub initial_num: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_max: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_float: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_items: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_loop: Option<bool>,
     #[serde(default)]
     pub visibility: String,
     #[serde(default)]
@@ -215,6 +235,10 @@ impl Default for TrackedVarDef {
             initial_value: String::new(),
             initial_num: None,
             initial_max: None,
+            initial_float: None,
+            unit: None,
+            sequence_items: None,
+            sequence_loop: None,
             visibility: String::new(),
             update_hints: String::new(),
         }
@@ -241,6 +265,14 @@ struct TrackedVarDefWire {
     initial_num: Option<i64>,
     #[serde(default)]
     initial_max: Option<i64>,
+    #[serde(default)]
+    initial_float: Option<f64>,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    sequence_items: Option<Vec<String>>,
+    #[serde(default)]
+    sequence_loop: Option<bool>,
     #[serde(default)]
     visibility: String,
     #[serde(default)]
@@ -272,6 +304,10 @@ impl From<TrackedVarDefWire> for TrackedVarDef {
             initial_value: wire.initial_value,
             initial_num: wire.initial_num,
             initial_max: wire.initial_max,
+            initial_float: wire.initial_float,
+            unit: wire.unit,
+            sequence_items: wire.sequence_items,
+            sequence_loop: wire.sequence_loop,
             visibility: wire.visibility,
             update_hints: wire.update_hints,
         }
@@ -374,14 +410,14 @@ mod tests {
     fn merge_character_state_updates_existing_keys() {
         let existing = vec![CharacterStateDef {
             key: "health".into(),
-            kind: StateKind::Resource,
+            kind: StateKind::Measurement,
             initial_num: Some(3),
             ..Default::default()
         }];
         let generated = vec![
             CharacterStateDef {
                 key: "health".into(),
-                kind: StateKind::Resource,
+                kind: StateKind::Measurement,
                 initial_num: Some(5),
                 initial_max: Some(5),
                 ..Default::default()
@@ -410,7 +446,7 @@ mod tests {
         }];
         let pc_state = vec![CharacterStateDef {
             key: "resolve".into(),
-            kind: StateKind::Resource,
+            kind: StateKind::Measurement,
             initial_num: Some(3),
             initial_max: Some(5),
             ..Default::default()
@@ -419,7 +455,7 @@ mod tests {
             name: "Guard".into(),
             initial_state: vec![CharacterStateDef {
                 key: "alertness".into(),
-                kind: StateKind::Clock,
+                kind: StateKind::Sequence,
                 initial_num: Some(0),
                 initial_max: Some(4),
                 ..Default::default()
@@ -436,13 +472,13 @@ mod tests {
     #[test]
     fn tracked_var_def_reads_legacy_scope_and_actor_name() {
         let pc: TrackedVarDef = serde_json::from_value(serde_json::json!({
-            "key": "resolve", "kind": "resource", "scope": "pc"
+            "key": "resolve", "kind": "measurement", "scope": "pc"
         }))
         .unwrap();
         assert_eq!(pc.target, "pc");
 
         let npc: TrackedVarDef = serde_json::from_value(serde_json::json!({
-            "key": "alertness", "kind": "clock", "scope": "npc", "actor_name": "Guard"
+            "key": "alertness", "kind": "sequence", "scope": "npc", "actor_name": "Guard"
         }))
         .unwrap();
         assert_eq!(npc.target, "Guard");
