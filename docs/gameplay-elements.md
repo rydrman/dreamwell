@@ -28,7 +28,7 @@ The structured inline-prose agent calls these tools when scenario rules require 
 |------|---------|
 | `board_move` | Roll the board move die, advance an actor, return from/to space and `space_tags` |
 | `draw_card` | Draw the top card from a named deck (`deck_id` required); returns canonical card text |
-| `roll_dice` | Roll a dice expression (e.g. `1d6`); returns rolls and total |
+| `roll_dice` | Roll one die (`1d6`, `1d20`, …); one call per die or per person — multi-die expressions like `4d6` are rejected |
 
 Turn sequencing, deck selection (e.g. mapping space tags to decks), and when to call each tool are defined in the scenario's **rules blocks** — not in the engine.
 
