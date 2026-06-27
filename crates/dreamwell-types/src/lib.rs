@@ -1308,6 +1308,12 @@ pub struct AppliedStateChange {
     pub prev_value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_num: Option<i64>,
+    /// Previous float value for measurements (full precision).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_float: Option<f64>,
+    /// Unit label for measurement changes (canonical UCUM or custom).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
     /// Kind of the entry before this change, when an existing slot was updated or replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_kind: Option<StateKind>,

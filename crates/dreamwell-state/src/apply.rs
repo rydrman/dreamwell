@@ -180,6 +180,10 @@ where
     applied.prev_kind = Some(existing.kind);
     applied.prev_value = Some(existing.value.clone());
     applied.prev_num = existing.float_value.map(|v| v.round() as i64);
+    applied.prev_float = existing.float_value;
+    if applied.unit.is_none() {
+        applied.unit = existing.unit.clone();
+    }
     let mut mutations = vec![EntryMutation::Delete {
         entry_id: existing.id,
     }];
@@ -282,6 +286,8 @@ fn plan_text_change(
         delta: None,
         prev_value,
         prev_num: existing.and_then(|e| e.float_value.map(|v| v.round() as i64)),
+        prev_float: existing.and_then(|e| e.float_value),
+        unit: None,
         prev_kind,
     };
     (applied, mutation)
@@ -305,6 +311,7 @@ fn plan_measurement_change(
     let prev_kind = existing.map(|e| e.kind);
     let prev_value = existing.map(|e| e.value.clone());
     let prev_num = existing.and_then(|e| e.float_value.map(|v| v.round() as i64));
+    let prev_float = existing.and_then(|e| e.float_value);
 
     let (float_value, float_min, float_max, unit, clear) = match change.op {
         StateOp::Remove => (None, None, None, None, true),
@@ -401,6 +408,8 @@ fn plan_measurement_change(
         delta: change.delta,
         prev_value,
         prev_num,
+        prev_float,
+        unit,
         prev_kind,
     };
     (applied, mutation)
@@ -431,6 +440,8 @@ fn plan_sequence_change(
                     delta: change.delta,
                     prev_value,
                     prev_num,
+                    prev_float: None,
+                    unit: None,
                     prev_kind,
                 },
                 vec![],
@@ -487,6 +498,8 @@ fn plan_sequence_change(
         delta: change.delta,
         prev_value,
         prev_num,
+        prev_float: None,
+        unit: None,
         prev_kind,
     };
     (applied, mutation)

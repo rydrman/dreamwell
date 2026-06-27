@@ -2,7 +2,7 @@ use dreamwell_types::{
     AppliedStateChange, ChatActor, ChatStateEntry, GameActor, GameStateEntry, SequencePayload,
     StateKind, StateOp, StoryActor, StoryStateEntry,
 };
-use dreamwell_units::format_measurement_display;
+use dreamwell_units::{format_measurement_change_display, format_measurement_display};
 use web_sys::MouseEvent;
 use yew::prelude::*;
 
@@ -87,27 +87,35 @@ fn op_chip_class(op: StateOp) -> &'static str {
     }
 }
 
-fn format_state_change_value(sc: &AppliedStateChange) -> String {
+fn format_state_change_value(sc: &AppliedStateChange) -> (String, Option<String>) {
     match sc.kind {
         StateKind::Measurement => {
-            if let Some(prev) = sc.prev_num {
-                let next = sc
-                    .value
-                    .as_deref()
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .or(sc.delta.map(|d| d as f64));
-                if let Some(next) = next {
-                    return format!("{prev} → {next}");
-                }
+            let unit = sc.unit.as_deref();
+            let prev = sc.prev_float.or_else(|| sc.prev_num.map(|n| n as f64));
+            let next = sc
+                .value
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                .or_else(|| prev.zip(sc.delta.map(|d| d as f64)).map(|(p, d)| p + d));
+            if matches!(sc.op, StateOp::SetMin | StateOp::SetMax) {
+                let Some(value) = next.or(prev) else {
+                    return (String::new(), None);
+                };
+                let display = format_measurement_display(value, None, unit);
+                let label = if sc.op == StateOp::SetMin {
+                    "min"
+                } else {
+                    "max"
+                };
+                return (format!("{label}: {}", display.primary), display.secondary);
             }
-            sc.value
-                .clone()
-                .or_else(|| sc.delta.map(|d| d.to_string()))
-                .unwrap_or_default()
+            let display = format_measurement_change_display(prev, next, unit);
+            (display.primary, display.secondary)
         }
         StateKind::Sequence => {
             if sc.op == StateOp::Step {
-                sc.delta
+                let text = sc
+                    .delta
                     .map(|d| {
                         if d == 1 {
                             "forward".to_string()
@@ -117,18 +125,22 @@ fn format_state_change_value(sc: &AppliedStateChange) -> String {
                             format!("{d:+}")
                         }
                     })
-                    .unwrap_or_else(|| "step".to_string())
+                    .unwrap_or_else(|| "step".to_string());
+                (text, None)
             } else {
-                sc.value.clone().unwrap_or_default()
+                (sc.value.clone().unwrap_or_default(), None)
             }
         }
         StateKind::Condition | StateKind::Variable => {
             if sc.op == StateOp::Remove {
-                sc.prev_value.clone().unwrap_or_default()
+                (sc.prev_value.clone().unwrap_or_default(), None)
             } else if let Some(prev) = sc.prev_value.as_ref().filter(|p| !p.is_empty()) {
-                format!("{prev} → {}", sc.value.as_deref().unwrap_or_default())
+                (
+                    format!("{prev} → {}", sc.value.as_deref().unwrap_or_default()),
+                    None,
+                )
             } else {
-                sc.value.clone().unwrap_or_default()
+                (sc.value.clone().unwrap_or_default(), None)
             }
         }
     }
@@ -169,7 +181,7 @@ pub fn inline_state_changes_group(props: &StateChangesListProps) -> Html {
 
 /// One applied state change row (shared by list and inline game prose).
 pub fn render_state_change_row(sc: &AppliedStateChange) -> Html {
-    let value_text = format_state_change_value(sc);
+    let (value_text, value_alt) = format_state_change_value(sc);
     html! {
         <div class="state-row state-row--change">
             <span class={classes!("state-chip", "state-chip--op", op_chip_class(sc.op))}>
@@ -183,7 +195,12 @@ pub fn render_state_change_row(sc: &AppliedStateChange) -> Html {
             }
             <span class="state-row-key">{ &sc.key }</span>
             if !value_text.is_empty() {
-                <span class="state-row-value">{ value_text }</span>
+                <span class="state-row-value">
+                    { value_text }
+                    if let Some(alt) = value_alt {
+                        <span class="state-row-value-alt">{ " · " }{ alt }</span>
+                    }
+                </span>
             }
         </div>
     }
