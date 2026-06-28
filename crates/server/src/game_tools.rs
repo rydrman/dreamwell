@@ -266,7 +266,7 @@ pub fn parse_present_fork_args(args: &Value) -> Option<PcFork> {
         .get("situation")
         .and_then(|v| v.as_str())
         .map(str::trim)
-        .filter(|s| !s.is_empty())?
+        .filter(|s| !s.is_empty())?;
     let options: Vec<String> = args
         .get("options")
         .and_then(|v| v.as_array())?
@@ -719,7 +719,7 @@ mod tests {
         let options_desc = spec["function"]["parameters"]["properties"]["options"]["description"]
             .as_str()
             .unwrap();
-        assert!(options_desc.contains("Never NPC choices"));
+        assert!(options_desc.contains("never NPC choices"));
     }
 
     #[test]

@@ -2090,7 +2090,7 @@ mod tests {
                 "expected present_fork bad example in system prompt"
             );
             assert!(
-                system.contains("NEVER ask the player to decide for an NPC"),
+                system.contains("never delegate NPC choices to the player via present_fork"),
                 "expected NPC delegation ban in system prompt"
             );
         }
