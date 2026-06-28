@@ -14,8 +14,9 @@ use crate::game_prompts::{
     build_mechanics_agent_messages, build_prose_narration_messages, ensure_inline_mech_markers,
 };
 use crate::game_tools::{
-    handle_mechanical_tool_call, is_outcome_tool, is_state_tool, mechanics_agent_tool_specs,
-    parse_state_tool_call, prose_agent_tool_specs, ToolSessionState,
+    format_pc_fork_blockquote, handle_mechanical_tool_call, is_outcome_tool, is_present_fork_tool,
+    is_state_tool, mechanics_agent_tool_specs, parse_present_fork_args, parse_state_tool_call,
+    prose_agent_tool_specs, PcFork, ToolSessionState,
 };
 use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
 use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
@@ -31,7 +32,7 @@ struct MechanicsOutcome {
     llm_calls: u32,
     tool_calls: u32,
     /// Set when the model paused for a player decision before mechanics could finish.
-    asked_question: Option<String>,
+    pending_fork: Option<PcFork>,
 }
 
 pub async fn run_tools_structured_phase(
@@ -125,7 +126,7 @@ pub async fn run_tools_structured_phase(
         &turn,
         &checks,
         &session.mechanical_results,
-        mech.asked_question.as_deref(),
+        mech.pending_fork.as_ref(),
         guidance,
         settings,
         model_override.as_deref(),
@@ -203,7 +204,7 @@ async fn run_mechanics_pass(
 
     let mut llm_calls = 0u32;
     let mut tool_calls = 0u32;
-    let mut asked_question: Option<String> = None;
+    let mut pending_fork: Option<PcFork> = None;
 
     for _ in 0..loop_config.max_iterations {
         if token.is_cancelled() {
@@ -304,17 +305,16 @@ async fn run_mechanics_pass(
                     .await?;
                 }
                 res
-            } else if tc.name == "ask_pc_decision" {
+            } else if is_present_fork_tool(&tc.name) {
                 let args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Object(Default::default()));
-                let question = args["question"]
-                    .as_str()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or("What do you do?")
-                    .to_string();
-                asked_question = Some(question);
-                stop = true;
-                serde_json::json!({ "ended": true })
+                if let Some(fork) = parse_present_fork_args(&args) {
+                    pending_fork = Some(fork);
+                    stop = true;
+                    serde_json::json!({ "ended": true })
+                } else {
+                    serde_json::json!({ "error": "present_fork requires a non-empty situation and at least two options" })
+                }
             } else if is_state_tool(&tc.name) {
                 // State updates belong to the narration pass, once outcomes are known.
                 serde_json::json!({ "deferred": "state is recorded during narration" })
@@ -338,7 +338,7 @@ async fn run_mechanics_pass(
     Ok(MechanicsOutcome {
         llm_calls,
         tool_calls,
-        asked_question,
+        pending_fork,
     })
 }
 
@@ -364,7 +364,7 @@ async fn run_prose_pass(
     turn: &dreamwell_types::GameTurn,
     checks: &[dreamwell_types::GameTurnCheck],
     resolved_mechanics: &[MechanicalResult],
-    asked_question: Option<&str>,
+    pending_fork: Option<&PcFork>,
     guidance: &str,
     settings: &Settings,
     model_override: Option<&str>,
@@ -551,26 +551,26 @@ async fn run_prose_pass(
                     .await?;
                 }
                 serde_json::json!({ "applied": count })
-            } else if tc.name == "ask_pc_decision" {
+            } else if is_present_fork_tool(&tc.name) {
                 let args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Object(Default::default()));
-                let question = args["question"]
-                    .as_str()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or("What do you do?");
-                append_question_blockquote(&mut prose, question);
-                flush_prose_throttled(
-                    pool,
-                    game_id,
-                    turn_id,
-                    &prose,
-                    settings,
-                    &mut prose_stream,
-                    true,
-                )
-                .await?;
-                end_turn = true;
-                serde_json::json!({ "ended": true })
+                if let Some(fork) = parse_present_fork_args(&args) {
+                    append_fork_blockquote(&mut prose, &fork);
+                    flush_prose_throttled(
+                        pool,
+                        game_id,
+                        turn_id,
+                        &prose,
+                        settings,
+                        &mut prose_stream,
+                        true,
+                    )
+                    .await?;
+                    end_turn = true;
+                    serde_json::json!({ "ended": true })
+                } else {
+                    serde_json::json!({ "error": "present_fork requires a non-empty situation and at least two options" })
+                }
             } else {
                 serde_json::json!({ "error": format!("unknown tool {}", tc.name) })
             };
@@ -588,11 +588,11 @@ async fn run_prose_pass(
         }
     }
 
-    // If the mechanics pass paused for a player decision and the narrator did not
-    // already surface a question, append it so the turn ends on the open choice.
-    if let Some(question) = asked_question {
-        if !end_turn && !prose.contains(question) {
-            append_question_blockquote(&mut prose, question);
+    // If the mechanics pass paused for a player fork and the narrator did not
+    // already surface it, append it so the turn ends on the open choice.
+    if let Some(fork) = pending_fork {
+        if !end_turn && !prose.contains(&fork.situation) {
+            append_fork_blockquote(&mut prose, fork);
         }
     }
 
@@ -621,11 +621,11 @@ async fn run_prose_pass(
     })
 }
 
-fn append_question_blockquote(prose: &mut String, question: &str) {
+fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
     if !prose.is_empty() {
         prose.push_str("\n\n");
     }
-    prose.push_str(&format_blockquote(question));
+    prose.push_str(&format_pc_fork_blockquote(fork));
 }
 
 fn append_inline_marker(prose: &mut String, marker: String) {
@@ -633,13 +633,6 @@ fn append_inline_marker(prose: &mut String, marker: String) {
         prose.push_str("\n\n");
     }
     prose.push_str(&marker);
-}
-
-fn format_blockquote(text: &str) -> String {
-    text.lines()
-        .map(|line| format!("> {line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 struct ProseStreamState {

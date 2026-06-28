@@ -67,7 +67,7 @@ LLM passes**, which is a refinement of §3's pipeline:
    checks are rolled in Rust.
 2. **Mechanics resolution** (`build_mechanics_agent_messages`,
    `mechanics_agent_tool_specs`) — the model calls *only* the scenario mechanic
-   tools (`roll_dice` / `board_move` / `draw_card`) plus `ask_pc_decision`, with
+   tools (`roll_dice` / `board_move` / `draw_card`) plus `present_fork`, with
    **no prose**. Every dice/board/card outcome is therefore server-decided
    before any narration exists.
 3. **Prose narration** (`build_prose_narration_messages`,

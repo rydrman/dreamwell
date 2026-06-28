@@ -156,7 +156,7 @@ BAD — do not do this:
   After resolving the move, a stranger bursts in and a whole new scene unfolds. (invents an extra beat beyond the player's action)
 
 PC agency:
-- When a card or scene requires a PC choice the player has not made, call ask_pc_decision with a direct second-person question BEFORE resolving the effect.
+- When a card or scene requires a PC choice the player has not made, call present_fork with the situation and at least two concrete PC options BEFORE resolving the effect.
 - Do not pick targets, options, or strategic decisions for the PC.
 - Never ask the player to decide for an NPC — narrate NPC actions yourself.
 
@@ -172,7 +172,7 @@ Tracked state (use the dedicated state tools — one attribute per call):
 - When the scene establishes or changes durable tracked variables OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
 
 Ending the turn:
-- When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
+- When the PC must make a choice the player did not specify, call present_fork with the situation and options, then stop.
 - Narrate up to the next decision point, then stop — do not narrate the PC's next choice for them.
 - Plain prose and tool calls only — no JSON, no meta commentary, no headers."#;
 
@@ -187,7 +187,7 @@ Hard rules:
 - A card's fixed effect (e.g. "move forward 2 spaces") is NOT a new die roll — apply it as state, do not board_move again for it. Only call board_move / roll_dice when the rules actually call for a die.
 - draw_card needs an explicit deck_id chosen per the scenario rules.
 - Resolve only the mechanics for THIS player action (and any pending effect listed above), then STOP. Do not start a new beat, extra move, or extra draw the player did not take.
-- If the PC must make a choice before a mechanic can resolve, call ask_pc_decision with a direct second-person question and stop. Never ask what an NPC should do.
+- If the PC must make a choice before a mechanic can resolve, call present_fork with the situation and at least two PC options, then stop. Never present choices for an NPC.
 - When every required mechanic is resolved (or none is needed at all), reply with exactly the word DONE and call no tool.
 
 Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
@@ -232,41 +232,44 @@ Tracked state (use the dedicated state tools — one attribute per call):
 - target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
 
 Ending the turn:
-- When the PC must make a choice the player did not specify, call ask_pc_decision with a direct second-person question, then stop.
+- When the PC must make a choice the player did not specify, call present_fork with the situation and options, then stop.
 - Plain prose and state/ask tool calls only — no JSON, no headers, no meta commentary.
 
 Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
 - Do NOT use parentheses like set_variable(key="mood") — those are not parsed.
 - Quote string values that contain spaces or commas: call:set_variable{target:world,key:location,value:"space 36, near finish"}"#;
 
-/// Shared rules for when to pause and ask the human player — PC choices only.
-pub(crate) const ASK_PC_DECISION_RULES: &str = r#"ask_pc_decision (PC choices ONLY):
-- Use ONLY when the player character (PC) must choose something they have not specified in the player action or GM guidance.
-- Ask a direct second-person question about what YOU do, want, say, or target.
-- NEVER ask the player to decide for an NPC — decide NPC actions, reactions, and dialogue yourself per scenario rules.
-- Never ask meta scene-direction questions when the PC has no specific fork to make.
+/// Shared rules for when to pause at a CYOA-style fork — PC choices only.
+pub(crate) const PRESENT_FORK_RULES: &str = r#"present_fork (PC choice forks ONLY):
+- Last resort: use ONLY when the player character (PC) must choose something they have not specified in the player action or GM guidance, and you have already narrated up to a concrete in-world fork.
+- If you can advance one more beat without calling this tool, do that first — pick minor unstated details yourself and keep moving.
+- Provide a second-person situation describing the fork, plus at least two concrete PC actions — not open-ended questions.
+- NEVER present choices for an NPC — decide NPC actions, reactions, and dialogue yourself per scenario rules.
+- Never use for meta scene-direction ("what happens next?") when the PC has no specific fork to resolve.
 
-GOOD questions (PC agency):
-- "Who do you target with the spell?"
-- "Do you accept her offer or walk away?"
-- "Which door do you open first?"
+GOOD forks (PC agency):
+- situation: "Three figures block the bridge — the armored knight, the hooded mage, and the grinning rogue."
+  options: ["Challenge the knight", "Appeal to the mage", "Try to slip past the rogue"]
+- situation: "She holds out her hand. The offer hangs in the air."
+  options: ["Take her hand", "Refuse and step back"]
 
-BAD questions (NPC agency or meta — do NOT use ask_pc_decision):
-- "What should Sarah do next?" → narrate Sarah's action yourself
-- "How does Brennan react?" → decide Brennan's reaction in prose
-- "What happens next in the scene?" → advance one beat; only ask if the PC faces a specific fork"#;
+BAD (NPC agency, meta, or missing detail — do NOT use present_fork):
+- options including "What should Sarah do next?" → narrate Sarah's action yourself
+- situation: "How does Brennan react?" → decide Brennan's reaction in prose
+- situation: "What happens next in the scene?" → advance one beat; only fork when the PC faces a specific choice
+- situation: "What color is your shirt?" → pick a detail yourself; this is not a story fork"#;
 
 const PC_AGENCY_RULES: &str = r#"PC agency (critical — applies in every phase):
 - The player action is the PC's intent when present. GM guidance is mandatory direction from the human running the game — not optional flavor.
 - When the player action is empty but GM guidance is present, the guidance IS the turn direction; honor it fully in checks and prose.
 - Only resolve outcomes for the PC that follow directly from what the player action and/or GM guidance explicitly states.
 - Do not invent new choices, targets, preferences, dialogue, or strategic decisions for the PC beyond what the player action or GM guidance authorizes.
-- When the PC must make a choice the player did not specify, stop at revealing what needs deciding — do not pick for them.
+- When the PC must make a choice the player did not specify, stop at revealing the fork with concrete options — do not pick for them.
 - Partial or vague player actions authorize only what they explicitly request; do not extrapolate unstated follow-on choices for the PC.
-- NPC decisions are fair game: decide freely for NPCs per scenario rules; never delegate NPC choices to the player via ask_pc_decision."#;
+- NPC decisions are fair game: decide freely for NPCs per scenario rules; never delegate NPC choices to the player via present_fork."#;
 
 fn game_system_prompt(base: &str) -> String {
-    format!("{base}\n\n{PC_AGENCY_RULES}\n\n{ASK_PC_DECISION_RULES}")
+    format!("{base}\n\n{PC_AGENCY_RULES}\n\n{PRESENT_FORK_RULES}")
 }
 
 const SCENE_SUMMARIZE_SYSTEM: &str = r#"Compress game turn prose into a dense fact summary for downstream context.
@@ -628,7 +631,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  Call one mechanic tool at a time and wait for its real result before the next. \
                  A card's fixed move/effect is applied as state by the narrator — do not board_move or roll_dice for it. \
                  When all required mechanics are resolved (or none are needed), reply with exactly DONE and call no tool. \
-                 Use ask_pc_decision only when the PC must choose before a mechanic can resolve — never for NPC decisions.",
+                 Use present_fork only when the PC must choose before a mechanic can resolve — never for NPC decisions.",
             );
             if guidance_present {
                 instruction.push_str(
@@ -643,7 +646,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  Begin with the narrative prose — write the full narration FIRST (at least a paragraph); do not start with a tool call or end the turn without prose. \
                  Embed each ⟦mech:N⟧ marker from the canonical list at the point in the story where that outcome belongs; do not restate die faces, card names, or landing spaces in prose — the marker block shows them. \
                  Advance one beat — resolve the player's action and the resolved mechanics — then stop; do not invent extra beats. \
-                 AFTER the prose, call the tracked-state tools for durable changes the narration establishes, and stop with ask_pc_decision only when the PC owes a choice (never for NPC decisions).",
+                 AFTER the prose, call the tracked-state tools for durable changes the narration establishes, and stop with present_fork only when the PC owes a choice at a concrete fork (never for NPC decisions).",
             );
             if guidance_present {
                 instruction.push_str(
@@ -661,7 +664,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
                  For each mechanic: lead-up prose that stops before any outcome → one tool call → outcome prose using the number/text the tool returned. \
                  Never state a die face, space count, or card name before its tool runs, and never let your prose contradict the tool's result; never batch multiple mechanics; \
-                 call tools inline for mechanics and tracked state; stop with ask_pc_decision only when the PC owes a choice (never for NPC decisions).",
+                 call tools inline for mechanics and tracked state; stop with present_fork only when the PC owes a choice at a concrete fork (never for NPC decisions).",
             );
             if guidance_present {
                 instruction.push_str(
@@ -1680,7 +1683,7 @@ mod tests {
         assert!(system.contains(r#"second person ("you")"#));
         assert!(system.contains("generic primitives"));
         assert!(system.contains("deck_id"));
-        assert!(system.contains("ask_pc_decision"));
+        assert!(system.contains("present_fork"));
         assert!(system.contains("Example rhythm"));
         assert!(system.contains("call:set_variable"));
         assert!(system.contains("call:set_condition"));
@@ -2084,7 +2087,7 @@ mod tests {
             assert!(system.contains("Do not invent new choices"));
             assert!(
                 system.contains("What should Sarah do next?"),
-                "expected ask_pc_decision bad example in system prompt"
+                "expected present_fork bad example in system prompt"
             );
             assert!(
                 system.contains("NEVER ask the player to decide for an NPC"),
