@@ -25,7 +25,7 @@ use crate::game_prompts::{
     build_prose_narration_messages, ensure_inline_mech_markers,
 };
 use crate::game_tools::{
-    handle_mechanical_tool_call, inline_prose_tool_specs, is_state_tool,
+    handle_mechanical_tool_call, inline_prose_tool_specs, is_present_fork_tool, is_state_tool,
     mechanics_agent_tool_specs, parse_state_tool_call, prose_agent_tool_specs, ToolSessionState,
 };
 use crate::inference::{InferenceConfig, ToolStreamChunk};
@@ -283,7 +283,7 @@ async fn exec_tool(
             .unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() }))
     } else if is_state_tool(&tc.name) {
         serde_json::json!({ "applied": parse_state_tool_call(tc).len() })
-    } else if tc.name == "ask_pc_decision" {
+    } else if is_present_fork_tool(&tc.name) {
         serde_json::json!({ "ended": true })
     } else {
         serde_json::json!({ "error": "unknown" })
@@ -439,7 +439,7 @@ async fn run_repro_turn(
                 "tool_call_id": tc.id,
                 "content": result_str
             }));
-            if tc.name == "ask_pc_decision" {
+            if is_present_fork_tool(&tc.name) {
                 ended = true;
             }
         }
@@ -560,7 +560,7 @@ async fn run_repro_turn_two_pass(
             mech_messages.push(
                 serde_json::json!({ "role": "tool", "tool_call_id": tc.id, "content": result_str }),
             );
-            if tc.name == "ask_pc_decision" {
+            if is_present_fork_tool(&tc.name) {
                 asked = true;
                 break 'mech;
             }
@@ -583,7 +583,7 @@ async fn run_repro_turn_two_pass(
     if asked {
         // The mechanics pass paused for a player choice; surface that as the turn end.
         events.push(ReproEvent::Prose(
-            "[turn paused for ask_pc_decision in mechanics pass]".into(),
+            "[turn paused for present_fork in mechanics pass]".into(),
         ));
     }
     for _ in 0..4 {
@@ -682,7 +682,7 @@ async fn run_repro_turn_two_pass(
             prose_messages.push(
                 serde_json::json!({ "role": "tool", "tool_call_id": tc.id, "content": result_str }),
             );
-            if tc.name == "ask_pc_decision" {
+            if is_present_fork_tool(&tc.name) {
                 ended = true;
             }
         }

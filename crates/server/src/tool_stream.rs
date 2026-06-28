@@ -340,7 +340,7 @@ fn is_direct_tool_call_start(text: &str, idx: usize, name: &str) -> bool {
     {
         return false;
     }
-    // `call:ask_pc_decision{...}` is handled by the `call:` path above.
+    // `call:present_fork{...}` is handled by the `call:` path above.
     if idx >= BARE_CALL_PREFIX.len() && &text[idx - BARE_CALL_PREFIX.len()..idx] == BARE_CALL_PREFIX
     {
         return false;
@@ -837,26 +837,27 @@ mod tests {
     fn fallback_parses_known_tool_without_call_prefix() {
         let text = r#"Ready to begin.
 
-ask_pc_decision{question: "The game is set up and your friends are ready. Who will take the first turn?"}"#;
-        let known = ["ask_pc_decision"];
+present_fork{situation: "The game is set up and your friends are ready.", options: ["You go first", "Let Sophie start"]}"#;
+        let known = ["present_fork"];
         let (calls, prose) = fallback_extract_bare_calls(text, Some(&known));
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "ask_pc_decision");
+        assert_eq!(calls[0].name, "present_fork");
         let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
         assert_eq!(
-            args["question"],
-            "The game is set up and your friends are ready. Who will take the first turn?"
+            args["situation"],
+            "The game is set up and your friends are ready."
         );
+        assert_eq!(args["options"][0], "You go first");
         assert_eq!(prose.trim(), "Ready to begin.");
     }
 
     #[test]
     fn fallback_prefers_call_prefix_over_embedded_tool_name() {
-        let text = "call:ask_pc_decision{question: Who goes first?}";
-        let known = ["ask_pc_decision"];
+        let text = "call:present_fork{situation: The path splits., options: [Go left, Go right]}";
+        let known = ["present_fork"];
         let (calls, prose) = fallback_extract_bare_calls(text, Some(&known));
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "ask_pc_decision");
+        assert_eq!(calls[0].name, "present_fork");
         assert!(prose.is_empty());
     }
 
@@ -958,7 +959,7 @@ ask_pc_decision{question: "The game is set up and your friends are ready. Who wi
     #[test]
     fn strip_residual_call_syntax_removes_complete_and_truncated_fragments() {
         // Concatenated truncated + complete fragments that salvage cannot parse.
-        let leaked = "call:adjust_resourcecall:adjust_resource{delta:-3,key:hp,target:goblin}call:ask_pc_decision{question:Press on?}";
+        let leaked = "call:adjust_resourcecall:adjust_resource{delta:-3,key:hp,target:goblin}call:present_fork{situation:Press on?,options:[Fight,Flee]}";
         assert_eq!(strip_residual_call_syntax(leaked), "");
         // Prose with a trailing truncated call.
         let mixed = "You strike true.\n\ncall:set_fact{target:pc,key:mood,value:fierce}";

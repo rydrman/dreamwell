@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{execute_board_move, execute_card_draw, execute_dice_roll};
-use crate::game_prompts::ASK_PC_DECISION_RULES;
+use crate::game_prompts::PRESENT_FORK_RULES;
 use crate::game_resolution::parse_dice_expr;
 use crate::inference::ToolCall;
 
@@ -223,28 +223,78 @@ pub fn simple_state_tool_specs() -> Vec<Value> {
 pub fn inline_prose_tool_specs() -> Vec<Value> {
     let mut tools = inline_mechanical_tool_specs();
     tools.extend(simple_state_tool_specs());
-    tools.push(ask_pc_decision_spec());
+    tools.push(present_fork_spec());
     tools
 }
 
 /// Tools for the mechanics-resolution pass: only the scenario mechanic primitives
-/// (which return real outcomes) plus `ask_pc_decision`. No prose and no state tools —
+/// (which return real outcomes) plus `present_fork`. No prose and no state tools —
 /// this pass exists purely to roll/draw/move so the prose pass never has to guess an
 /// outcome.
 pub fn mechanics_agent_tool_specs() -> Vec<Value> {
     let mut tools = inline_mechanical_tool_specs();
-    tools.push(ask_pc_decision_spec());
+    tools.push(present_fork_spec());
     tools
 }
 
-/// Tools for the narration pass: tracked-state updates plus `ask_pc_decision`. The
+/// Tools for the narration pass: tracked-state updates plus `present_fork`. The
 /// outcome-bearing mechanic tools are intentionally excluded — every roll/draw/move was
 /// already resolved in the mechanics pass, so the narration must reuse those canonical
 /// results rather than producing new ones.
 pub fn prose_agent_tool_specs() -> Vec<Value> {
     let mut tools = simple_state_tool_specs();
-    tools.push(ask_pc_decision_spec());
+    tools.push(present_fork_spec());
     tools
+}
+
+pub const PRESENT_FORK_TOOL: &str = "present_fork";
+
+/// A CYOA-style branch: in-world situation plus concrete PC options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcFork {
+    pub situation: String,
+    pub options: Vec<String>,
+}
+
+pub fn is_present_fork_tool(name: &str) -> bool {
+    name == PRESENT_FORK_TOOL
+}
+
+/// Parse `present_fork` tool arguments. Requires a non-empty situation and at least two options.
+pub fn parse_present_fork_args(args: &Value) -> Option<PcFork> {
+    let situation = args
+        .get("situation")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let options: Vec<String> = args
+        .get("options")
+        .and_then(|v| v.as_array())?
+        .iter()
+        .filter_map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()))
+        .map(str::to_string)
+        .collect();
+    if options.len() < 2 {
+        return None;
+    }
+    Some(PcFork {
+        situation: situation.to_string(),
+        options,
+    })
+}
+
+/// Render a fork as a blockquoted situation with numbered choices.
+pub fn format_pc_fork_blockquote(fork: &PcFork) -> String {
+    let mut lines: Vec<String> = fork
+        .situation
+        .lines()
+        .map(|line| format!("> {line}"))
+        .collect();
+    lines.push(">".to_string());
+    for (i, option) in fork.options.iter().enumerate() {
+        lines.push(format!("> {}. {option}", i + 1));
+    }
+    lines.join("\n")
 }
 
 /// Whether a tool name resolves a scenario mechanic with a real, server-decided outcome
@@ -253,21 +303,27 @@ pub fn is_outcome_tool(name: &str) -> bool {
     matches!(name, "roll_dice" | "board_move" | "draw_card")
 }
 
-fn ask_pc_decision_spec() -> Value {
+fn present_fork_spec() -> Value {
     tool_spec(
-        "ask_pc_decision",
+        PRESENT_FORK_TOOL,
         &format!(
-            "Pause and ask the player a direct second-person question when the PC must choose something not specified in the player action or GM guidance. Ends the turn immediately — do not narrate the PC's choice or continue past the question. Never ask the player to decide for an NPC.\n\n{ASK_PC_DECISION_RULES}"
+            "End the turn at a concrete in-world fork when the PC must choose something not specified in the player action or GM guidance. Call only after narrating up to the decision point. Provide the situation in second person and at least two concrete PC actions — never open-ended meta questions. Ends the turn immediately; do not narrate the PC's choice or continue past the fork. Never present choices for an NPC.\n\n{PRESENT_FORK_RULES}"
         ),
         serde_json::json!({
             "type": "object",
             "properties": {
-                "question": {
+                "situation": {
                     "type": "string",
-                    "description": "Direct second-person question about the PC only (e.g. 'Who do you target?'). Never ask what an NPC should do."
+                    "description": "Second-person description of the fork the PC faces (e.g. 'The corridor splits; voices echo from the right, torchlight flickers left.')."
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 2,
+                    "description": "At least two concrete actions the PC could take (e.g. 'Sneak down the left passage', 'Call out down the right'). PC actions only — never NPC choices."
                 }
             },
-            "required": ["question"]
+            "required": ["situation", "options"]
         }),
     )
 }
@@ -655,15 +711,41 @@ mod tests {
     }
 
     #[test]
-    fn ask_pc_decision_spec_forbids_npc_questions() {
-        let spec = ask_pc_decision_spec();
+    fn present_fork_spec_forbids_npc_options() {
+        let spec = present_fork_spec();
         let description = spec["function"]["description"].as_str().unwrap();
-        assert!(description.contains("Never ask the player to decide for an NPC"));
+        assert!(description.contains("Never present choices for an NPC"));
         assert!(description.contains("What should Sarah do next?"));
-        let question_desc = spec["function"]["parameters"]["properties"]["question"]["description"]
+        let options_desc = spec["function"]["parameters"]["properties"]["options"]["description"]
             .as_str()
             .unwrap();
-        assert!(question_desc.contains("Never ask what an NPC should do"));
+        assert!(options_desc.contains("never NPC choices"));
+    }
+
+    #[test]
+    fn parse_present_fork_args_requires_two_options() {
+        assert!(parse_present_fork_args(&serde_json::json!({
+            "situation": "The path splits.",
+            "options": ["Go left", "Go right"]
+        }))
+        .is_some());
+        assert!(parse_present_fork_args(&serde_json::json!({
+            "situation": "The path splits.",
+            "options": ["Go left"]
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn format_pc_fork_blockquote_numbers_options() {
+        let fork = PcFork {
+            situation: "The corridor splits.".into(),
+            options: vec!["Sneak left".into(), "Call out right".into()],
+        };
+        let block = format_pc_fork_blockquote(&fork);
+        assert!(block.contains("> The corridor splits."));
+        assert!(block.contains("> 1. Sneak left"));
+        assert!(block.contains("> 2. Call out right"));
     }
 
     #[test]
@@ -676,7 +758,7 @@ mod tests {
             assert!(names.iter().any(|n| n == tool), "missing tool {tool}");
         }
         assert!(!names.iter().any(|n| n == "apply_state_changes"));
-        assert!(names.iter().any(|n| n == "ask_pc_decision"));
+        assert!(names.iter().any(|n| n == "present_fork"));
     }
 
     #[test]
@@ -694,7 +776,7 @@ mod tests {
         assert!(is_outcome_tool("board_move"));
         assert!(is_outcome_tool("draw_card"));
         assert!(!is_outcome_tool("set_fact"));
-        assert!(!is_outcome_tool("ask_pc_decision"));
+        assert!(!is_outcome_tool("present_fork"));
     }
 
     #[test]
@@ -706,7 +788,7 @@ mod tests {
         assert!(names.iter().any(|n| n == "roll_dice"));
         assert!(names.iter().any(|n| n == "board_move"));
         assert!(names.iter().any(|n| n == "draw_card"));
-        assert!(names.iter().any(|n| n == "ask_pc_decision"));
+        assert!(names.iter().any(|n| n == "present_fork"));
         // No state tools in the mechanics pass — state is recorded during narration.
         for tool in SIMPLE_STATE_TOOLS {
             assert!(!names.iter().any(|n| n == tool), "unexpected {tool}");
@@ -722,7 +804,7 @@ mod tests {
         for tool in SIMPLE_STATE_TOOLS {
             assert!(names.iter().any(|n| n == tool), "missing {tool}");
         }
-        assert!(names.iter().any(|n| n == "ask_pc_decision"));
+        assert!(names.iter().any(|n| n == "present_fork"));
         // Outcome tools are intentionally excluded from the narration pass.
         assert!(!names.iter().any(|n| is_outcome_tool(n)));
     }
