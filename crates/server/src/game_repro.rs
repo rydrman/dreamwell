@@ -22,7 +22,7 @@ use dreamwell_types::{
 
 use crate::game_prompts::{
     build_inline_prose_agent_messages, build_mechanics_agent_messages,
-    build_prose_narration_messages, ensure_inline_mech_markers,
+    build_prose_narration_messages,
 };
 use crate::game_tools::{
     handle_mechanical_tool_call, inline_prose_tool_specs, is_present_fork_tool, is_state_tool,
@@ -692,8 +692,7 @@ async fn run_repro_turn_two_pass(
     }
 
     let (_, cleaned) = salvage_bare_tool_calls(&prose, Some(&prose_defs));
-    let mut final_prose = strip_residual_call_syntax(&cleaned);
-    ensure_inline_mech_markers(&mut final_prose, &session.mechanical_results);
+    let final_prose = strip_residual_call_syntax(&cleaned);
     ReproTurn {
         events,
         final_prose,

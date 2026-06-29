@@ -84,9 +84,8 @@ fabricated dice result first ("you roll a 4…") and then emit a contradicting
 `roll_dice` tool call, so the prose never matched the real roll. Resolving all
 mechanics *before* narration removes the contradiction entirely. Inline markers
 restore the "outcome as you read" feel: the marker is only a pointer — the UI
-renders the real result from `mechanical_results`, not from model text. If the
-model omits a marker, `ensure_inline_mech_markers` appends any missing ones so
-the detached "Mechanics" panel stays hidden when possible.
+renders the real result from `mechanical_results`, not from model text. Omitted
+markers are not backfilled; only inline-placed mechanics appear in narration.
 See `crates/server/src/game_repro.rs` for the live reproduction/regression
 harness (run with `--ignored`).
 

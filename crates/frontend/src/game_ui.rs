@@ -993,8 +993,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if (!turn.mechanical_results.is_empty() && !prose_has_inline_mech)
-                                                || editing_mechanicals
+                                            if editing_mechanicals
                                             {
                                                 <PhaseSection
                                                     label={"Mechanics".to_string()}
