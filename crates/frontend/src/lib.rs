@@ -2112,6 +2112,7 @@ fn app() -> Html {
                         generation_live={selected.as_ref().is_none_or(|chat| {
                             message_generation_live(chat, &messages)
                         })}
+                        active_job={selected.as_ref().and_then(|chat| chat.active_job.clone())}
                         messages={(*messages).clone()}
                         loading={*messages_loading}
                         settings={(*settings).clone()}
@@ -2635,6 +2636,7 @@ struct MessageBubbleProps {
     show_variables: bool,
     #[prop_or(true)]
     generation_live: bool,
+    cancel_job_id: Option<i64>,
     on_changed: Callback<()>,
 }
 
@@ -2643,6 +2645,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let mode = use_state(|| MessageBubbleMode::View);
     let edit_text = use_state(String::new);
     let acting = use_state(|| false);
+    let cancelling = use_state(|| false);
 
     let role = match props.message.role {
         MessageRole::User => "user",
@@ -2654,8 +2657,10 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let streaming =
         props.generation_live && matches!(props.message.job_status, Some(JobStatus::Running));
     let active = queued || streaming;
-    let can_menu =
-        !props.message.is_summary && props.message.role != MessageRole::System && !active;
+    let show_cancel_generation = props.cancel_job_id.is_some();
+    let can_menu = !props.message.is_summary
+        && props.message.role != MessageRole::System
+        && (!active || show_cancel_generation);
     let show_regenerate = props.message.role == MessageRole::Assistant;
     let show_recheck_variables = props.show_variables
         && props.is_last
@@ -2805,6 +2810,34 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
         })
     };
 
+    let cancel_generation = {
+        let cancelling = cancelling.clone();
+        let on_changed = props.on_changed.clone();
+        let job_id = props.cancel_job_id;
+        Callback::from(move |_| {
+            let Some(job_id) = job_id else {
+                return;
+            };
+            if *cancelling {
+                return;
+            }
+            cancelling.set(true);
+            let cancelling = cancelling.clone();
+            let on_changed = on_changed.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::cancel_job(job_id).await {
+                    Ok(_) => on_changed.emit(()),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.alert_with_message(&format!("Could not cancel: {err}"));
+                        }
+                    }
+                }
+                cancelling.set(false);
+            });
+        })
+    };
+
     let pending = queued && props.display_content.is_empty();
     let generation_error = message_generation_error(&props.message);
     let failure_only = legacy_failure_only_message(&props.message);
@@ -2830,26 +2863,37 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     }
                 </div>
                 if can_menu {
-                    <MessageOptionsMenu align_end={align_menu_end} disabled={*acting}>
-                        <button type="button" class="message-menu-item" onclick={start_edit}>{"Edit"}</button>
-                        if show_regenerate {
-                            <button type="button" class="message-menu-item" onclick={regenerate}>{"Regenerate"}</button>
-                        }
-                        if show_recheck_variables {
-                            <button type="button" class="message-menu-item" onclick={recheck_variables}>{"Recheck variables"}</button>
-                        }
-                        <button
-                            type="button"
-                            class="message-menu-item message-menu-item--rewind"
-                            onclick={rewind_here}
-                            disabled={props.after_count == 0 || *acting}
-                        >
-                            if props.after_count == 0 {
-                                {"Rewind here (nothing after)"}
-                            } else {
-                                { format!("Rewind here (delete {after} after)", after = props.after_count) }
+                    <MessageOptionsMenu align_end={align_menu_end} disabled={*acting || *cancelling}>
+                        if show_cancel_generation {
+                            <button
+                                type="button"
+                                class="message-menu-item"
+                                onclick={cancel_generation}
+                                disabled={*cancelling}
+                            >
+                                { if *cancelling { "Cancelling…" } else { "Cancel generation" } }
+                            </button>
+                        } else {
+                            <button type="button" class="message-menu-item" onclick={start_edit}>{"Edit"}</button>
+                            if show_regenerate {
+                                <button type="button" class="message-menu-item" onclick={regenerate}>{"Regenerate"}</button>
                             }
-                        </button>
+                            if show_recheck_variables {
+                                <button type="button" class="message-menu-item" onclick={recheck_variables}>{"Recheck variables"}</button>
+                            }
+                            <button
+                                type="button"
+                                class="message-menu-item message-menu-item--rewind"
+                                onclick={rewind_here}
+                                disabled={props.after_count == 0 || *acting}
+                            >
+                                if props.after_count == 0 {
+                                    {"Rewind here (nothing after)"}
+                                } else {
+                                    { format!("Rewind here (delete {after} after)", after = props.after_count) }
+                                }
+                            </button>
+                        }
                     </MessageOptionsMenu>
                 }
             </div>
@@ -3149,6 +3193,7 @@ struct MessageListProps {
     char_name: Option<String>,
     #[prop_or(true)]
     generation_live: bool,
+    active_job: Option<Job>,
     on_messages_change: Callback<()>,
 }
 
@@ -3230,6 +3275,19 @@ fn message_list(props: &MessageListProps) -> Html {
                     } else {
                         display_content.clone()
                     };
+                    let cancel_job_id = props.active_job.as_ref().and_then(|job| {
+                        if job.message_id == Some(m.id)
+                            && props.generation_live
+                            && matches!(
+                                m.job_status,
+                                Some(JobStatus::Queued) | Some(JobStatus::Running)
+                            )
+                        {
+                            Some(job.id)
+                        } else {
+                            None
+                        }
+                    });
                     if m.is_summary {
                         html! {
                             <SummaryMarker
@@ -3254,6 +3312,7 @@ fn message_list(props: &MessageListProps) -> Html {
                                 show_thoughts={show_thoughts}
                                 show_variables={show_variables}
                                 generation_live={props.generation_live}
+                                cancel_job_id={cancel_job_id}
                                 on_changed={props.on_messages_change.clone()}
                             />
                         }

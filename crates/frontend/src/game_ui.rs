@@ -458,8 +458,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     }
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
-                            let _ =
-                                window.alert_with_message(&format!("Could not cancel: {err}"));
+                            let _ = window.alert_with_message(&format!("Could not cancel: {err}"));
                         }
                     }
                 }
