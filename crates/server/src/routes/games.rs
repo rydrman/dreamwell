@@ -13,8 +13,8 @@ use axum::{
 };
 use dreamwell_types::{
     Game, GameActorUpdate, GameCreate, GameDetail, GameStateEntryUpdate, GameStreamPayload,
-    GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse, RewindTurnRequest,
-    SubmitTurnRequest, TurnEditField, UpdateTurnRequest,
+    GameUpdate, GenerateRequest, ImportGameDraftResponse, Job, OkResponse, RegenerateTurnRequest,
+    RegenerateTurnScope, RewindTurnRequest, SubmitTurnRequest, TurnEditField, UpdateTurnRequest,
 };
 
 use crate::character_import::parse_character_import;
@@ -39,6 +39,10 @@ pub fn router() -> Router<AppState> {
         .route("/:id/turns", post(submit_turn))
         .route("/:id/turns/:turn_id", patch(update_turn))
         .route("/:id/turns/:turn_id/continue", post(continue_turn))
+        .route(
+            "/:id/turns/:turn_id/regenerate/prose",
+            post(regenerate_turn_prose),
+        )
         .route("/:id/turns/:turn_id/regenerate", post(regenerate_turn))
         .route("/:id/turns/:turn_id/rewind", post(rewind_turn))
         .route("/:id/turns/:turn_id/fork", post(fork_turn))
@@ -195,7 +199,7 @@ async fn update_turn(
     Json(payload): Json<UpdateTurnRequest>,
 ) -> AppResult<Json<GameDetail>> {
     let turn = db::get_turn(&state.pool, id, turn_id).await?;
-    if payload.content.trim().is_empty() {
+    if !matches!(payload.field, TurnEditField::Mechanicals) && payload.content.trim().is_empty() {
         return Err(AppError::bad_request("Content cannot be empty"));
     }
     for job in db::list_active_jobs_for_game(&state.pool, id).await? {
@@ -214,12 +218,33 @@ async fn update_turn(
             "Cannot edit response while turn is still generating",
         ));
     }
+    if matches!(payload.field, TurnEditField::Mechanicals)
+        && !turn.is_opening
+        && turn.phase != "done"
+        && turn.phase != "failed"
+    {
+        return Err(AppError::bad_request(
+            "Cannot edit mechanics while turn is still generating",
+        ));
+    }
     if matches!(payload.field, TurnEditField::PlayerAction) && turn.is_opening {
         return Err(AppError::bad_request(
             "Cannot edit opening turn player action",
         ));
     }
-    db::update_turn_field(&state.pool, turn_id, payload.field, payload.content.trim()).await?;
+    match payload.field {
+        TurnEditField::Mechanicals => {
+            let mut results: Vec<dreamwell_types::MechanicalResult> =
+                serde_json::from_str(payload.content.trim()).map_err(|err| {
+                    AppError::bad_request(format!("Invalid mechanical results JSON: {err}"))
+                })?;
+            db::apply_turn_mechanical_edits(&state.pool, id, turn_id, &mut results).await?;
+        }
+        _ => {
+            db::update_turn_field(&state.pool, turn_id, payload.field, payload.content.trim())
+                .await?;
+        }
+    }
     if matches!(payload.field, TurnEditField::Prose) {
         db::clear_turn_thoughts(&state.pool, turn_id).await?;
     }
@@ -239,20 +264,42 @@ async fn continue_turn(
 async fn regenerate_turn(
     State(state): State<AppState>,
     Path((id, turn_id)): Path<(i64, i64)>,
+    payload: Option<Json<RegenerateTurnRequest>>,
+) -> AppResult<Json<GameDetail>> {
+    let scope = payload
+        .map(|Json(request)| request.scope)
+        .unwrap_or(RegenerateTurnScope::Full);
+    regenerate_turn_with_scope(&state, id, turn_id, scope).await
+}
+
+async fn regenerate_turn_prose(
+    State(state): State<AppState>,
+    Path((id, turn_id)): Path<(i64, i64)>,
+) -> AppResult<Json<GameDetail>> {
+    regenerate_turn_with_scope(&state, id, turn_id, RegenerateTurnScope::ProseOnly).await
+}
+
+async fn regenerate_turn_with_scope(
+    state: &AppState,
+    id: i64,
+    turn_id: i64,
+    scope: RegenerateTurnScope,
 ) -> AppResult<Json<GameDetail>> {
     let settings = db::get_settings(&state.pool).await?;
     let game = db::get_game(&state.pool, id).await?;
-    crate::game_turn::ensure_model_for_phase(
-        &game,
-        &settings,
-        crate::game_turn::GameModelPhase::Checks,
-    )?;
+    if scope == RegenerateTurnScope::Full {
+        crate::game_turn::ensure_model_for_phase(
+            &game,
+            &settings,
+            crate::game_turn::GameModelPhase::Checks,
+        )?;
+    }
     crate::game_turn::ensure_model_for_phase(
         &game,
         &settings,
         crate::game_turn::GameModelPhase::Prose,
     )?;
-    let job = db::prepare_regenerate_turn(&state.pool, id, turn_id).await?;
+    let job = db::prepare_regenerate_turn(&state.pool, id, turn_id, scope).await?;
     enqueue_game_generation(&state.queue, job).await?;
     Ok(Json(db::get_game_detail(&state.pool, id).await?))
 }

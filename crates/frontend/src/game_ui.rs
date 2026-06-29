@@ -117,6 +117,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
     let editing = use_state(|| None::<(i64, TurnEditField)>);
     let edit_text = use_state(String::new);
     let edit_acting = use_state(|| false);
+    let cancelling_job = use_state(|| None::<i64>);
 
     {
         let detail = detail.clone();
@@ -253,12 +254,31 @@ pub fn game_shell(props: &GameShellProps) -> Html {
             let Some(game_id) = game_id else { return };
             let detail = detail.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                match api::regenerate_turn(game_id, turn_id).await {
+                match api::regenerate_turn(game_id, turn_id, RegenerateTurnScope::Full).await {
                     Ok(d) => detail.set(Some(d)),
                     Err(err) => {
                         if let Some(window) = web_sys::window() {
                             let _ =
                                 window.alert_with_message(&format!("Could not retry turn: {err}"));
+                        }
+                    }
+                }
+            });
+        })
+    };
+
+    let on_regenerate_prose = {
+        let detail = detail.clone();
+        Callback::from(move |turn_id: i64| {
+            let Some(game_id) = game_id else { return };
+            let detail = detail.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::regenerate_turn_prose(game_id, turn_id).await {
+                    Ok(d) => detail.set(Some(d)),
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Could not regenerate prose: {err}"));
                         }
                     }
                 }
@@ -392,7 +412,8 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                 return;
             };
             let content = (*edit_text).trim().to_string();
-            if content.is_empty() || *edit_acting {
+            let allow_empty = matches!(field, TurnEditField::Mechanicals);
+            if (!allow_empty && content.is_empty()) || *edit_acting {
                 return;
             }
             edit_acting.set(true);
@@ -412,6 +433,37 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     }
                 }
                 edit_acting.set(false);
+            });
+        })
+    };
+
+    let on_cancel_generation = {
+        let detail = detail.clone();
+        let cancelling_job = cancelling_job.clone();
+        Callback::from(move |job_id: i64| {
+            if *cancelling_job == Some(job_id) {
+                return;
+            }
+            cancelling_job.set(Some(job_id));
+            let detail = detail.clone();
+            let cancelling_job = cancelling_job.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::cancel_job(job_id).await {
+                    Ok(_) => {
+                        if let Some(game_id) = game_id {
+                            if let Ok(d) = api::get_game(game_id).await {
+                                detail.set(Some(d));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ =
+                                window.alert_with_message(&format!("Could not cancel: {err}"));
+                        }
+                    }
+                }
+                cancelling_job.set(None);
             });
         })
     };
@@ -535,6 +587,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let show_regenerate = is_last
                                     && turn.phase == "done"
                                     && !turn.prose.trim().is_empty();
+                                let show_regenerate_prose = show_regenerate;
                                 let show_retry = is_last
                                     && (turn.phase == "failed"
                                         || (!is_opening
@@ -557,29 +610,54 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                 let assistant_rewind_count = turns_after;
                                 let user_rewind_count = turns_after + 1;
                                 let turn_generating = is_last && active_job.is_some();
+                                let show_cancel_generation = turn_generating
+                                    && active_job.as_ref().is_some_and(|job| {
+                                        matches!(
+                                            job.status,
+                                            JobStatus::Queued | JobStatus::Running
+                                        )
+                                    });
+                                let cancel_job_id = active_job
+                                    .as_ref()
+                                    .filter(|_| show_cancel_generation)
+                                    .map(|job| job.id);
+                                let is_cancelling = cancel_job_id
+                                    .is_some_and(|id| *cancelling_job == Some(id));
                                 let can_edit_prose = !turn_generating
                                     && (is_opening
                                         || turn.phase == "done"
                                         || turn.phase == "failed");
+                                let can_edit_mechanicals = !turn_generating
+                                    && !is_opening
+                                    && turn.phase == "done"
+                                    && !turn.mechanical_results.is_empty();
                                 let can_edit_player_action = !turn_generating
                                     && !is_opening
                                     && !turn.player_action.trim().is_empty();
                                 let editing_prose = *editing == Some((turn_id, TurnEditField::Prose));
+                                let editing_mechanicals = *editing
+                                    == Some((turn_id, TurnEditField::Mechanicals));
                                 let editing_player_action = *editing
                                     == Some((turn_id, TurnEditField::PlayerAction));
                                 let show_thought_block = show_thoughts
                                     && (!turn.thought_content.is_empty()
                                         || (turn.thought_in_progress && turn_generating));
-                                let can_menu = !is_opening && (show_continue
-                                    || show_regenerate
-                                    || show_retry
-                                    || show_fork
-                                    || show_align_prose
-                                    || show_recheck_state
-                                    || show_assistant_rewind
-                                    || can_edit_prose);
+                                let can_menu = !is_opening
+                                    && (show_continue
+                                        || show_regenerate
+                                        || show_regenerate_prose
+                                        || show_retry
+                                        || show_fork
+                                        || show_align_prose
+                                        || show_recheck_state
+                                        || can_edit_mechanicals
+                                        || show_assistant_rewind
+                                        || can_edit_prose
+                                        || show_cancel_generation);
                                 let show_user_menu = show_user_rewind || can_edit_player_action;
-                                let show_opening_menu = show_assistant_rewind || can_edit_prose;
+                                let show_opening_menu = show_assistant_rewind
+                                    || can_edit_prose
+                                    || (is_opening && show_cancel_generation);
                                 let display_prose = if turn.prose.is_empty() {
                                     String::new()
                                 } else if is_opening {
@@ -701,7 +779,19 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                         { format!("Phase: {}", phase_label(&turn.phase)) }
                                                     </div>
                                                     if can_menu {
-                                                        <MessageOptionsMenu title="Turn options" disabled={*edit_acting}>
+                                                        <MessageOptionsMenu title="Turn options" disabled={*edit_acting || is_cancelling}>
+                                                            if show_cancel_generation {
+                                                                if let Some(job_id) = cancel_job_id {
+                                                                    <button
+                                                                        type="button"
+                                                                        class="message-menu-item"
+                                                                        onclick={on_cancel_generation.reform(move |_| job_id)}
+                                                                        disabled={is_cancelling}
+                                                                    >
+                                                                        { if is_cancelling { "Cancelling…" } else { "Cancel generation" } }
+                                                                    </button>
+                                                                }
+                                                            } else {
                                                             if can_edit_prose {
                                                                 <button
                                                                     type="button"
@@ -734,7 +824,16 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     class="message-menu-item"
                                                                     onclick={on_regenerate.reform(move |_| turn_id)}
                                                                 >
-                                                                    {"Regenerate"}
+                                                                    {"Regenerate turn"}
+                                                                </button>
+                                                            }
+                                                            if show_regenerate_prose {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_regenerate_prose.reform(move |_| turn_id)}
+                                                                >
+                                                                    {"Regenerate prose"}
                                                                 </button>
                                                             }
                                                             if show_fork {
@@ -777,6 +876,23 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     {"Recheck state"}
                                                                 </button>
                                                             }
+                                                            if can_edit_mechanicals && prose_has_inline_mech {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={{
+                                                                        let editing = editing.clone();
+                                                                        let edit_text = edit_text.clone();
+                                                                        let mechanical_json = mechanical_results_edit_json(&turn.mechanical_results);
+                                                                        Callback::from(move |_| {
+                                                                            edit_text.set(mechanical_json.clone());
+                                                                            editing.set(Some((turn_id, TurnEditField::Mechanicals)));
+                                                                        })
+                                                                    }}
+                                                                >
+                                                                    {"Edit mechanics"}
+                                                                </button>
+                                                            }
                                                             if show_assistant_rewind {
                                                                 <button
                                                                     type="button"
@@ -789,13 +905,26 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     ) }
                                                                 </button>
                                                             }
+                                                            }
                                                         </MessageOptionsMenu>
                                                     }
                                                 </div>
                                             } else if show_opening_menu {
                                                 <div class="message-header">
                                                     <div class="message-meta muted">{"Opening"}</div>
-                                                    <MessageOptionsMenu title="Turn options" disabled={*edit_acting}>
+                                                    <MessageOptionsMenu title="Turn options" disabled={*edit_acting || is_cancelling}>
+                                                        if show_cancel_generation {
+                                                            if let Some(job_id) = cancel_job_id {
+                                                                <button
+                                                                    type="button"
+                                                                    class="message-menu-item"
+                                                                    onclick={on_cancel_generation.reform(move |_| job_id)}
+                                                                    disabled={is_cancelling}
+                                                                >
+                                                                    { if is_cancelling { "Cancelling…" } else { "Cancel generation" } }
+                                                                </button>
+                                                            }
+                                                        } else {
                                                         if can_edit_prose {
                                                             <button
                                                                 type="button"
@@ -824,6 +953,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                                     if assistant_rewind_count == 1 { "" } else { "s" },
                                                                 ) }
                                                             </button>
+                                                        }
                                                         }
                                                     </MessageOptionsMenu>
                                                 </div>
@@ -864,17 +994,61 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.mechanical_results.is_empty() && !prose_has_inline_mech {
+                                            if (!turn.mechanical_results.is_empty() && !prose_has_inline_mech)
+                                                || editing_mechanicals
+                                            {
                                                 <PhaseSection
                                                     label={"Mechanics".to_string()}
-                                                    expanded={Some(expanded_phases.contains(&(turn_id, "mechanics".to_string())))}
+                                                    expanded={Some(expanded_phases.contains(&(turn_id, "mechanics".to_string())) || editing_mechanicals)}
                                                     on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "mechanics".to_string())))}
                                                 >
-                                                    { for turn.mechanical_results.iter().map(|r| html! {
-                                                        <div class="mechanical-result-item" key={format!("{}-{}", turn_id, r.sort_order)}>
-                                                            { render_inline_mechanic(r) }
+                                                    if can_edit_mechanicals {
+                                                        <div class="message-edit-actions message-edit-actions--phase">
+                                                            if editing_mechanicals {
+                                                                <button type="button" class="btn" onclick={save_edit.clone()} disabled={*edit_acting}>
+                                                                    { if *edit_acting { "Saving…" } else { "Save" } }
+                                                                </button>
+                                                                <button type="button" class="btn secondary" onclick={cancel_edit.clone()} disabled={*edit_acting}>{"Cancel"}</button>
+                                                            } else {
+                                                                <button
+                                                                    type="button"
+                                                                    class="btn secondary"
+                                                                    onclick={{
+                                                                        let editing = editing.clone();
+                                                                        let edit_text = edit_text.clone();
+                                                                        let mechanical_json = mechanical_results_edit_json(&turn.mechanical_results);
+                                                                        Callback::from(move |_| {
+                                                                            edit_text.set(mechanical_json.clone());
+                                                                            editing.set(Some((turn_id, TurnEditField::Mechanicals)));
+                                                                        })
+                                                                    }}
+                                                                    disabled={*edit_acting}
+                                                                >
+                                                                    {"Edit mechanics"}
+                                                                </button>
+                                                            }
                                                         </div>
-                                                    }) }
+                                                    }
+                                                    if editing_mechanicals {
+                                                        <textarea
+                                                            class="message-edit-input message-edit-input--json"
+                                                            value={(*edit_text).clone()}
+                                                            oninput={Callback::from({
+                                                                let edit_text = edit_text.clone();
+                                                                move |e: InputEvent| {
+                                                                    let input: HtmlTextAreaElement = e.target_unchecked_into();
+                                                                    edit_text.set(input.value());
+                                                                }
+                                                            })}
+                                                            disabled={*edit_acting}
+                                                        />
+                                                    } else {
+                                                        { for turn.mechanical_results.iter().map(|r| html! {
+                                                            <div class="mechanical-result-item" key={format!("{}-{}", turn_id, r.sort_order)}>
+                                                                { render_inline_mechanic(r) }
+                                                            </div>
+                                                        }) }
+                                                    }
                                                     if turn.observability.llm_call_count > 0 || turn.observability.tool_call_count > 0 {
                                                         <div class="muted small observability-summary">
                                                             { format!(
@@ -1636,6 +1810,10 @@ fn render_inline_check(check: &GameTurnCheck) -> Html {
             </div>
         </div>
     }
+}
+
+fn mechanical_results_edit_json(results: &[MechanicalResult]) -> String {
+    serde_json::to_string_pretty(results).unwrap_or_else(|_| "[]".to_string())
 }
 
 fn mechanical_result_summary(result: &MechanicalResult) -> String {

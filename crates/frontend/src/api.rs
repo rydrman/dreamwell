@@ -979,10 +979,23 @@ pub async fn continue_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, Str
     .await
 }
 
-pub async fn regenerate_turn(game_id: i64, turn_id: i64) -> Result<GameDetail, String> {
+pub async fn regenerate_turn(
+    game_id: i64,
+    turn_id: i64,
+    scope: RegenerateTurnScope,
+) -> Result<GameDetail, String> {
     json_body(
         "POST",
         &format!("/api/games/{game_id}/turns/{turn_id}/regenerate"),
+        &RegenerateTurnRequest { scope },
+    )
+    .await
+}
+
+pub async fn regenerate_turn_prose(game_id: i64, turn_id: i64) -> Result<GameDetail, String> {
+    json_body(
+        "POST",
+        &format!("/api/games/{game_id}/turns/{turn_id}/regenerate/prose"),
         &serde_json::json!({}),
     )
     .await

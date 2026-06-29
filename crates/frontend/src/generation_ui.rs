@@ -160,6 +160,7 @@ pub fn job_running_label(job_type: JobType) -> &'static str {
         JobType::StoryChapterSummarize => "summarizing chapter…",
         JobType::StoryBeatVariableRecheck => "checking variables…",
         JobType::GameTurnStructuredAgent => "running structured agent…",
+        JobType::GameTurnProseRegenerate => "regenerating prose…",
         JobType::GameSceneSummarize => "summarizing scene…",
         JobType::GameProseRecheck => "aligning prose…",
         JobType::GameStateRecheck => "checking state…",

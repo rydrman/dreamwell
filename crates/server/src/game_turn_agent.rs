@@ -706,3 +706,97 @@ async fn finalize_turn_prose(
     }
     Ok(())
 }
+
+/// Re-narrate a completed turn from its existing checks and mechanical results.
+pub async fn run_prose_regenerate_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    game_id: i64,
+    turn_id: i64,
+    guidance: &str,
+    settings: &Settings,
+    token: &CancellationToken,
+) -> AppResult<()> {
+    let started = Instant::now();
+    if token.is_cancelled() {
+        return Err(AppError::bad_request("cancelled"));
+    }
+
+    let detail = db::get_game_detail(pool, game_id).await?;
+    let turn = db::get_turn(pool, game_id, turn_id).await?;
+    let game = detail.game.clone();
+    let model_override = model_override_for_phase(&game, settings, GameModelPhase::Prose);
+    let parser = resolve_tool_parser(
+        &db::get_inference_config(pool).await?.tool_call_parser,
+        model_override
+            .as_deref()
+            .or_else(|| {
+                let model = settings.model.trim();
+                (!model.is_empty()).then_some(model)
+            })
+            .unwrap_or(""),
+    );
+
+    db::update_turn_phase(pool, turn_id, "prose").await?;
+    if settings.thought_blocks_enabled {
+        db::clear_turn_thoughts(pool, turn_id).await?;
+    }
+
+    let prose = run_prose_pass(
+        pool,
+        job_id,
+        game_id,
+        turn_id,
+        &game,
+        &detail,
+        &turn,
+        &turn.checks,
+        &turn.mechanical_results,
+        None,
+        guidance,
+        settings,
+        model_override.as_deref(),
+        parser,
+        token,
+    )
+    .await?;
+
+    if !prose.applied_state.is_empty() {
+        db::update_turn_state_changes(pool, turn_id, &prose.applied_state).await?;
+        db::invalidate_scene_summaries_from(pool, game_id, turn.sort_order).await?;
+    }
+
+    let has_content = if settings.thought_blocks_enabled {
+        let parsed = parse_thought_blocks(&prose.prose);
+        !parsed.reply.trim().is_empty() || !parsed.thought.is_empty()
+    } else {
+        !prose.prose.trim().is_empty()
+    };
+    if !has_content {
+        db::complete_job(
+            pool,
+            job_id,
+            dreamwell_types::JobStatus::Failed,
+            Some("model returned no prose".to_string()),
+        )
+        .await?;
+        db::update_turn_phase(pool, turn_id, "failed").await?;
+        return Ok(());
+    }
+
+    let elapsed = started.elapsed().as_millis() as u64;
+    let obs = TurnObservability {
+        engine_mode: EngineMode::ToolsStructured,
+        llm_call_count: prose.llm_calls,
+        tool_call_count: prose.tool_calls,
+        tool_iterations: prose.llm_calls,
+        phase_timings_ms: [("prose_regenerate".to_string(), elapsed)].into(),
+    };
+    db::merge_turn_observability(pool, turn_id, obs).await?;
+
+    db::update_turn_phase(pool, turn_id, "done").await?;
+    db::complete_job(pool, job_id, dreamwell_types::JobStatus::Completed, None).await?;
+    db::touch_game(pool, game_id).await?;
+    crate::game_summarize::maybe_enqueue_scene_summarize(pool, game_id).await?;
+    Ok(())
+}

@@ -93,6 +93,24 @@ pub async fn run_game_job(
             )
             .await
         }
+        JobType::GameTurnProseRegenerate => {
+            let game_id = job
+                .game_id
+                .ok_or_else(|| AppError::internal("game job missing game_id"))?;
+            let turn_id = job
+                .turn_id
+                .ok_or_else(|| AppError::internal("turn job missing turn_id"))?;
+            crate::game_turn_agent::run_prose_regenerate_job(
+                pool,
+                job_id,
+                game_id,
+                turn_id,
+                &job.guidance_notes,
+                settings,
+                &token,
+            )
+            .await
+        }
         JobType::GameSceneSummarize => {
             crate::game_summarize::run_game_scene_summarize_job(
                 pool,

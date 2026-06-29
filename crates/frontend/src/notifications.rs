@@ -184,6 +184,7 @@ pub fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StoryChapterSummarize => "Chapter summarize",
         JobType::StoryBeatVariableRecheck => "Variable recheck",
         JobType::GameTurnStructuredAgent => "Structured agent",
+        JobType::GameTurnProseRegenerate => "Prose regenerate",
         JobType::GameSceneSummarize => "Scene summarize",
         JobType::GameProseRecheck => "Prose align",
         JobType::GameStateRecheck => "State recheck",

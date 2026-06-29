@@ -973,12 +973,15 @@ fn turn_can_be_regenerated(turn: &GameTurn) -> bool {
     turn.phase != "pending" && !turn.phase.ends_with("_pause")
 }
 
-pub async fn prepare_regenerate_turn(
+fn turn_can_regenerate_prose(turn: &GameTurn) -> bool {
+    !turn.is_opening && turn.phase == "done" && !turn.prose.trim().is_empty()
+}
+
+async fn assert_last_regeneratable_turn(
     pool: &SqlitePool,
     game_id: i64,
     turn_id: i64,
-) -> AppResult<Job> {
-    let _game = get_game(pool, game_id).await?;
+) -> AppResult<GameTurn> {
     let detail = get_game_detail(pool, game_id).await?;
     let turn = detail
         .turns
@@ -997,23 +1000,46 @@ pub async fn prepare_regenerate_turn(
     if turn.is_opening {
         return Err(AppError::bad_request("Opening scene cannot be regenerated"));
     }
-    if !turn_can_be_regenerated(&turn) {
-        if turn.phase == "done" {
-            return Err(AppError::bad_request(
-                "Turn has no generated response to regenerate",
-            ));
-        }
-        if turn.phase == "pending" {
-            return Err(AppError::bad_request("Turn is still generating"));
-        }
-        return Err(AppError::bad_request(
-            "Only completed, failed, or stuck turns can be retried",
-        ));
-    }
     if has_active_turn_job(pool, turn_id).await? {
         return Err(AppError::bad_request("Turn already has an active job"));
     }
-    prepare_structured_agent_rerun(pool, game_id, turn_id, &turn).await
+    Ok(turn)
+}
+
+pub async fn prepare_regenerate_turn(
+    pool: &SqlitePool,
+    game_id: i64,
+    turn_id: i64,
+    scope: dreamwell_types::RegenerateTurnScope,
+) -> AppResult<Job> {
+    let _game = get_game(pool, game_id).await?;
+    let turn = assert_last_regeneratable_turn(pool, game_id, turn_id).await?;
+    match scope {
+        dreamwell_types::RegenerateTurnScope::ProseOnly => {
+            if !turn_can_regenerate_prose(&turn) {
+                return Err(AppError::bad_request(
+                    "Turn has no prose to regenerate from existing mechanics",
+                ));
+            }
+            prepare_prose_regenerate(pool, game_id, turn_id, &turn).await
+        }
+        dreamwell_types::RegenerateTurnScope::Full => {
+            if !turn_can_be_regenerated(&turn) {
+                if turn.phase == "done" {
+                    return Err(AppError::bad_request(
+                        "Turn has no generated response to regenerate",
+                    ));
+                }
+                if turn.phase == "pending" {
+                    return Err(AppError::bad_request("Turn is still generating"));
+                }
+                return Err(AppError::bad_request(
+                    "Only completed, failed, or stuck turns can be retried",
+                ));
+            }
+            prepare_structured_agent_rerun(pool, game_id, turn_id, &turn).await
+        }
+    }
 }
 
 pub async fn rewind_game_at_turn(
@@ -1311,9 +1337,6 @@ async fn prepare_structured_agent_rerun(
     turn_id: i64,
     turn: &GameTurn,
 ) -> AppResult<Job> {
-    if has_active_turn_job(pool, turn_id).await? {
-        return Err(AppError::bad_request("Turn already has an active job"));
-    }
     let detail = get_game_detail(pool, game_id).await?;
     let prior_turns: Vec<GameTurn> = detail
         .turns
@@ -1352,6 +1375,79 @@ async fn prepare_structured_agent_rerun(
     .await
 }
 
+async fn prepare_prose_regenerate(
+    pool: &SqlitePool,
+    game_id: i64,
+    turn_id: i64,
+    turn: &GameTurn,
+) -> AppResult<Job> {
+    let detail = get_game_detail(pool, game_id).await?;
+    crate::game_state::revert_turn_state_changes(
+        pool,
+        game_id,
+        turn_id,
+        &turn.state_changes,
+        &detail.actors,
+    )
+    .await?;
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE game_turns SET prose='', thought_content='', thought_duration_ms=NULL, thought_in_progress=0, state_changes='[]', phase='prose', updated_at=?1 WHERE id=?2",
+    )
+    .bind(&now)
+    .bind(turn_id)
+    .execute(pool)
+    .await?;
+    enqueue_game_job(
+        pool,
+        JobType::GameTurnProseRegenerate,
+        game_id,
+        Some(turn_id),
+        turn.guidance_notes.clone(),
+    )
+    .await
+}
+
+pub async fn apply_turn_mechanical_edits(
+    pool: &SqlitePool,
+    game_id: i64,
+    turn_id: i64,
+    results: &mut [MechanicalResult],
+) -> AppResult<()> {
+    for (index, result) in results.iter_mut().enumerate() {
+        result.sort_order = index as i64;
+    }
+    let detail = get_game_detail(pool, game_id).await?;
+    let turn = detail
+        .turns
+        .iter()
+        .find(|t| t.id == turn_id)
+        .cloned()
+        .ok_or_else(|| AppError::not_found("Turn not found"))?;
+    let prior_turns: Vec<GameTurn> = detail
+        .turns
+        .iter()
+        .filter(|t| t.sort_order < turn.sort_order)
+        .cloned()
+        .collect();
+    let mut instances =
+        crate::game_mechanics::replay_element_instances(&detail.game.game_elements, &prior_turns);
+    for result in results.iter() {
+        crate::game_mechanics::apply_mechanical_result_to_instances(&mut instances, result);
+    }
+    crate::game_mechanics::persist_turn_mechanicals(
+        pool,
+        game_id,
+        turn_id,
+        &detail.game,
+        results,
+        &instances,
+    )
+    .await?;
+    invalidate_scene_summaries_from(pool, game_id, turn.sort_order).await?;
+    Ok(())
+}
+
 pub async fn get_turn(pool: &SqlitePool, game_id: i64, turn_id: i64) -> AppResult<GameTurn> {
     let row = sqlx::query_as::<_, TurnRow>(&turn_select("WHERE id = ?1 AND game_id = ?2"))
         .bind(turn_id)
@@ -1386,6 +1482,11 @@ pub async fn update_turn_field(
     let column = match field {
         TurnEditField::Prose => "prose",
         TurnEditField::PlayerAction => "player_action",
+        TurnEditField::Mechanicals => {
+            return Err(AppError::bad_request(
+                "Mechanicals must be updated via apply_turn_mechanical_edits",
+            ));
+        }
     };
     let now = Utc::now().to_rfc3339();
     let sql = format!("UPDATE game_turns SET {column}=?1, updated_at=?2 WHERE id=?3");
@@ -2115,13 +2216,53 @@ mod tests {
         .await
         .expect("turn");
 
-        let job = prepare_regenerate_turn(&pool, game_id, turn_id)
-            .await
-            .expect("regenerate");
+        let job = prepare_regenerate_turn(
+            &pool,
+            game_id,
+            turn_id,
+            dreamwell_types::RegenerateTurnScope::Full,
+        )
+        .await
+        .expect("regenerate");
         assert_eq!(job.job_type, JobType::GameTurnStructuredAgent);
 
         let turn = get_turn(&pool, game_id, turn_id).await.expect("turn");
         assert_eq!(turn.phase, "pending");
+    }
+
+    #[tokio::test]
+    async fn prepare_regenerate_turn_prose_only_keeps_mechanics_and_sets_prose_phase() {
+        let pool = test_pool().await;
+        let detail = create_game(&pool, GameCreate::default())
+            .await
+            .expect("create");
+        let game_id = detail.game.id;
+        let now = chrono::Utc::now().to_rfc3339();
+        let mechanical_results = r#"[{"kind":"dice_roll","label":"test","data":{"type":"dice_roll","dice_expr":"1d6","rolls":[4],"total":4},"sort_order":0}]"#;
+        let turn_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, prose, mechanical_results_json, is_opening, created_at, updated_at) VALUES (?1,1,'look around','','done','Old prose.',?2,0,?3,?3) RETURNING id",
+        )
+        .bind(game_id)
+        .bind(mechanical_results)
+        .bind(&now)
+        .fetch_one(&pool)
+        .await
+        .expect("turn");
+
+        let job = prepare_regenerate_turn(
+            &pool,
+            game_id,
+            turn_id,
+            dreamwell_types::RegenerateTurnScope::ProseOnly,
+        )
+        .await
+        .expect("regenerate prose");
+        assert_eq!(job.job_type, JobType::GameTurnProseRegenerate);
+
+        let turn = get_turn(&pool, game_id, turn_id).await.expect("turn");
+        assert_eq!(turn.phase, "prose");
+        assert!(turn.prose.is_empty());
+        assert_eq!(turn.mechanical_results.len(), 1);
     }
 
     #[tokio::test]

@@ -67,6 +67,7 @@ pub enum JobType {
     GameProseRecheck,
     GameStateRecheck,
     GameTurnStructuredAgent,
+    GameTurnProseRegenerate,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -898,6 +899,28 @@ pub fn estimate_token_count(text: &str) -> i64 {
 }
 
 #[cfg(test)]
+mod regenerate_turn_request_tests {
+    use super::{RegenerateTurnRequest, RegenerateTurnScope};
+
+    #[test]
+    fn regenerate_turn_request_serializes_prose_only_scope() {
+        let req = RegenerateTurnRequest {
+            scope: RegenerateTurnScope::ProseOnly,
+        };
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"scope":"prose_only"}"#
+        );
+    }
+
+    #[test]
+    fn regenerate_turn_request_deserializes_prose_only_scope() {
+        let req: RegenerateTurnRequest = serde_json::from_str(r#"{"scope":"prose_only"}"#).unwrap();
+        assert_eq!(req.scope, RegenerateTurnScope::ProseOnly);
+    }
+}
+
+#[cfg(test)]
 mod context_budget_tests {
     use super::{
         prompt_token_budget, structured_output_tokens, suggested_response_tokens, Settings,
@@ -1492,11 +1515,26 @@ pub struct RewindTurnRequest {
     pub include_turn: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RegenerateTurnScope {
+    #[default]
+    Full,
+    ProseOnly,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RegenerateTurnRequest {
+    #[serde(default)]
+    pub scope: RegenerateTurnScope,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnEditField {
     Prose,
     PlayerAction,
+    Mechanicals,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -160,6 +160,7 @@ pub(crate) fn parse_job_type(s: &str) -> JobType {
         "game_scene_summarize" => JobType::GameSceneSummarize,
         "game_prose_recheck" => JobType::GameProseRecheck,
         "game_state_recheck" => JobType::GameStateRecheck,
+        "game_turn_prose_regenerate" => JobType::GameTurnProseRegenerate,
         _ => JobType::ChatMessage,
     }
 }
@@ -183,6 +184,7 @@ pub(crate) fn job_type_str(job_type: JobType) -> &'static str {
         JobType::GameSceneSummarize => "game_scene_summarize",
         JobType::GameProseRecheck => "game_prose_recheck",
         JobType::GameStateRecheck => "game_state_recheck",
+        JobType::GameTurnProseRegenerate => "game_turn_prose_regenerate",
     }
 }
 

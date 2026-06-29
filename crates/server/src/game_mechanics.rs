@@ -131,7 +131,7 @@ pub fn replay_element_instances(
     instances
 }
 
-fn apply_mechanical_result_to_instances(
+pub(crate) fn apply_mechanical_result_to_instances(
     instances: &mut ElementInstances,
     result: &MechanicalResult,
 ) {

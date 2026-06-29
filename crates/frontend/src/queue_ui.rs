@@ -30,6 +30,7 @@ fn job_type_label(job_type: JobType) -> &'static str {
         JobType::StoryChapterSummarize => "chapter summarize",
         JobType::StoryBeatVariableRecheck => "variable recheck",
         JobType::GameTurnStructuredAgent => "structured agent",
+        JobType::GameTurnProseRegenerate => "prose regenerate",
         JobType::GameSceneSummarize => "summarizing scene",
         JobType::GameProseRecheck => "aligning prose",
         JobType::GameStateRecheck => "checking state",
