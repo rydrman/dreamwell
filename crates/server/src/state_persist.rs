@@ -186,6 +186,45 @@ pub async fn persist_state_revert(
                 .execute(pool)
                 .await?;
         }
+        RevertMutation::RestoreMeasurement {
+            actor_id,
+            key,
+            float_value,
+            float_min,
+            float_max,
+            unit,
+        } => {
+            let update_sql = format!(
+                "UPDATE {table} SET float_value=?1, float_min=?2, float_max=?3, unit=?4, value='', updated_at=?5 WHERE {scope_col}=?6 AND actor_id IS ?7 AND kind='measurement' AND key=?8"
+            );
+            let result = sqlx::query(&update_sql)
+                .bind(float_value)
+                .bind(float_min)
+                .bind(float_max)
+                .bind(unit)
+                .bind(now)
+                .bind(scope_id)
+                .bind(actor_id)
+                .bind(key)
+                .execute(pool)
+                .await?;
+            if result.rows_affected() == 0 && float_value.is_some() {
+                let insert_sql = format!(
+                    "INSERT INTO {table} ({scope_col}, actor_id, kind, key, value, float_value, float_min, float_max, unit, source_turn, updated_at) VALUES (?1,?2,'measurement',?3,'',?4,?5,?6,?7,-1,?8)"
+                );
+                sqlx::query(&insert_sql)
+                    .bind(scope_id)
+                    .bind(actor_id)
+                    .bind(key)
+                    .bind(float_value)
+                    .bind(float_min)
+                    .bind(float_max)
+                    .bind(unit)
+                    .bind(now)
+                    .execute(pool)
+                    .await?;
+            }
+        }
     }
     Ok(())
 }

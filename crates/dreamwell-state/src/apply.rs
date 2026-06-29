@@ -181,6 +181,9 @@ where
     applied.prev_value = Some(existing.value.clone());
     applied.prev_num = existing.float_value.map(|v| v.round() as i64);
     applied.prev_float = existing.float_value;
+    applied.prev_float_min = existing.float_min;
+    applied.prev_float_max = existing.float_max;
+    applied.prev_unit = existing.unit.clone();
     if applied.unit.is_none() {
         applied.unit = existing.unit.clone();
     }
@@ -287,6 +290,9 @@ fn plan_text_change(
         prev_value,
         prev_num: existing.and_then(|e| e.float_value.map(|v| v.round() as i64)),
         prev_float: existing.and_then(|e| e.float_value),
+        prev_float_min: existing.and_then(|e| e.float_min),
+        prev_float_max: existing.and_then(|e| e.float_max),
+        prev_unit: existing.and_then(|e| e.unit.clone()),
         unit: None,
         prev_kind,
     };
@@ -312,6 +318,9 @@ fn plan_measurement_change(
     let prev_value = existing.map(|e| e.value.clone());
     let prev_num = existing.and_then(|e| e.float_value.map(|v| v.round() as i64));
     let prev_float = existing.and_then(|e| e.float_value);
+    let prev_float_min = existing.and_then(|e| e.float_min);
+    let prev_float_max = existing.and_then(|e| e.float_max);
+    let prev_unit = existing.and_then(|e| e.unit.clone());
 
     let (float_value, float_min, float_max, unit, clear) = match change.op {
         StateOp::Remove => (None, None, None, None, true),
@@ -409,6 +418,9 @@ fn plan_measurement_change(
         prev_value,
         prev_num,
         prev_float,
+        prev_float_min,
+        prev_float_max,
+        prev_unit,
         unit,
         prev_kind,
     };
@@ -441,6 +453,9 @@ fn plan_sequence_change(
                     prev_value,
                     prev_num,
                     prev_float: None,
+                    prev_float_min: None,
+                    prev_float_max: None,
+                    prev_unit: None,
                     unit: None,
                     prev_kind,
                 },
@@ -499,10 +514,59 @@ fn plan_sequence_change(
         prev_value,
         prev_num,
         prev_float: None,
+        prev_float_min: None,
+        prev_float_max: None,
+        prev_unit: None,
         unit: None,
         prev_kind,
     };
     (applied, mutation)
+}
+
+fn measurement_had_prior(change: &AppliedStateChange) -> bool {
+    change.prev_float.is_some() || change.prev_num.is_some()
+}
+
+fn revert_measurement(change: &AppliedStateChange, actor_id: Option<i64>) -> RevertMutation {
+    RevertMutation::RestoreMeasurement {
+        actor_id,
+        key: change.key.clone(),
+        float_value: change
+            .prev_float
+            .or_else(|| change.prev_num.map(|n| n as f64)),
+        float_min: change.prev_float_min,
+        float_max: change.prev_float_max,
+        unit: change.prev_unit.clone(),
+    }
+}
+
+fn revert_replaced_kind(
+    change: &AppliedStateChange,
+    actor_id: Option<i64>,
+    prev_kind: StateKind,
+) -> Option<RevertMutation> {
+    if prev_kind == StateKind::Measurement {
+        return measurement_had_prior(change).then(|| revert_measurement(change, actor_id));
+    }
+    let value = change.prev_value.as_ref()?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(if matches!(prev_kind, StateKind::Sequence) {
+        RevertMutation::RestoreStructured {
+            actor_id,
+            kind: prev_kind,
+            key: change.key.clone(),
+            value: value.clone(),
+        }
+    } else {
+        RevertMutation::RestoreText {
+            actor_id,
+            kind: prev_kind,
+            key: change.key.clone(),
+            value: value.clone(),
+        }
+    })
 }
 
 pub fn plan_revert_changes(
@@ -524,28 +588,36 @@ pub fn plan_revert_changes(
                 kind: change.kind,
                 key: change.key.clone(),
             });
-            if matches!(prev_kind, StateKind::Measurement | StateKind::Sequence) {
-                if let Some(value) = &change.prev_value {
-                    mutations.push(RevertMutation::RestoreStructured {
-                        actor_id,
-                        kind: prev_kind,
-                        key: change.key.clone(),
-                        value: value.clone(),
-                    });
-                }
-            } else if let Some(value) = &change.prev_value {
-                mutations.push(RevertMutation::RestoreText {
-                    actor_id,
-                    kind: prev_kind,
-                    key: change.key.clone(),
-                    value: value.clone(),
-                });
+            if let Some(restore) = revert_replaced_kind(change, actor_id, prev_kind) {
+                mutations.push(restore);
             }
             continue;
         }
 
         match change.kind {
-            StateKind::Measurement | StateKind::Sequence => {
+            StateKind::Measurement => {
+                if measurement_had_prior(change) {
+                    mutations.push(revert_measurement(change, actor_id));
+                } else if change
+                    .prev_value
+                    .as_ref()
+                    .is_some_and(|prev| !prev.is_empty())
+                {
+                    mutations.push(RevertMutation::RestoreStructured {
+                        actor_id,
+                        kind: change.kind,
+                        key: change.key.clone(),
+                        value: change.prev_value.clone().unwrap_or_default(),
+                    });
+                } else {
+                    mutations.push(RevertMutation::DeleteByKey {
+                        actor_id,
+                        kind: change.kind,
+                        key: change.key.clone(),
+                    });
+                }
+            }
+            StateKind::Sequence => {
                 if let Some(prev) = &change.prev_value {
                     if prev.is_empty() {
                         mutations.push(RevertMutation::DeleteByKey {
@@ -590,7 +662,7 @@ pub fn plan_revert_changes(
     mutations
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RevertMutation {
     RestoreStructured {
         actor_id: Option<i64>,
@@ -608,6 +680,14 @@ pub enum RevertMutation {
         actor_id: Option<i64>,
         kind: StateKind,
         key: String,
+    },
+    RestoreMeasurement {
+        actor_id: Option<i64>,
+        key: String,
+        float_value: Option<f64>,
+        float_min: Option<f64>,
+        float_max: Option<f64>,
+        unit: Option<String>,
     },
 }
 
@@ -734,5 +814,74 @@ mod tests {
             &[],
         );
         assert_eq!(plan.mutations.len(), 1);
+    }
+
+    #[test]
+    fn measurement_revert_restores_prev_float_instead_of_deleting() {
+        let plan = plan_state_changes(
+            &[StateChangeRequest {
+                target: "pc".into(),
+                kind: StateKind::Measurement,
+                key: "health".into(),
+                op: StateOp::Add,
+                value: None,
+                delta: Some(-2),
+                float_value: None,
+                float_min: None,
+                float_max: None,
+                unit: None,
+                sequence_items: None,
+                sequence_position: None,
+                sequence_loop: None,
+            }],
+            &[actor()],
+            &[measurement_entry("health", 8.0, Some(10.0))],
+        );
+        assert_eq!(plan.audit.len(), 1);
+        let revert = plan_revert_changes(&plan.audit, &[actor()]);
+        assert_eq!(
+            revert,
+            vec![RevertMutation::RestoreMeasurement {
+                actor_id: Some(1),
+                key: "health".into(),
+                float_value: Some(8.0),
+                float_min: None,
+                float_max: Some(10.0),
+                unit: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn measurement_insert_revert_deletes_entry() {
+        let plan = plan_state_changes(
+            &[StateChangeRequest {
+                target: "pc".into(),
+                kind: StateKind::Measurement,
+                key: "stress".into(),
+                op: StateOp::Set,
+                value: None,
+                delta: None,
+                float_value: Some(1.0),
+                float_min: None,
+                float_max: Some(5.0),
+                unit: None,
+                sequence_items: None,
+                sequence_position: None,
+                sequence_loop: None,
+            }],
+            &[actor()],
+            &[],
+        );
+        assert_eq!(plan.audit.len(), 1);
+        let revert = plan_revert_changes(&plan.audit, &[actor()]);
+        assert_eq!(
+            revert,
+            vec![RevertMutation::DeleteByKey {
+                actor_id: Some(1),
+                kind: StateKind::Measurement,
+                key: "stress".into(),
+            }]
+        );
     }
 }

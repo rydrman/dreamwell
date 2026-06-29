@@ -1797,7 +1797,9 @@ struct SceneRow {
 
 #[cfg(test)]
 mod tests {
-    use dreamwell_types::{GameCreate, ScenarioNpc, StateKind, TrackedVarDef};
+    use dreamwell_types::{
+        GameCreate, ScenarioNpc, StateChangeRequest, StateKind, StateOp, TrackedVarDef,
+    };
 
     use super::*;
 
@@ -2149,5 +2151,89 @@ mod tests {
         let turn = get_turn(&pool, game_id, turn_id).await.expect("turn");
         assert_eq!(turn.prose, "New prose.");
         assert_eq!(turn.player_action, "peek inside");
+    }
+
+    #[tokio::test]
+    async fn revert_turn_state_changes_restores_measurement_values() {
+        let pool = test_pool().await;
+        let payload = GameCreate {
+            pc_name: "Hero".into(),
+            state_schema: vec![TrackedVarDef {
+                key: "health".into(),
+                kind: StateKind::Measurement,
+                target: "pc".into(),
+                initial_num: Some(8),
+                initial_max: Some(10),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let detail = create_game(&pool, payload).await.expect("create");
+        let game_id = detail.game.id;
+        let now = chrono::Utc::now().to_rfc3339();
+        let turn_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO game_turns (game_id, sort_order, player_action, guidance_notes, phase, prose, is_opening, created_at, updated_at) VALUES (?1,1,'take damage','','done','You wince.',0,?2,?2) RETURNING id",
+        )
+        .bind(game_id)
+        .bind(&now)
+        .fetch_one(&pool)
+        .await
+        .expect("turn");
+
+        let applied = crate::game_state::apply_state_changes(
+            &pool,
+            game_id,
+            turn_id,
+            &[StateChangeRequest {
+                target: "pc".into(),
+                kind: StateKind::Measurement,
+                key: "health".into(),
+                op: StateOp::Add,
+                value: None,
+                delta: Some(-2),
+                float_value: None,
+                float_min: None,
+                float_max: None,
+                unit: None,
+                sequence_items: None,
+                sequence_position: None,
+                sequence_loop: None,
+            }],
+            &detail.actors,
+            &detail.state,
+        )
+        .await
+        .expect("apply");
+        update_turn_state_changes(&pool, turn_id, &applied)
+            .await
+            .expect("audit");
+
+        let damaged: (Option<f64>, Option<f64>) = sqlx::query_as(
+            "SELECT float_value, float_max FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
+        )
+        .bind(game_id)
+        .fetch_one(&pool)
+        .await
+        .expect("damaged");
+        assert_eq!(damaged, (Some(6.0), Some(10.0)));
+
+        crate::game_state::revert_turn_state_changes(
+            &pool,
+            game_id,
+            turn_id,
+            &applied,
+            &detail.actors,
+        )
+        .await
+        .expect("revert");
+
+        let restored: (Option<f64>, Option<f64>) = sqlx::query_as(
+            "SELECT float_value, float_max FROM game_state_entries WHERE game_id = ?1 AND key = 'health'",
+        )
+        .bind(game_id)
+        .fetch_one(&pool)
+        .await
+        .expect("restored");
+        assert_eq!(restored, (Some(8.0), Some(10.0)));
     }
 }

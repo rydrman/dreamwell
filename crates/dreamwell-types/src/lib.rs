@@ -1311,6 +1311,12 @@ pub struct AppliedStateChange {
     /// Previous float value for measurements (full precision).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_float: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_float_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_float_max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_unit: Option<String>,
     /// Unit label for measurement changes (canonical UCUM or custom).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
