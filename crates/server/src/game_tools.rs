@@ -232,6 +232,7 @@ pub fn inline_prose_tool_specs() -> Vec<Value> {
 /// outcome.
 pub fn mechanics_agent_tool_specs() -> Vec<Value> {
     let mut tools = inline_mechanical_tool_specs();
+    tools.push(author_notes_spec());
     tools.push(present_fork_spec());
     tools
 }
@@ -242,9 +243,13 @@ pub fn mechanics_agent_tool_specs() -> Vec<Value> {
 /// results rather than producing new ones.
 pub fn prose_agent_tool_specs() -> Vec<Value> {
     let mut tools = simple_state_tool_specs();
+    tools.push(author_notes_spec());
     tools.push(present_fork_spec());
     tools
 }
+
+pub const UPDATE_AUTHOR_NOTES_TOOL: &str = "update_author_notes";
+pub const AUTHOR_NOTES_MAX_LEN: usize = 2048;
 
 pub const PRESENT_FORK_TOOL: &str = "present_fork";
 
@@ -257,6 +262,26 @@ pub struct PcFork {
 
 pub fn is_present_fork_tool(name: &str) -> bool {
     name == PRESENT_FORK_TOOL
+}
+
+pub fn is_author_notes_tool(name: &str) -> bool {
+    name == UPDATE_AUTHOR_NOTES_TOOL
+}
+
+/// Trim and cap author notes before persistence.
+pub fn normalize_author_notes(notes: &str) -> String {
+    let trimmed = notes.trim();
+    if trimmed.len() <= AUTHOR_NOTES_MAX_LEN {
+        trimmed.to_string()
+    } else {
+        trimmed[..AUTHOR_NOTES_MAX_LEN].trim_end().to_string()
+    }
+}
+
+pub fn parse_author_notes_args(args: &Value) -> Option<String> {
+    args.get("notes")
+        .and_then(|v| v.as_str())
+        .map(normalize_author_notes)
 }
 
 /// Parse `present_fork` tool arguments. Requires a non-empty situation and at least two options.
@@ -323,6 +348,23 @@ fn present_fork_spec() -> Value {
                 }
             },
             "required": ["situation", "options"]
+        }),
+    )
+}
+
+fn author_notes_spec() -> Value {
+    tool_spec(
+        UPDATE_AUTHOR_NOTES_TOOL,
+        "Replace the game's private author notes (GM-only scene memory). Use for narrative considerations, possible story directions (the player may do anything — not a fixed choice list), and NPC unspoken thoughts/feelings with how to play them. NOT durable canonical facts — use set_variable (visibility gm when hidden). Never repeat author notes in prose, forks, or summaries. Each call replaces the entire notes block; include all still-valid prior bullets plus updates. Omit if nothing changed beyond state and existing notes.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "notes": {
+                    "type": "string",
+                    "description": "Full replacement author notes (≤150 words recommended)."
+                }
+            },
+            "required": ["notes"]
         }),
     )
 }
@@ -638,6 +680,7 @@ mod tests {
             win_condition: None,
             scenario_triggers: vec![],
             trait_defs: vec![],
+            author_notes: String::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             archived_at: None,
@@ -764,6 +807,7 @@ mod tests {
         assert!(names.iter().any(|n| n == "board_move"));
         assert!(names.iter().any(|n| n == "draw_card"));
         assert!(names.iter().any(|n| n == "present_fork"));
+        assert!(names.iter().any(|n| n == UPDATE_AUTHOR_NOTES_TOOL));
         // No state tools in the mechanics pass — state is recorded during narration.
         for tool in SIMPLE_STATE_TOOLS {
             assert!(!names.iter().any(|n| n == tool), "unexpected {tool}");
@@ -780,8 +824,28 @@ mod tests {
             assert!(names.iter().any(|n| n == tool), "missing {tool}");
         }
         assert!(names.iter().any(|n| n == "present_fork"));
+        assert!(names.iter().any(|n| n == UPDATE_AUTHOR_NOTES_TOOL));
         // Outcome tools are intentionally excluded from the narration pass.
         assert!(!names.iter().any(|n| is_outcome_tool(n)));
+    }
+
+    #[test]
+    fn parse_author_notes_args_trims_and_accepts_empty() {
+        assert_eq!(
+            parse_author_notes_args(&serde_json::json!({ "notes": "  thread  " })).as_deref(),
+            Some("thread")
+        );
+        assert_eq!(
+            parse_author_notes_args(&serde_json::json!({ "notes": "" })).as_deref(),
+            Some("")
+        );
+        assert!(parse_author_notes_args(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn normalize_author_notes_caps_length() {
+        let long = "x".repeat(AUTHOR_NOTES_MAX_LEN + 50);
+        assert_eq!(normalize_author_notes(&long).len(), AUTHOR_NOTES_MAX_LEN);
     }
 
     #[test]

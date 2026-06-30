@@ -25,8 +25,9 @@ use crate::game_prompts::{
     build_prose_narration_messages,
 };
 use crate::game_tools::{
-    handle_mechanical_tool_call, inline_prose_tool_specs, is_present_fork_tool, is_state_tool,
-    mechanics_agent_tool_specs, parse_state_tool_call, prose_agent_tool_specs, ToolSessionState,
+    handle_mechanical_tool_call, inline_prose_tool_specs, is_author_notes_tool,
+    is_present_fork_tool, is_state_tool, mechanics_agent_tool_specs, parse_state_tool_call,
+    prose_agent_tool_specs, ToolSessionState,
 };
 use crate::inference::{InferenceConfig, ToolStreamChunk};
 use crate::tool_stream::{
@@ -106,6 +107,7 @@ fn base_game(premise: &str, rules: Vec<RulesBlock>, elements: GameElementsConfig
         win_condition: None,
         scenario_triggers: vec![],
         trait_defs: vec![],
+        author_notes: String::new(),
         created_at: Utc::now(),
         updated_at: Utc::now(),
         archived_at: None,
@@ -285,6 +287,8 @@ async fn exec_tool(
         serde_json::json!({ "applied": parse_state_tool_call(tc).len() })
     } else if is_present_fork_tool(&tc.name) {
         serde_json::json!({ "ended": true })
+    } else if is_author_notes_tool(&tc.name) {
+        serde_json::json!({ "saved": true })
     } else {
         serde_json::json!({ "error": "unknown" })
     }

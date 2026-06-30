@@ -279,6 +279,17 @@ Rules:
 - Target ≤150 words
 - Output only the summary text"#;
 
+fn format_author_notes_block(notes: &str) -> String {
+    if notes.trim().is_empty() {
+        "Author's notes (GM only — never in prose, summaries, or player UI):\n(none)".to_string()
+    } else {
+        format!(
+            "Author's notes (GM only — never in prose, summaries, or player UI):\n{}",
+            notes.trim()
+        )
+    }
+}
+
 /// Shared scenario parameters included in every GM phase prompt.
 pub(crate) fn scenario_context_block(game: &Game, ctx: &MacroContext<'_>) -> String {
     [
@@ -402,6 +413,13 @@ impl TurnPromptPhase {
     /// resolved checks, annotated state, and the pending card-in-play hint.
     fn is_prose_context(self) -> bool {
         !matches!(self, TurnPromptPhase::DeclareChecks)
+    }
+
+    fn uses_author_notes(self) -> bool {
+        matches!(
+            self,
+            TurnPromptPhase::MechanicsResolve | TurnPromptPhase::ProseNarrate
+        )
     }
 }
 
@@ -578,6 +596,10 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
     };
     push_section(&mut body, &format!("Current state:\n{state_block}"));
 
+    if phase.uses_author_notes() {
+        push_section(&mut body, &format_author_notes_block(&game.author_notes));
+    }
+
     if phase.is_prose_context() {
         let elements = format_game_elements_context(game);
         if !elements.is_empty() {
@@ -629,7 +651,8 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  Call one mechanic tool at a time and wait for its real result before the next. \
                  A card's fixed move/effect is applied as state by the narrator — do not board_move or roll_dice for it. \
                  When all required mechanics are resolved (or none are needed), reply with exactly DONE and call no tool. \
-                 Use present_fork only when the PC must choose before a mechanic can resolve — never for NPC decisions.",
+                 Use present_fork only when the PC must choose before a mechanic can resolve — never for NPC decisions. \
+                 Call update_author_notes when narrative considerations, possible directions, or NPC unspoken interiority shift — durable facts belong in state, not author notes.",
             );
             if guidance_present {
                 instruction.push_str(
@@ -644,7 +667,9 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  Begin with the narrative prose — write the full narration FIRST (at least a paragraph); do not start with a tool call or end the turn without prose. \
                  Embed each ⟦mech:N⟧ marker from the canonical list at the point in the story where that outcome belongs; do not restate die faces, card names, or landing spaces in prose — the marker block shows them. \
                  Advance one beat — resolve the player's action and the resolved mechanics — then stop; do not invent extra beats. \
-                 AFTER the prose, call the tracked-state tools for durable changes the narration establishes, and stop with present_fork only when the PC owes a choice at a concrete fork (never for NPC decisions).",
+                 AFTER the prose, call the tracked-state tools for durable changes the narration establishes, \
+                 and update_author_notes when narrative considerations, possible directions, or NPC unspoken thoughts/feelings shift (replace the entire notes block; carry forward still-valid bullets; use set_variable for durable facts; show feelings through behavior only — never quote author notes). \
+                 Stop with present_fork only when the PC owes a choice at a concrete fork (never for NPC decisions).",
             );
             if guidance_present {
                 instruction.push_str(
@@ -1365,6 +1390,7 @@ mod tests {
             win_condition: None,
             scenario_triggers: vec![],
             trait_defs: vec![],
+            author_notes: String::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,
@@ -1557,6 +1583,38 @@ mod tests {
         assert!(user.contains("Tool calls ONLY"));
         // Mechanics pass still carries the scenario context for tool sequencing.
         assert!(user.contains("Current state:"));
+    }
+
+    #[test]
+    fn mechanics_and_prose_prompts_include_author_notes_block() {
+        let mut game = sample_game();
+        game.author_notes = "Mira: performing calm.".into();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let mechanics = build_mechanics_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let mechanics_user = mechanics[1]["content"].as_str().unwrap();
+        assert!(mechanics_user.contains("Author's notes (GM only"));
+        assert!(mechanics_user.contains("Mira: performing calm."));
+        assert!(mechanics_user.contains("update_author_notes"));
+
+        let prose = build_prose_narration_messages(&game, &detail, &turn, &[], &[], "", &settings);
+        let prose_user = prose[1]["content"].as_str().unwrap();
+        assert!(prose_user.contains("Author's notes (GM only"));
+        assert!(prose_user.contains("Mira: performing calm."));
+        assert!(prose_user.contains("update_author_notes"));
+        assert!(prose_user.contains("NPC unspoken thoughts"));
+    }
+
+    #[test]
+    fn declare_checks_prompt_omits_author_notes() {
+        let game = sample_game();
+        let detail = sample_detail(game.clone());
+        let turn = sample_turn();
+        let settings = test_settings();
+        let msgs = build_declare_checks_messages(&game, &detail, &turn, "", &settings);
+        let user = msgs[1]["content"].as_str().unwrap();
+        assert!(!user.contains("Author's notes"));
     }
 
     #[test]
