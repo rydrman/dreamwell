@@ -160,22 +160,81 @@ pub fn state_changes_list(props: &StateChangesListProps) -> Html {
     }
 }
 
-/// Minimal expandable group for inline state-change markers in game prose.
-#[function_component(InlineStateChangesGroup)]
-pub fn inline_state_changes_group(props: &StateChangesListProps) -> Html {
-    if props.changes.is_empty() {
+fn format_state_change_capsule(sc: &AppliedStateChange) -> String {
+    let (value_text, _) = format_state_change_value(sc);
+    match sc.op {
+        StateOp::Remove => {
+            if value_text.is_empty() {
+                format!("− {}", sc.key)
+            } else {
+                format!("− {} ({})", sc.key, value_text)
+            }
+        }
+        StateOp::Add if sc.kind == StateKind::Measurement => {
+            if let Some(delta) = sc.delta {
+                format!("{} {:+}", sc.key, delta)
+            } else if !value_text.is_empty() {
+                format!("{} {value_text}", sc.key)
+            } else {
+                sc.key.clone()
+            }
+        }
+        _ => {
+            if value_text.is_empty() {
+                sc.key.clone()
+            } else if value_text.contains('→') {
+                format!("{} {value_text}", sc.key)
+            } else {
+                format!("{} · {value_text}", sc.key)
+            }
+        }
+    }
+}
+
+fn state_change_capsule_title(sc: &AppliedStateChange) -> String {
+    let (value, alt) = format_state_change_value(sc);
+    let mut parts = vec![
+        format!("{} {}", op_label(sc.op), kind_label(sc.kind)),
+        sc.key.clone(),
+    ];
+    if !sc.target.is_empty() {
+        parts.push(sc.target.clone());
+    }
+    if !value.is_empty() {
+        parts.push(value);
+    }
+    if let Some(alt) = alt {
+        parts.push(alt);
+    }
+    parts.join(" · ")
+}
+
+/// Compact pill shown at inline `⟦state:N⟧` markers in game prose.
+pub fn render_state_change_capsule(sc: &AppliedStateChange) -> Html {
+    let label = format_state_change_capsule(sc);
+    let kind_name = kind_label(sc.kind);
+    let title = state_change_capsule_title(sc);
+    html! {
+        <span
+            class={classes!("game-state-capsule", format!("game-state-capsule--{kind_name}"))}
+            title={title}
+        >
+            { label }
+        </span>
+    }
+}
+
+/// One or more capsules at the point in narration where state tools fired.
+pub fn render_inline_state_capsules(changes: &[AppliedStateChange]) -> Html {
+    if changes.is_empty() {
         return html! {};
     }
-    let count = props.changes.len();
     html! {
-        <details class="game-inline-state-group">
-            <summary class="game-inline-state-group-summary muted small">
-                { format!("State changes ({count})") }
-            </summary>
-            <div class="game-inline-state-group-body">
-                <StateChangesList changes={props.changes.clone()} />
-            </div>
-        </details>
+        <span class="game-inline-state-capsules">
+            { for changes.iter().enumerate().map(|(i, sc)| html! {
+                <span key={i}>{ render_state_change_capsule(sc) }</span>
+            }) }
+        </span>
     }
 }
 

@@ -20,8 +20,8 @@ use crate::markdown::render_message_content;
 use crate::message_menu::MessageOptionsMenu;
 use crate::router::{AppRoute, Overlay};
 use crate::state_ui::{
-    InlineStateChangesGroup, PhaseSection, PlanBeatsList, StateEntriesPanel, StateEntryRow,
-    StateScopeActor,
+    render_inline_state_capsules, PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel,
+    StateEntryRow, StateScopeActor,
 };
 use crate::thought_ui::ThoughtBlock;
 use crate::title_editor::TitleEditor;
@@ -1126,10 +1126,6 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                 </PhaseSection>
                                             }
 
-                                            if !turn.state_changes.is_empty() && !hide_detached_phases {
-                                                <InlineStateChangesGroup changes={turn.state_changes.clone()} />
-                                            }
-
                                             if show_thought_block {
                                                 <ThoughtBlock
                                                     thought_content={turn.thought_content.clone()}
@@ -1167,6 +1163,18 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                     } else {
                                                         { render_prose_with_blocks(&display_prose, turn) }
                                                     }
+                                                </div>
+                                            }
+
+                                            if !turn.state_changes.is_empty() {
+                                                <div class="game-state-changes-bar">
+                                                    <PhaseSection
+                                                        label={format!("State changes ({})", turn.state_changes.len())}
+                                                        expanded={Some(expanded_phases.contains(&(turn_id, "state".to_string())))}
+                                                        on_toggle={Some(toggle_phase.reform(move |_: web_sys::MouseEvent| (turn_id, "state".to_string())))}
+                                                    >
+                                                        <StateChangesList changes={turn.state_changes.clone()} />
+                                                    </PhaseSection>
                                                 </div>
                                             }
                                         </div>
@@ -1719,9 +1727,7 @@ fn render_inline_state_group(indices: &[i64], turn: &GameTurn) -> Html {
         .iter()
         .filter_map(|i| turn.state_changes.get(*i as usize).cloned())
         .collect();
-    html! {
-        <InlineStateChangesGroup changes={changes} />
-    }
+    render_inline_state_capsules(&changes)
 }
 
 /// A single mechanic result rendered as an inline block inside the narration.
