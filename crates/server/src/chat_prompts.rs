@@ -1,4 +1,4 @@
-use dreamwell_state::{plan_schema, PLAN_BEAT_RULES, STATE_CHANGE_PROMPT};
+use dreamwell_state::{plan_schema, CHARACTER_ACTION_RULES, PLAN_BEAT_RULES, STATE_CHANGE_PROMPT};
 use dreamwell_types::{Character, MacroContext, Settings};
 use serde_json::json;
 
@@ -177,7 +177,7 @@ pub async fn build_prose_messages(
     Ok(vec![
         json!({
             "role": "system",
-            "content": PROSE_SYSTEM,
+            "content": format!("{PROSE_SYSTEM}\n\n{CHARACTER_ACTION_RULES}"),
         }),
         json!({
             "role": "user",
@@ -194,5 +194,13 @@ mod tests {
     fn plan_system_includes_specific_beat_rules() {
         assert!(PLAN_SYSTEM.contains("specific"));
         assert!(PLAN_BEAT_RULES.contains("too generic"));
+        assert!(PLAN_BEAT_RULES.contains("Describe how nervous Maya looks"));
+    }
+
+    #[test]
+    fn prose_system_includes_character_action_rules() {
+        let prose_system = format!("{PROSE_SYSTEM}\n\n{CHARACTER_ACTION_RULES}");
+        assert!(prose_system.contains("action and spoken lines"));
+        assert!(prose_system.contains("Maya picks at the napkin"));
     }
 }

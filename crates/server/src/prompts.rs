@@ -1,3 +1,4 @@
+use dreamwell_state::CHARACTER_ACTION_RULES;
 use dreamwell_types::{substitute_macros, Character, MacroContext, MessageRole, Settings};
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -153,6 +154,7 @@ pub async fn build_messages_for_inference(
     if !state_block.is_empty() {
         system_parts.push(format!("Current typed state:\n{state_block}"));
     }
+    system_parts.push(CHARACTER_ACTION_RULES.to_string());
 
     let mut messages = Vec::new();
     if !system_parts.is_empty() {

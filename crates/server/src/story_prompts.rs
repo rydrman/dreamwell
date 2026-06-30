@@ -1,4 +1,4 @@
-use dreamwell_state::{plan_schema, PLAN_BEAT_RULES, STATE_CHANGE_PROMPT};
+use dreamwell_state::{plan_schema, CHARACTER_ACTION_RULES, PLAN_BEAT_RULES, STATE_CHANGE_PROMPT};
 use dreamwell_types::{Story, StoryActor, StoryBeat, StoryChapter};
 use serde_json::{json, Value};
 
@@ -10,6 +10,15 @@ Rules:
 - Match the story tone, genre, and POV from the story context
 - Use the named characters consistently; do not contradict established typed state or prior canon
 - No JSON, no XML tags, no meta commentary — prose only"#;
+
+fn story_fiction_writer_system(story: &Story) -> String {
+    format!(
+        "You are a fiction writer. Match the story tone and POV. \
+         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}\n\n{}",
+        story_basics(story),
+        CHARACTER_ACTION_RULES
+    )
+}
 
 fn format_story_actors(actors: &[StoryActor]) -> String {
     actors
@@ -347,11 +356,7 @@ pub fn build_beat_prose_messages(
     user.push_str("\n\nWrite only the narrative prose for this beat. No headings, labels, or meta commentary.");
 
     let variables_text = crate::story_variables::format_story_variables(variables);
-    let mut system = format!(
-        "You are a fiction writer. Match the story tone and POV. \
-         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
-        story_basics(story)
-    );
+    let mut system = story_fiction_writer_system(story);
     if !variables_text.is_empty() {
         system.push_str("\n\n");
         system.push_str(&variables_text);
@@ -430,11 +435,7 @@ pub fn build_beat_prose_continue_messages(
     );
 
     let variables_text = crate::story_variables::format_story_variables(variables);
-    let mut system = format!(
-        "You are a fiction writer. Match the story tone and POV. \
-         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
-        story_basics(story)
-    );
+    let mut system = story_fiction_writer_system(story);
     if !variables_text.is_empty() {
         system.push_str("\n\n");
         system.push_str(&variables_text);
@@ -514,11 +515,7 @@ pub fn build_beat_prose_continue_typed_messages(
         user.push_str(&format!("\n\nCurrent typed state:\n{state_block}"));
     }
 
-    let mut system = format!(
-        "You are a fiction writer. Match the story tone and POV. \
-         Respect established details in prior prose — do not contradict names, facts, or events already written.\n\n{}",
-        story_basics(story)
-    );
+    let mut system = story_fiction_writer_system(story);
     let tracked_text = crate::story_variables::format_tracked_details(&story.tracked_details);
     if !tracked_text.is_empty() {
         system.push_str("\n\n");
@@ -834,7 +831,7 @@ pub fn build_story_prose_from_plan_messages(
     vec![
         json!({
             "role": "system",
-            "content": STORY_PROSE_SYSTEM,
+            "content": format!("{STORY_PROSE_SYSTEM}\n\n{CHARACTER_ACTION_RULES}"),
         }),
         json!({
             "role": "user",
@@ -1016,6 +1013,7 @@ mod tests {
         assert!(user.contains("The wagon rolled to a stop."));
         assert!(user.contains("written prose — canonical"));
         assert!(system.contains("Respect established details in prior prose"));
+        assert!(system.contains("action and spoken lines"));
     }
 
     #[test]
@@ -1113,5 +1111,6 @@ mod tests {
         assert!(user.contains("Current typed state:"));
         assert!(user.contains("Author guidance:"));
         assert!(system.contains("Cover every plan beat in order"));
+        assert!(system.contains("action and spoken lines"));
     }
 }
