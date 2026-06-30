@@ -23,6 +23,7 @@ Rules:
 - Prose must not introduce major events not listed in the scene beats
 - Match GM style and setting/tone — do not inject peril or adventure escalation absent from the beats or scenario
 - Keep prose concise — plain action and dialogue, not lyrical padding or emotional flourish beyond what beats require
+- Have characters act and speak; do not summarize them in adjective lists or narrate their inner state when action or dialogue would carry it
 - If the prose already matches, output exactly: OK
 - If prose misses beats, contradicts tiers, or adds unplanned plot, output corrected full prose
 - Match the established tone and second-person POV

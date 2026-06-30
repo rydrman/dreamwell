@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use dreamwell_state::{resolve_actor_id, STATE_TARGET_RULES};
+use dreamwell_state::{resolve_actor_id, CHARACTER_ACTION_RULES, STATE_TARGET_RULES};
 use dreamwell_types::{
     substitute_macros, Game, GameActor, GameDetail, GameScene, GameTurn, GameTurnCheck,
     MacroContext, Settings, TrackedVarDef, PROSE_CHECK_MARKER_OPEN, PROSE_INLINE_MARKER_CLOSE,
@@ -945,7 +945,7 @@ pub fn build_prose_narration_messages(
         json!({
             "role": "system",
             "content": format!(
-                "{}\n\n{STATE_TARGET_RULES}",
+                "{}\n\n{CHARACTER_ACTION_RULES}\n\n{STATE_TARGET_RULES}",
                 game_system_prompt(PROSE_NARRATE_SYSTEM)
             ),
         }),
@@ -981,7 +981,7 @@ pub fn build_inline_prose_agent_messages(
         json!({
             "role": "system",
             "content": format!(
-                "{}\n\n{STATE_TARGET_RULES}",
+                "{}\n\n{CHARACTER_ACTION_RULES}\n\n{STATE_TARGET_RULES}",
                 game_system_prompt(INLINE_PROSE_AGENT_SYSTEM)
             ),
         }),
@@ -1653,6 +1653,7 @@ mod tests {
         let system = msgs[0]["content"].as_str().unwrap();
         assert!(system.contains("ALREADY been rolled"));
         assert!(system.contains("begin your response with the narrative prose"));
+        assert!(system.contains("action and spoken lines"));
         assert!(system.contains("⟦mech:0⟧"));
         assert!(system.contains("Do NOT invent, change, re-roll"));
         let user = msgs[1]["content"].as_str().unwrap();

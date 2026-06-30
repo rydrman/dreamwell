@@ -79,10 +79,19 @@ pub const PLAN_BEAT_RULES: &str = r#"Plan beat rules:
 - Ground every beat in the latest user turn and recent context: names, topics, questions, actions, and details they raised
 - Use specific nouns and verbs from the conversation; prefer staging bullets the prose can follow in order
 - BAD (too generic): "Respond to the user", "Stay in character", "Answer the question", "Continue the conversation", "React appropriately"
-- GOOD (specific): "Answer whether the cellar door is still locked and mention the key on the windowsill", "Have the character agree to meet at the bridge at dusk", "Describe the smell of rain on the coat they asked about"
+- GOOD (specific): "Answer whether the cellar door is still locked and mention the key on the windowsill", "Have the character agree to meet at the bridge at dusk", "Have Maya fidget with her cuff and deflect with a joke", "Describe the smell of rain on the coat they asked about"
+- Prefer beats that stage concrete actions and spoken lines over beats that only call for describing a character's mood, traits, or appearance
+- BAD (describing instead of acting): "Describe how nervous Maya looks", "Convey Ryan's anger through narration"
+- GOOD (acting/speaking): "Have Maya fidget and change the subject", "Have Ryan refuse and walk toward the door"
 - Typically 3–6 beats for a normal reply; fewer when the user message is simple
 - Do not plan future turns, unprompted plot twists, or beats that ignore what the user just said
 - State changes should capture durable variables the beats establish — prefer set_variable and named actor targets; use measurement/sequence only when genuinely numeric or ordered lists"#;
+
+pub const CHARACTER_ACTION_RULES: &str = r#"Character presentation:
+- Prefer action and spoken lines over exposition about moods, traits, or appearance
+- Show characters doing and saying things; do not summarize them in adjective lists or narrate their inner state when action or dialogue would carry it
+- BAD: "Maya was nervous and beautiful, clearly worried about the meeting."
+- GOOD: "Maya picks at the napkin. 'I shouldn't have come,' she says.""#;
 
 pub const RECHECK_SYSTEM_PROMPT: &str = r#"You review prose against typed session state.
 
@@ -112,6 +121,19 @@ mod tests {
         assert!(STATE_CHANGE_PROMPT.contains("Prefer actor targets"));
         assert!(STATE_CHANGE_PROMPT.contains("variable (DEFAULT)"));
         assert!(STATE_CHANGE_PROMPT.contains("measurement/sequence for mood"));
+    }
+
+    #[test]
+    fn plan_beat_rules_discourage_character_description_beats() {
+        assert!(PLAN_BEAT_RULES.contains("Describe how nervous Maya looks"));
+        assert!(PLAN_BEAT_RULES.contains("Have Maya fidget"));
+    }
+
+    #[test]
+    fn character_action_rules_prefer_showing_over_telling() {
+        assert!(CHARACTER_ACTION_RULES.contains("action and spoken lines"));
+        assert!(CHARACTER_ACTION_RULES.contains("Maya was nervous"));
+        assert!(CHARACTER_ACTION_RULES.contains("Maya picks at the napkin"));
     }
 
     #[test]
