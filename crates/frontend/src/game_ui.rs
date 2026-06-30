@@ -762,11 +762,12 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                                                     </div>
                                                 }
                                                 if !turn.guidance_notes.trim().is_empty() {
-                                                    <div class="game-turn-guidance">
-                                                        <span class="game-turn-guidance-label muted">{"GM guidance"}</span>
-                                                        <div class="game-turn-guidance-body">
-                                                            { render_message_content(&turn.guidance_notes) }
-                                                        </div>
+                                                    <div class="game-turn-guidance-bar">
+                                                        <PhaseSection label={"GM guidance".to_string()} default_expanded={false}>
+                                                            <div class="game-turn-guidance-body game-prose markdown-body">
+                                                                { render_message_content(&turn.guidance_notes) }
+                                                            </div>
+                                                        </PhaseSection>
                                                     </div>
                                                 }
                                             </div>

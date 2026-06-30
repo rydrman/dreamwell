@@ -2814,25 +2814,21 @@ input.header-title {
   color: var(--muted);
 }
 
-.game-turn-guidance {
-  margin-top: 0.625rem;
-  padding-top: 0.625rem;
-  border-top: 1px dashed var(--border);
+.game-turn-guidance-bar {
+  margin-top: 0.35rem;
 }
 
-.message.user > .game-turn-guidance:first-child {
+.game-turn-guidance-bar .game-phase-section {
+  border-bottom: none;
+  border-top: 1px solid var(--border);
+}
+
+.message.user > .game-turn-guidance-bar:first-child {
   margin-top: 0;
-  padding-top: 0;
-  border-top: none;
 }
 
-.game-turn-guidance-label {
-  display: block;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  margin-bottom: 0.35rem;
+.message.user > .game-turn-guidance-bar:first-child .game-phase-section {
+  border-top: none;
 }
 
 .game-turn-guidance-body {
