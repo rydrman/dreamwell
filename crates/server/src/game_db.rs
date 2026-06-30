@@ -22,7 +22,7 @@ const TURN_COLUMNS: &str = "id, game_id, sort_order, player_action, guidance_not
 fn turn_select(where_clause: &str) -> String {
     format!("SELECT {TURN_COLUMNS} FROM game_turns {where_clause}")
 }
-const GAME_COLUMNS: &str = "id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, created_at, updated_at, archived_at";
+const GAME_COLUMNS: &str = "id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, author_notes, created_at, updated_at, archived_at";
 
 pub async fn purge_expired_archived_games(pool: &SqlitePool) -> AppResult<u64> {
     let cutoff = (Utc::now() - chrono::Duration::days(CHAT_ARCHIVE_RETENTION_DAYS)).to_rfc3339();
@@ -145,6 +145,7 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
         trait_defs: parse_json_vec::<TraitDef>(&row.trait_defs_json),
         game_elements: parse_json_default::<GameElementsConfig>(&row.game_elements_json),
         element_instances: parse_json_default::<ElementInstances>(&row.element_instances_json),
+        author_notes: row.author_notes,
         created_at: parse_dt(&row.created_at)?,
         updated_at: parse_dt(&row.updated_at)?,
         archived_at: row.archived_at.as_deref().map(parse_dt).transpose()?,
@@ -1176,7 +1177,7 @@ pub async fn fork_game_at_turn(
     let element_instances_json = json_string(&instances);
 
     let new_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO games (title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?24) RETURNING id",
+        "INSERT INTO games (title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, author_notes, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?25) RETURNING id",
     )
     .bind(&title)
     .bind(&source.premise)
@@ -1201,6 +1202,7 @@ pub async fn fork_game_at_turn(
     .bind(&trait_defs_json)
     .bind(&game_elements_json)
     .bind(&element_instances_json)
+    .bind(&source.author_notes)
     .bind(&now)
     .fetch_one(pool)
     .await?;
@@ -1766,6 +1768,17 @@ pub async fn update_scene_summary(
     Ok(())
 }
 
+pub async fn update_author_notes(pool: &SqlitePool, game_id: i64, notes: &str) -> AppResult<()> {
+    let now = Utc::now().to_rfc3339();
+    sqlx::query("UPDATE games SET author_notes = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(notes)
+        .bind(&now)
+        .bind(game_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow)]
 struct GameRow {
     id: i64,
@@ -1792,6 +1805,7 @@ struct GameRow {
     trait_defs_json: String,
     game_elements_json: String,
     element_instances_json: String,
+    author_notes: String,
     created_at: String,
     updated_at: String,
     archived_at: Option<String>,

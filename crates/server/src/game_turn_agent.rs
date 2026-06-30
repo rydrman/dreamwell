@@ -12,9 +12,10 @@ use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
 use crate::game_prompts::{build_mechanics_agent_messages, build_prose_narration_messages};
 use crate::game_tools::{
-    format_pc_fork_blockquote, handle_mechanical_tool_call, is_outcome_tool, is_present_fork_tool,
-    is_state_tool, mechanics_agent_tool_specs, parse_present_fork_args, parse_state_tool_call,
-    prose_agent_tool_specs, PcFork, ToolSessionState,
+    format_pc_fork_blockquote, handle_mechanical_tool_call, is_author_notes_tool, is_outcome_tool,
+    is_present_fork_tool, is_state_tool, mechanics_agent_tool_specs, parse_author_notes_args,
+    parse_present_fork_args, parse_state_tool_call, prose_agent_tool_specs, PcFork,
+    ToolSessionState,
 };
 use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
 use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
@@ -313,6 +314,10 @@ async fn run_mechanics_pass(
                 } else {
                     serde_json::json!({ "error": "present_fork requires a non-empty situation and at least two options" })
                 }
+            } else if is_author_notes_tool(&tc.name) {
+                let args: serde_json::Value = serde_json::from_str(&tc.arguments)
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                apply_author_notes_tool(pool, game_id, &args).await
             } else if is_state_tool(&tc.name) {
                 // State updates belong to the narration pass, once outcomes are known.
                 serde_json::json!({ "deferred": "state is recorded during narration" })
@@ -569,6 +574,10 @@ async fn run_prose_pass(
                 } else {
                     serde_json::json!({ "error": "present_fork requires a non-empty situation and at least two options" })
                 }
+            } else if is_author_notes_tool(&tc.name) {
+                let args: serde_json::Value = serde_json::from_str(&tc.arguments)
+                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                apply_author_notes_tool(pool, game_id, &args).await
             } else {
                 serde_json::json!({ "error": format!("unknown tool {}", tc.name) })
             };
@@ -623,6 +632,20 @@ fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
         prose.push_str("\n\n");
     }
     prose.push_str(&format_pc_fork_blockquote(fork));
+}
+
+async fn apply_author_notes_tool(
+    pool: &SqlitePool,
+    game_id: i64,
+    args: &serde_json::Value,
+) -> serde_json::Value {
+    match parse_author_notes_args(args) {
+        Some(notes) => match db::update_author_notes(pool, game_id, &notes).await {
+            Ok(()) => serde_json::json!({ "saved": true, "length": notes.len() }),
+            Err(err) => serde_json::json!({ "error": err.to_string() }),
+        },
+        None => serde_json::json!({ "error": "update_author_notes requires a notes string" }),
+    }
 }
 
 fn append_inline_marker(prose: &mut String, marker: String) {

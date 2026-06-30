@@ -1247,6 +1247,9 @@ pub struct Game {
     pub scenario_triggers: Vec<ScenarioTrigger>,
     #[serde(default)]
     pub trait_defs: Vec<TraitDef>,
+    /// GM-only rolling scene memory (narrative considerations, directions, NPC interior).
+    #[serde(default)]
+    pub author_notes: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]

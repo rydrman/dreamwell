@@ -274,6 +274,7 @@ mod tests {
             win_condition: None,
             scenario_triggers: vec![],
             trait_defs: vec![],
+            author_notes: String::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,

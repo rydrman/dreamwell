@@ -1,0 +1,1 @@
+ALTER TABLE games ADD COLUMN author_notes TEXT NOT NULL DEFAULT '';
