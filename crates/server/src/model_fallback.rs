@@ -1,7 +1,8 @@
 use std::pin::Pin;
 
 use dreamwell_types::{
-    connection_label, fallback_connections, structured_output_tokens, InferenceConnection, Settings,
+    connection_label, fallback_connections, resolve_sampling, structured_output_tokens,
+    InferenceConnection, SamplingOverrides, Settings,
 };
 use futures_util::Stream;
 use sqlx::SqlitePool;
@@ -23,6 +24,22 @@ fn effective_model(conn: &InferenceConnection, model_override: Option<&str>) -> 
         .filter(|model| !model.is_empty())
         .unwrap_or_else(|| conn.model.trim())
         .to_string()
+}
+
+fn effective_sampling(
+    conn: &InferenceConnection,
+    settings: &Settings,
+    model: &str,
+    sampling_override: Option<SamplingOverrides>,
+) -> (f64, f64) {
+    let params = resolve_sampling(
+        conn.temperature,
+        conn.top_p,
+        model,
+        &settings.model_profiles,
+        sampling_override.filter(|overrides| !overrides.is_empty()),
+    );
+    (params.temperature, params.top_p)
 }
 
 fn structured_tokens_for_connection(conn: &InferenceConnection) -> i64 {
@@ -48,6 +65,13 @@ fn structured_tokens_for_connection(conn: &InferenceConnection) -> i64 {
         context_tokens: conn.context_tokens,
         auto_context_on_model_change: conn.auto_context_on_model_change,
         max_concurrent_jobs: 1,
+        model_profiles: Vec::new(),
+        chat_model_plan: String::new(),
+        chat_model_prose: String::new(),
+        chat_temperature_plan: None,
+        chat_top_p_plan: None,
+        chat_temperature_prose: None,
+        chat_top_p_prose: None,
     })
 }
 
@@ -132,7 +156,7 @@ async fn record_fallback(
 }
 
 macro_rules! attempt_connections {
-    ($settings:expr, $pool:expr, $job_id:expr, $message_id:expr, $override:expr, | $conn:ident, $config:ident, $model:ident | $attempt:expr) => {{
+    ($settings:expr, $pool:expr, $job_id:expr, $message_id:expr, $override:expr, $sampling:expr, | $conn:ident, $config:ident, $model:ident, $temperature:ident, $top_p:ident | $attempt:expr) => {{
         let connections: Vec<&InferenceConnection> = fallback_connections(&$settings.connections);
         if connections.is_empty() {
             Err(AppError::bad_request("No inference provider configured"))
@@ -141,6 +165,8 @@ macro_rules! attempt_connections {
             for (index, $conn) in connections.iter().enumerate() {
                 let $config = db::get_inference_config_for_connection($pool, $conn.id).await?;
                 let $model = effective_model($conn, $override);
+                let ($temperature, $top_p) =
+                    effective_sampling($conn, $settings, &$model, $sampling);
                 record_inference_attempt($pool, $job_id, $conn, &$model).await;
                 match ($attempt).await {
                     Ok(value) => return Ok(value),
@@ -174,6 +200,7 @@ pub async fn chat_completion_with_connection_fallback(
     job_id: Option<i64>,
     message_id: Option<i64>,
     model_override: Option<&str>,
+    sampling_override: Option<SamplingOverrides>,
 ) -> AppResult<String> {
     attempt_connections!(
         settings,
@@ -181,13 +208,14 @@ pub async fn chat_completion_with_connection_fallback(
         job_id,
         message_id,
         model_override,
-        |conn, config, model| {
+        sampling_override,
+        |conn, config, model, temperature, top_p| {
             chat_completion(
                 &config,
                 &model,
                 messages,
-                conn.temperature,
-                conn.top_p,
+                temperature,
+                top_p,
                 conn.max_tokens,
             )
         }
@@ -202,6 +230,7 @@ pub async fn stream_chat_completion_with_connection_fallback(
     job_id: Option<i64>,
     message_id: Option<i64>,
     model_override: Option<&str>,
+    sampling_override: Option<SamplingOverrides>,
 ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<String>> + Send>>> {
     attempt_connections!(
         settings,
@@ -209,13 +238,14 @@ pub async fn stream_chat_completion_with_connection_fallback(
         job_id,
         message_id,
         model_override,
-        |conn, config, model| {
+        sampling_override,
+        |conn, config, model, temperature, top_p| {
             stream_chat_completion(
                 &config,
                 &model,
                 messages,
-                conn.temperature,
-                conn.top_p,
+                temperature,
+                top_p,
                 conn.max_tokens,
             )
         }
@@ -232,6 +262,7 @@ pub async fn stream_chat_completion_with_tools_connection_fallback(
     job_id: Option<i64>,
     message_id: Option<i64>,
     model_override: Option<&str>,
+    sampling_override: Option<SamplingOverrides>,
 ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<ToolStreamChunk>> + Send>>> {
     attempt_connections!(
         settings,
@@ -239,15 +270,16 @@ pub async fn stream_chat_completion_with_tools_connection_fallback(
         job_id,
         message_id,
         model_override,
-        |conn, config, model| {
+        sampling_override,
+        |conn, config, model, temperature, top_p| {
             stream_chat_completion_with_tools(
                 &config,
                 &model,
                 messages,
                 tools,
                 tool_choice,
-                conn.temperature,
-                conn.top_p,
+                temperature,
+                top_p,
                 conn.max_tokens,
             )
         }
@@ -265,6 +297,7 @@ pub async fn chat_completion_json_with_connection_fallback<T>(
     job_id: Option<i64>,
     message_id: Option<i64>,
     model_override: Option<&str>,
+    sampling_override: Option<SamplingOverrides>,
     repair_hint: Option<&str>,
 ) -> AppResult<T>
 where
@@ -278,14 +311,15 @@ where
     for (index, conn) in connections.iter().enumerate() {
         let config = db::get_inference_config_for_connection(pool, conn.id).await?;
         let model = effective_model(conn, model_override);
+        let (temperature, top_p) = effective_sampling(conn, settings, &model, sampling_override);
         record_inference_attempt(pool, job_id, conn, &model).await;
         let mut learned = None;
         match chat_completion_json(
             &config,
             &model,
             messages,
-            conn.temperature,
-            conn.top_p,
+            temperature,
+            top_p,
             structured_tokens_for_connection(conn),
             response_format,
             max_attempts,
@@ -378,6 +412,13 @@ mod tests {
             context_tokens: 8192,
             auto_context_on_model_change: true,
             max_concurrent_jobs: 1,
+            model_profiles: Vec::new(),
+            chat_model_plan: String::new(),
+            chat_model_prose: String::new(),
+            chat_temperature_plan: None,
+            chat_top_p_plan: None,
+            chat_temperature_prose: None,
+            chat_top_p_prose: None,
         };
         let labels: Vec<String> = fallback_connections(&settings.connections)
             .into_iter()

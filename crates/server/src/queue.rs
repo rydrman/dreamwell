@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dreamwell_types::{Job, JobStatus, JobType};
+use dreamwell_types::{Job, JobStatus, JobType, SamplingOverrides};
 use futures_util::StreamExt;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
@@ -107,6 +107,49 @@ fn display_beat_prose(settings: &dreamwell_types::Settings, text: &str, streamin
         crate::variables::strip_variables_for_display(&text, streaming)
     } else {
         text
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ChatInferencePhase {
+    Plan,
+    Prose,
+}
+
+fn chat_model_override(
+    settings: &dreamwell_types::Settings,
+    phase: ChatInferencePhase,
+) -> Option<&str> {
+    let raw = match phase {
+        ChatInferencePhase::Plan => settings.chat_model_plan.as_str(),
+        ChatInferencePhase::Prose => settings.chat_model_prose.as_str(),
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn chat_sampling_override(
+    settings: &dreamwell_types::Settings,
+    phase: ChatInferencePhase,
+) -> Option<SamplingOverrides> {
+    let overrides = match phase {
+        ChatInferencePhase::Plan => SamplingOverrides {
+            temperature: settings.chat_temperature_plan,
+            top_p: settings.chat_top_p_plan,
+        },
+        ChatInferencePhase::Prose => SamplingOverrides {
+            temperature: settings.chat_temperature_prose,
+            top_p: settings.chat_top_p_prose,
+        },
+    };
+    if overrides.is_empty() {
+        None
+    } else {
+        Some(overrides)
     }
 }
 
@@ -771,7 +814,8 @@ async fn run_chat_typed_generation_attempt(
         token,
         Some(job_id),
         Some(message_id),
-        None,
+        chat_model_override(settings, ChatInferencePhase::Plan),
+        chat_sampling_override(settings, ChatInferencePhase::Plan),
         None,
     )
     .await
@@ -816,7 +860,8 @@ async fn run_chat_typed_generation_attempt(
         &prose_messages,
         Some(job_id),
         Some(message_id),
-        None,
+        chat_model_override(settings, ChatInferencePhase::Prose),
+        chat_sampling_override(settings, ChatInferencePhase::Prose),
     )
     .await
     {
@@ -890,6 +935,7 @@ async fn run_chat_legacy_generation_attempt(
         messages,
         Some(job_id),
         Some(message_id),
+        None,
         None,
     )
     .await
@@ -1070,6 +1116,7 @@ async fn run_story_propose_chapters(
                 Some(job_id),
                 None,
                 None,
+                None,
             ) => result,
         };
 
@@ -1155,6 +1202,7 @@ async fn run_story_propose_beats(
                 Some(job_id),
                 None,
                 None,
+                None,
             ) => result,
         };
 
@@ -1238,6 +1286,7 @@ async fn run_story_chapter_outline(
                 settings,
                 &messages,
                 Some(job_id),
+                None,
                 None,
                 None,
             ) => result,
@@ -1335,6 +1384,7 @@ async fn run_story_beat_outline(
                 Some(job_id),
                 None,
                 None,
+                None,
             ) => result,
         };
 
@@ -1412,6 +1462,7 @@ async fn run_story_typed_beat_prose(
         None,
         None,
         None,
+        None,
     )
     .await?;
 
@@ -1448,6 +1499,7 @@ async fn run_story_typed_beat_prose(
         settings,
         &prose_messages,
         Some(job_id),
+        None,
         None,
         None,
     )
@@ -1651,6 +1703,7 @@ async fn run_beat_prose_generation_attempt(
         settings,
         messages,
         Some(job_id),
+        None,
         None,
         None,
     )

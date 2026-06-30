@@ -327,8 +327,9 @@ async fn call_summarize_model_once(
     prompt: &[serde_json::Value],
     job_id: Option<i64>,
 ) -> AppResult<String> {
-    let raw = chat_completion_with_connection_fallback(pool, settings, prompt, job_id, None, None)
-        .await?;
+    let raw =
+        chat_completion_with_connection_fallback(pool, settings, prompt, job_id, None, None, None)
+            .await?;
     process_summarize_output(&raw).map_err(AppError::inference)
 }
 
@@ -819,6 +820,13 @@ mod tests {
             context_tokens: 4096,
             auto_context_on_model_change: true,
             max_concurrent_jobs: 1,
+            model_profiles: Vec::new(),
+            chat_model_plan: String::new(),
+            chat_model_prose: String::new(),
+            chat_temperature_plan: None,
+            chat_top_p_plan: None,
+            chat_temperature_prose: None,
+            chat_top_p_prose: None,
         }
     }
 

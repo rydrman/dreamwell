@@ -1360,6 +1360,12 @@ mod tests {
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),
+            temperature_checks: None,
+            top_p_checks: None,
+            temperature_resolve: None,
+            top_p_resolve: None,
+            temperature_prose: None,
+            top_p_prose: None,
             rules_blocks: vec![],
             state_schema: vec![],
             win_condition: None,
@@ -1490,6 +1496,13 @@ mod tests {
             context_tokens: 0,
             auto_context_on_model_change: false,
             max_concurrent_jobs: 1,
+            model_profiles: Vec::new(),
+            chat_model_plan: String::new(),
+            chat_model_prose: String::new(),
+            chat_temperature_plan: None,
+            chat_top_p_plan: None,
+            chat_temperature_prose: None,
+            chat_top_p_prose: None,
         }
     }
 

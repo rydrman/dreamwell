@@ -22,7 +22,7 @@ const TURN_COLUMNS: &str = "id, game_id, sort_order, player_action, guidance_not
 fn turn_select(where_clause: &str) -> String {
     format!("SELECT {TURN_COLUMNS} FROM game_turns {where_clause}")
 }
-const GAME_COLUMNS: &str = "id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, created_at, updated_at, archived_at";
+const GAME_COLUMNS: &str = "id, title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, temperature_checks, top_p_checks, temperature_resolve, top_p_resolve, temperature_prose, top_p_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, created_at, updated_at, archived_at";
 
 pub async fn purge_expired_archived_games(pool: &SqlitePool) -> AppResult<u64> {
     let cutoff = (Utc::now() - chrono::Duration::days(CHAT_ARCHIVE_RETENTION_DAYS)).to_rfc3339();
@@ -135,6 +135,12 @@ async fn game_from_row(pool: &SqlitePool, row: GameRow) -> AppResult<Game> {
         model_checks: row.model_checks,
         model_resolve: row.model_resolve,
         model_prose: row.model_prose,
+        temperature_checks: row.temperature_checks,
+        top_p_checks: row.top_p_checks,
+        temperature_resolve: row.temperature_resolve,
+        top_p_resolve: row.top_p_resolve,
+        temperature_prose: row.temperature_prose,
+        top_p_prose: row.top_p_prose,
         rules_blocks: parse_json_vec::<RulesBlock>(&row.rules_blocks_json),
         state_schema: parse_json_vec::<TrackedVarDef>(&row.state_schema_json),
         win_condition: row
@@ -496,11 +502,23 @@ pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> App
         model_checks: payload.model_checks.unwrap_or(existing.model_checks),
         model_resolve: payload.model_resolve.unwrap_or(existing.model_resolve),
         model_prose: payload.model_prose.unwrap_or(existing.model_prose),
+        temperature_checks: payload
+            .temperature_checks
+            .unwrap_or(existing.temperature_checks),
+        top_p_checks: payload.top_p_checks.unwrap_or(existing.top_p_checks),
+        temperature_resolve: payload
+            .temperature_resolve
+            .unwrap_or(existing.temperature_resolve),
+        top_p_resolve: payload.top_p_resolve.unwrap_or(existing.top_p_resolve),
+        temperature_prose: payload
+            .temperature_prose
+            .unwrap_or(existing.temperature_prose),
+        top_p_prose: payload.top_p_prose.unwrap_or(existing.top_p_prose),
         updated_at: Utc::now(),
         ..existing
     };
     sqlx::query(
-        "UPDATE games SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, resolution_system=?6, modifier_min=?7, modifier_max=?8, merge_resolve_scene=?9, step_mode=?10, engine_mode=?11, model_checks=?12, model_resolve=?13, model_prose=?14, updated_at=?15 WHERE id=?16",
+        "UPDATE games SET title=?1, premise=?2, setting=?3, gm_style=?4, opening_message=?5, resolution_system=?6, modifier_min=?7, modifier_max=?8, merge_resolve_scene=?9, step_mode=?10, engine_mode=?11, model_checks=?12, model_resolve=?13, model_prose=?14, temperature_checks=?15, top_p_checks=?16, temperature_resolve=?17, top_p_resolve=?18, temperature_prose=?19, top_p_prose=?20, updated_at=?21 WHERE id=?22",
     )
     .bind(&updated.title)
     .bind(&updated.premise)
@@ -516,6 +534,12 @@ pub async fn update_game(pool: &SqlitePool, id: i64, payload: GameUpdate) -> App
     .bind(&updated.model_checks)
     .bind(&updated.model_resolve)
     .bind(&updated.model_prose)
+    .bind(updated.temperature_checks)
+    .bind(updated.top_p_checks)
+    .bind(updated.temperature_resolve)
+    .bind(updated.top_p_resolve)
+    .bind(updated.temperature_prose)
+    .bind(updated.top_p_prose)
     .bind(updated.updated_at.to_rfc3339())
     .bind(id)
     .execute(pool)
@@ -1176,7 +1200,7 @@ pub async fn fork_game_at_turn(
     let element_instances_json = json_string(&instances);
 
     let new_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO games (title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?24) RETURNING id",
+        "INSERT INTO games (title, premise, setting, gm_style, opening_message, character_id, scenario_id, resolution_system, modifier_min, modifier_max, merge_resolve_scene, step_mode, engine_mode, model_checks, model_resolve, model_prose, temperature_checks, top_p_checks, temperature_resolve, top_p_resolve, temperature_prose, top_p_prose, rules_blocks_json, state_schema_json, win_condition_json, scenario_triggers_json, trait_defs_json, game_elements_json, element_instances_json, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?30) RETURNING id",
     )
     .bind(&title)
     .bind(&source.premise)
@@ -1194,6 +1218,12 @@ pub async fn fork_game_at_turn(
     .bind(&source.model_checks)
     .bind(&source.model_resolve)
     .bind(&source.model_prose)
+    .bind(source.temperature_checks)
+    .bind(source.top_p_checks)
+    .bind(source.temperature_resolve)
+    .bind(source.top_p_resolve)
+    .bind(source.temperature_prose)
+    .bind(source.top_p_prose)
     .bind(&rules_blocks_json)
     .bind(&state_schema_json)
     .bind(&win_condition_json)
@@ -1785,6 +1815,12 @@ struct GameRow {
     model_checks: String,
     model_resolve: String,
     model_prose: String,
+    temperature_checks: Option<f64>,
+    top_p_checks: Option<f64>,
+    temperature_resolve: Option<f64>,
+    top_p_resolve: Option<f64>,
+    temperature_prose: Option<f64>,
+    top_p_prose: Option<f64>,
     rules_blocks_json: String,
     state_schema_json: String,
     win_condition_json: Option<String>,

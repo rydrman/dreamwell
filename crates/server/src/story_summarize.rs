@@ -98,6 +98,7 @@ pub async fn run_story_chapter_summarize_job(
             Some(job_id),
             None,
             None,
+            None,
         )
         .await
         {

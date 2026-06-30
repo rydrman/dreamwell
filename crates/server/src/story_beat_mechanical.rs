@@ -50,6 +50,7 @@ pub async fn run_story_beat_mechanical_job(
             Some(job_id),
             None,
             None,
+            None,
         )
         .await
         {

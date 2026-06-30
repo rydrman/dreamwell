@@ -38,6 +38,7 @@ pub async fn run_game_scene_summarize_job(
             Some(job_id),
             None,
             None,
+            None,
         )
         .await
         {

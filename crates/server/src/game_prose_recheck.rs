@@ -161,6 +161,13 @@ pub async fn run_turn_prose_recheck_job(
         settings,
         crate::game_turn::GameModelPhase::Prose,
     );
+    let prose_sampling = {
+        let overrides = crate::game_turn::sampling_override_for_phase(
+            &game,
+            crate::game_turn::GameModelPhase::Prose,
+        );
+        (!overrides.is_empty()).then_some(overrides)
+    };
     let prompt = build_recheck_prompt(
         &game,
         &detail.actors,
@@ -181,6 +188,7 @@ pub async fn run_turn_prose_recheck_job(
             Some(job_id),
             None,
             model_override.as_deref(),
+            prose_sampling,
         )
         .await
         {
@@ -263,6 +271,12 @@ mod tests {
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),
+            temperature_checks: None,
+            top_p_checks: None,
+            temperature_resolve: None,
+            top_p_resolve: None,
+            temperature_prose: None,
+            top_p_prose: None,
             rules_blocks: vec![],
             state_schema: vec![],
             win_condition: None,

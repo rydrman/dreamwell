@@ -9,7 +9,7 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_prompts::build_characters_block;
 use crate::game_state::{apply_state_changes, build_state_block};
-use crate::game_turn::{model_override_for_phase, GameModelPhase};
+use crate::game_turn::{model_override_for_phase, sampling_override_for_phase, GameModelPhase};
 use crate::model_fallback::has_inference_provider;
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -117,6 +117,10 @@ pub async fn run_turn_state_recheck_job(
         Some(job_id),
         None,
         model_override.as_deref(),
+        {
+            let overrides = sampling_override_for_phase(&game, GameModelPhase::Resolve);
+            (!overrides.is_empty()).then_some(overrides)
+        },
         None,
     )
     .await?;

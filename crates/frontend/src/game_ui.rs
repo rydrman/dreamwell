@@ -1575,6 +1575,44 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                                 })
                             }}
                         />
+                        <div class="settings-params-grid">
+                            <label class="field"><span class="muted">{"Checks temp"}</span>
+                                <input class="input" type="number" step="0.05" placeholder="default" value={optional_game_float_display(game_detail.game.temperature_checks)} onchange={{
+                                    let detail_state = detail_state.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                temperature_checks: Some(parse_optional_game_float(&input.value())),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }} />
+                            </label>
+                            <label class="field"><span class="muted">{"Checks top P"}</span>
+                                <input class="input" type="number" step="0.05" placeholder="default" value={optional_game_float_display(game_detail.game.top_p_checks)} onchange={{
+                                    let detail_state = detail_state.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                top_p_checks: Some(parse_optional_game_float(&input.value())),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }} />
+                            </label>
+                        </div>
                         <input
                             class="input"
                             type="text"
@@ -1597,6 +1635,44 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                                 })
                             }}
                         />
+                        <div class="settings-params-grid">
+                            <label class="field"><span class="muted">{"Resolve temp"}</span>
+                                <input class="input" type="number" step="0.05" placeholder="default" value={optional_game_float_display(game_detail.game.temperature_resolve)} onchange={{
+                                    let detail_state = detail_state.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                temperature_resolve: Some(parse_optional_game_float(&input.value())),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }} />
+                            </label>
+                            <label class="field"><span class="muted">{"Resolve top P"}</span>
+                                <input class="input" type="number" step="0.05" placeholder="default" value={optional_game_float_display(game_detail.game.top_p_resolve)} onchange={{
+                                    let detail_state = detail_state.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                top_p_resolve: Some(parse_optional_game_float(&input.value())),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }} />
+                            </label>
+                        </div>
                         <input
                             class="input"
                             type="text"
@@ -1619,10 +1695,60 @@ pub fn game_state_overlay(props: &GameStateOverlayProps) -> Html {
                                 })
                             }}
                         />
+                        <div class="settings-params-grid">
+                            <label class="field"><span class="muted">{"Prose temp"}</span>
+                                <input class="input" type="number" step="0.05" placeholder="default" value={optional_game_float_display(game_detail.game.temperature_prose)} onchange={{
+                                    let detail_state = detail_state.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                temperature_prose: Some(parse_optional_game_float(&input.value())),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }} />
+                            </label>
+                            <label class="field"><span class="muted">{"Prose top P"}</span>
+                                <input class="input" type="number" step="0.05" placeholder="default" value={optional_game_float_display(game_detail.game.top_p_prose)} onchange={{
+                                    let detail_state = detail_state.clone();
+                                    Callback::from(move |e: Event| {
+                                        let input: HtmlInputElement = e.target_unchecked_into();
+                                        let detail_state = detail_state.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            let payload = GameUpdate {
+                                                top_p_prose: Some(parse_optional_game_float(&input.value())),
+                                                ..Default::default()
+                                            };
+                                            if let Ok(d) = api::update_game(game_id, &payload).await {
+                                                detail_state.emit(d);
+                                            }
+                                        });
+                                    })
+                                }} />
+                            </label>
+                        </div>
                     </div>
                 </details>
             </div>
         </div>
+    }
+}
+
+fn optional_game_float_display(value: Option<f64>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_default()
+}
+
+fn parse_optional_game_float(raw: &str) -> Option<f64> {
+    if raw.trim().is_empty() {
+        None
+    } else {
+        raw.trim().parse().ok()
     }
 }
 

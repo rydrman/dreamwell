@@ -237,6 +237,7 @@ pub async fn generate_character_state(
         None,
         None,
         None,
+        None,
     )
     .await?;
 

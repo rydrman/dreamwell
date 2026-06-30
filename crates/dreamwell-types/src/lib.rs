@@ -5,6 +5,7 @@ mod game_elements;
 mod game_import;
 mod game_presets;
 mod macros;
+mod sampling;
 mod scenario_export;
 mod scenario_iw;
 mod serde_helpers;
@@ -23,6 +24,7 @@ pub use game_import::{
 };
 pub use game_presets::{game_tone_preset_by_id, GameTonePreset, GAME_TONE_PRESETS};
 pub use macros::{empty_setup_vars, substitute_macros, MacroContext};
+pub use sampling::{resolve_sampling, ModelSamplingProfile, SamplingOverrides, SamplingParams};
 pub use scenario_export::{
     is_scenario_export_value, parse_scenario_export_json, scenario_create_from_scenario,
     ScenarioExport, SCENARIO_EXPORT_FORMAT,
@@ -820,6 +822,25 @@ pub struct Settings {
     /// When true, selecting a model probes the backend and updates context_tokens.
     pub auto_context_on_model_change: bool,
     pub max_concurrent_jobs: i64,
+    /// Saved temperature/top_p per model id (applies whenever that model runs).
+    #[serde(default)]
+    pub model_profiles: Vec<ModelSamplingProfile>,
+    /// Optional chat plan-phase model override (blank = active connection model).
+    #[serde(default)]
+    pub chat_model_plan: String,
+    /// Optional chat prose-phase model override (blank = active connection model).
+    #[serde(default)]
+    pub chat_model_prose: String,
+    /// Optional chat plan-phase temperature (overrides model profile / connection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_temperature_plan: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_top_p_plan: Option<f64>,
+    /// Optional chat prose-phase temperature (overrides model profile / connection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_temperature_prose: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_top_p_prose: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -844,6 +865,13 @@ pub struct SettingsUpdate {
     pub context_tokens: Option<i64>,
     pub auto_context_on_model_change: Option<bool>,
     pub max_concurrent_jobs: Option<i64>,
+    pub model_profiles: Option<Vec<ModelSamplingProfile>>,
+    pub chat_model_plan: Option<String>,
+    pub chat_model_prose: Option<String>,
+    pub chat_temperature_plan: Option<Option<f64>>,
+    pub chat_top_p_plan: Option<Option<f64>>,
+    pub chat_temperature_prose: Option<Option<f64>>,
+    pub chat_top_p_prose: Option<Option<f64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -949,6 +977,13 @@ mod context_budget_tests {
             context_tokens,
             auto_context_on_model_change: false,
             max_concurrent_jobs: 1,
+            model_profiles: Vec::new(),
+            chat_model_plan: String::new(),
+            chat_model_prose: String::new(),
+            chat_temperature_plan: None,
+            chat_top_p_plan: None,
+            chat_temperature_prose: None,
+            chat_top_p_prose: None,
         }
     }
 
@@ -1237,6 +1272,19 @@ pub struct Game {
     pub model_resolve: String,
     #[serde(default)]
     pub model_prose: String,
+    /// Optional checks-phase temperature (overrides model profile / connection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_checks: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p_checks: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_resolve: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p_resolve: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_prose: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p_prose: Option<f64>,
     #[serde(default)]
     pub rules_blocks: Vec<RulesBlock>,
     #[serde(default)]
@@ -1480,6 +1528,12 @@ pub struct GameUpdate {
     pub model_checks: Option<String>,
     pub model_resolve: Option<String>,
     pub model_prose: Option<String>,
+    pub temperature_checks: Option<Option<f64>>,
+    pub top_p_checks: Option<Option<f64>>,
+    pub temperature_resolve: Option<Option<f64>>,
+    pub top_p_resolve: Option<Option<f64>>,
+    pub temperature_prose: Option<Option<f64>>,
+    pub top_p_prose: Option<Option<f64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

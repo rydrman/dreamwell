@@ -4129,6 +4129,13 @@ fn settings_to_update(current: &Settings) -> SettingsUpdate {
         context_tokens: Some(current.context_tokens),
         auto_context_on_model_change: Some(current.auto_context_on_model_change),
         max_concurrent_jobs: Some(current.max_concurrent_jobs),
+        model_profiles: Some(current.model_profiles.clone()),
+        chat_model_plan: Some(current.chat_model_plan.clone()),
+        chat_model_prose: Some(current.chat_model_prose.clone()),
+        chat_temperature_plan: Some(current.chat_temperature_plan),
+        chat_top_p_plan: Some(current.chat_top_p_plan),
+        chat_temperature_prose: Some(current.chat_temperature_prose),
+        chat_top_p_prose: Some(current.chat_top_p_prose),
     }
 }
 
@@ -4846,6 +4853,127 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
                 }} />
                 {"Extract reasoning into collapsible thought block"}
             </label>
+            <div class="settings-group">
+                <strong>{"Model sampling profiles"}</strong>
+                <p class="muted" style="margin:0.35rem 0 0.5rem;">
+                    {"Saved temperature and top_p per model id. Applied whenever that model runs (connection default, phase override, or game override). Phase-specific overrides below take precedence."}
+                </p>
+                { for s.model_profiles.iter().enumerate().map(|(index, profile)| {
+                    let save_ctx = save_ctx.clone();
+                    html! {
+                        <div class="settings-params-grid" style="margin-bottom:0.5rem;align-items:end;">
+                            <label class="field"><span class="muted">{"Model"}</span>
+                                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                                    <input type="text" value={profile.model.clone()} oninput={{
+                                        let save_ctx = save_ctx.clone();
+                                        Callback::from(move |e: InputEvent| {
+                                            let input: HtmlInputElement = e.target_unchecked_into();
+                                            let value = input.value();
+                                            save_ctx.update_field(move |current| {
+                                                if let Some(row) = current.model_profiles.get_mut(index) {
+                                                    row.model = value;
+                                                }
+                                            });
+                                        })
+                                    }} />
+                                </AutoSaveField>
+                            </label>
+                            <label class="field"><span class="muted">{"Temperature"}</span>
+                                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                                    <input type="number" step="0.05" value={profile.temperature.to_string()} oninput={{
+                                        let save_ctx = save_ctx.clone();
+                                        Callback::from(move |e: InputEvent| {
+                                            let input: HtmlInputElement = e.target_unchecked_into();
+                                            if let Ok(v) = input.value().parse::<f64>() {
+                                                save_ctx.update_field(move |current| {
+                                                    if let Some(row) = current.model_profiles.get_mut(index) {
+                                                        row.temperature = v;
+                                                    }
+                                                });
+                                            }
+                                        })
+                                    }} />
+                                </AutoSaveField>
+                            </label>
+                            <label class="field"><span class="muted">{"Top P"}</span>
+                                <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                                    <input type="number" step="0.05" value={profile.top_p.to_string()} oninput={{
+                                        let save_ctx = save_ctx.clone();
+                                        Callback::from(move |e: InputEvent| {
+                                            let input: HtmlInputElement = e.target_unchecked_into();
+                                            if let Ok(v) = input.value().parse::<f64>() {
+                                                save_ctx.update_field(move |current| {
+                                                    if let Some(row) = current.model_profiles.get_mut(index) {
+                                                        row.top_p = v;
+                                                    }
+                                                });
+                                            }
+                                        })
+                                    }} />
+                                </AutoSaveField>
+                            </label>
+                            <button class="btn secondary" type="button" onclick={{
+                                let save_ctx = save_ctx.clone();
+                                Callback::from(move |_| {
+                                    save_ctx.update_field(|current| {
+                                        current.model_profiles.remove(index);
+                                    });
+                                })
+                            }}>{"Remove"}</button>
+                        </div>
+                    }
+                }) }
+                <button class="btn secondary" type="button" style="margin-top:0.25rem;" onclick={{
+                    let save_ctx = save_ctx.clone();
+                    Callback::from(move |_| {
+                        save_ctx.update_field(|current| {
+                            current.model_profiles.push(ModelSamplingProfile {
+                                model: String::new(),
+                                temperature: current.temperature,
+                                top_p: current.top_p,
+                            });
+                        });
+                    })
+                }}>{"Add model profile"}</button>
+            </div>
+            <div class="settings-group">
+                <strong>{"Chat phase overrides"}</strong>
+                <p class="muted" style="margin:0.35rem 0 0.5rem;">
+                    {"When chat variables are enabled, plan and prose run as separate calls. Leave blank to use the active connection model and sampling defaults."}
+                </p>
+                <div class="settings-params-grid">
+                    <label class="field"><span class="muted">{"Plan model"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="text" value={s.chat_model_plan.clone()} placeholder="default" oninput={text_input(save_ctx.clone(), "chat_model_plan")} />
+                        </AutoSaveField>
+                    </label>
+                    <label class="field"><span class="muted">{"Prose model"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="text" value={s.chat_model_prose.clone()} placeholder="default" oninput={text_input(save_ctx.clone(), "chat_model_prose")} />
+                        </AutoSaveField>
+                    </label>
+                    <label class="field"><span class="muted">{"Plan temperature"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" step="0.05" value={optional_float_display(s.chat_temperature_plan)} placeholder="default" oninput={optional_chat_float_input(save_ctx.clone(), "chat_temperature_plan")} />
+                        </AutoSaveField>
+                    </label>
+                    <label class="field"><span class="muted">{"Plan top P"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" step="0.05" value={optional_float_display(s.chat_top_p_plan)} placeholder="default" oninput={optional_chat_float_input(save_ctx.clone(), "chat_top_p_plan")} />
+                        </AutoSaveField>
+                    </label>
+                    <label class="field"><span class="muted">{"Prose temperature"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" step="0.05" value={optional_float_display(s.chat_temperature_prose)} placeholder="default" oninput={optional_chat_float_input(save_ctx.clone(), "chat_temperature_prose")} />
+                        </AutoSaveField>
+                    </label>
+                    <label class="field"><span class="muted">{"Prose top P"}</span>
+                        <AutoSaveField phase={autosave_phase} error={autosave_error.clone()}>
+                            <input type="number" step="0.05" value={optional_float_display(s.chat_top_p_prose)} placeholder="default" oninput={optional_chat_float_input(save_ctx.clone(), "chat_top_p_prose")} />
+                        </AutoSaveField>
+                    </label>
+                </div>
+            </div>
             <InstallSettings />
             <NotificationSettings />
         </div>
@@ -4979,7 +5107,37 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
             "system_prompt_suffix" => current.system_prompt_suffix = value.clone(),
             "user_name" => current.user_name = value.clone(),
             "persona_description" => current.persona_description = value.clone(),
+            "chat_model_plan" => current.chat_model_plan = value.clone(),
+            "chat_model_prose" => current.chat_model_prose = value.clone(),
             _ => {}
+        });
+    })
+}
+
+fn optional_float_display(value: Option<f64>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_default()
+}
+
+fn optional_chat_float_input(
+    save_ctx: SettingsSaveContext,
+    field: &'static str,
+) -> Callback<InputEvent> {
+    Callback::from(move |e: InputEvent| {
+        let input: HtmlInputElement = e.target_unchecked_into();
+        let raw = input.value();
+        save_ctx.update_field(move |current| {
+            let parsed = if raw.trim().is_empty() {
+                None
+            } else {
+                raw.trim().parse().ok()
+            };
+            match field {
+                "chat_temperature_plan" => current.chat_temperature_plan = parsed,
+                "chat_top_p_plan" => current.chat_top_p_plan = parsed,
+                "chat_temperature_prose" => current.chat_temperature_prose = parsed,
+                "chat_top_p_prose" => current.chat_top_p_prose = parsed,
+                _ => {}
+            }
         });
     })
 }

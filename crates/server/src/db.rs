@@ -3,8 +3,8 @@ use dreamwell_types::{
     AppliedStateChange, Character, CharacterCreate, CharacterUpdate, Chat, ChatActor, ChatDetail,
     ChatStateEntry, ChatStateEntryUpdate, ChatUpdate, ChatVariable, ChatVariableUpdate,
     InferenceConnection, InferenceConnectionCreate, InferenceConnectionUpdate, Job, JobStatus,
-    JobType, JsonFormatStrategy, Message, MessageRole, Settings, SettingsUpdate, StateKind,
-    CHAT_ARCHIVE_RETENTION_DAYS, DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
+    JobType, JsonFormatStrategy, Message, MessageRole, SamplingOverrides, Settings, SettingsUpdate,
+    StateKind, CHAT_ARCHIVE_RETENTION_DAYS, DEFAULT_SYSTEM_PROMPT_PREFIX, DEFAULT_USER_NAME,
 };
 use std::time::Duration;
 
@@ -1204,7 +1204,7 @@ pub async fn finalize_message_typed_generation(
 
 pub async fn get_settings(pool: &SqlitePool) -> AppResult<Settings> {
     let row = sqlx::query_as::<_, SettingsRow>(
-        "SELECT inference_url, active_inference_connection_id, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_adaptive, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages, context_tokens, auto_context_on_model_change FROM app_settings WHERE id = 1",
+        "SELECT inference_url, active_inference_connection_id, model, temperature, top_p, max_tokens, system_prompt_prefix, system_prompt_suffix, user_name, persona_description, summarize_enabled, summarize_adaptive, summarize_after_messages, summarize_keep_recent, variables_enabled, thought_blocks_enabled, max_context_messages, context_tokens, auto_context_on_model_change, model_profiles_json, chat_model_plan, chat_model_prose, chat_temperature_plan, chat_top_p_plan, chat_temperature_prose, chat_top_p_prose FROM app_settings WHERE id = 1",
     )
     .fetch_one(pool)
     .await?;
@@ -1253,6 +1253,7 @@ pub async fn chat_completion_json_for_connection<T>(
     job_id: Option<i64>,
     message_id: Option<i64>,
     model_override: Option<&str>,
+    sampling_override: Option<SamplingOverrides>,
     repair_hint: Option<&str>,
 ) -> AppResult<T>
 where
@@ -1268,6 +1269,7 @@ where
         job_id,
         message_id,
         model_override,
+        sampling_override,
         repair_hint,
     )
     .await
@@ -1750,9 +1752,33 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
         MAX_CONCURRENT_JOBS.store(v.max(1), std::sync::atomic::Ordering::SeqCst);
         current.max_concurrent_jobs = v.max(1);
     }
+    if let Some(v) = payload.model_profiles {
+        current.model_profiles = v;
+    }
+    if let Some(v) = payload.chat_model_plan {
+        current.chat_model_plan = v;
+    }
+    if let Some(v) = payload.chat_model_prose {
+        current.chat_model_prose = v;
+    }
+    if let Some(v) = payload.chat_temperature_plan {
+        current.chat_temperature_plan = v;
+    }
+    if let Some(v) = payload.chat_top_p_plan {
+        current.chat_top_p_plan = v;
+    }
+    if let Some(v) = payload.chat_temperature_prose {
+        current.chat_temperature_prose = v;
+    }
+    if let Some(v) = payload.chat_top_p_prose {
+        current.chat_top_p_prose = v;
+    }
+
+    let model_profiles_json = serde_json::to_string(&current.model_profiles)
+        .map_err(|err| AppError::internal(format!("model profiles json: {err}")))?;
 
     sqlx::query(
-        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_adaptive=?11, summarize_after_messages=?12, summarize_keep_recent=?13, variables_enabled=?14, thought_blocks_enabled=?15, max_context_messages=?16, context_tokens=?17, auto_context_on_model_change=?18 WHERE id=1",
+        "UPDATE app_settings SET inference_url=?1, model=?2, temperature=?3, top_p=?4, max_tokens=?5, system_prompt_prefix=?6, system_prompt_suffix=?7, user_name=?8, persona_description=?9, summarize_enabled=?10, summarize_adaptive=?11, summarize_after_messages=?12, summarize_keep_recent=?13, variables_enabled=?14, thought_blocks_enabled=?15, max_context_messages=?16, context_tokens=?17, auto_context_on_model_change=?18, model_profiles_json=?19, chat_model_plan=?20, chat_model_prose=?21, chat_temperature_plan=?22, chat_top_p_plan=?23, chat_temperature_prose=?24, chat_top_p_prose=?25 WHERE id=1",
     )
     .bind(&current.inference_url)
     .bind(&current.model)
@@ -1772,6 +1798,13 @@ pub async fn update_settings(pool: &SqlitePool, payload: SettingsUpdate) -> AppR
     .bind(current.max_context_messages)
     .bind(current.context_tokens)
     .bind(current.auto_context_on_model_change as i64)
+    .bind(&model_profiles_json)
+    .bind(&current.chat_model_plan)
+    .bind(&current.chat_model_prose)
+    .bind(current.chat_temperature_plan)
+    .bind(current.chat_top_p_plan)
+    .bind(current.chat_temperature_prose)
+    .bind(current.chat_top_p_prose)
     .execute(pool)
     .await?;
     get_settings(pool).await
@@ -2353,10 +2386,18 @@ struct SettingsRow {
     max_context_messages: i64,
     context_tokens: i64,
     auto_context_on_model_change: i64,
+    model_profiles_json: String,
+    chat_model_plan: String,
+    chat_model_prose: String,
+    chat_temperature_plan: Option<f64>,
+    chat_top_p_plan: Option<f64>,
+    chat_temperature_prose: Option<f64>,
+    chat_top_p_prose: Option<f64>,
 }
 
 impl SettingsRow {
     fn into_settings(self, connections: Vec<InferenceConnection>) -> Settings {
+        let model_profiles = serde_json::from_str(&self.model_profiles_json).unwrap_or_default();
         Settings {
             inference_url: self.inference_url,
             active_connection_id: self.active_inference_connection_id,
@@ -2379,6 +2420,13 @@ impl SettingsRow {
             context_tokens: self.context_tokens,
             auto_context_on_model_change: self.auto_context_on_model_change != 0,
             max_concurrent_jobs: MAX_CONCURRENT_JOBS.load(std::sync::atomic::Ordering::SeqCst),
+            model_profiles,
+            chat_model_plan: self.chat_model_plan,
+            chat_model_prose: self.chat_model_prose,
+            chat_temperature_plan: self.chat_temperature_plan,
+            chat_top_p_plan: self.chat_top_p_plan,
+            chat_temperature_prose: self.chat_temperature_prose,
+            chat_top_p_prose: self.chat_top_p_prose,
         }
     }
 }

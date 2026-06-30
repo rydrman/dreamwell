@@ -126,6 +126,7 @@ pub async fn run_beat_prose_recheck_job(
             Some(job_id),
             None,
             None,
+            None,
         )
         .await
         {

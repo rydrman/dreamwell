@@ -16,7 +16,9 @@ use crate::game_tools::{
     is_state_tool, mechanics_agent_tool_specs, parse_present_fork_args, parse_state_tool_call,
     prose_agent_tool_specs, PcFork, ToolSessionState,
 };
-use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
+use crate::game_turn::{
+    declare_and_roll_checks, model_override_for_phase, sampling_override_for_phase, GameModelPhase,
+};
 use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
 use crate::model_fallback::stream_chat_completion_with_tools_connection_fallback;
 use crate::thoughts::{parse_thought_blocks, thought_timing};
@@ -60,6 +62,14 @@ pub async fn run_tools_structured_phase(
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
     let model_override = model_override_for_phase(&game, settings, GameModelPhase::Prose);
+    let mechanics_sampling = {
+        let overrides = sampling_override_for_phase(&game, GameModelPhase::Resolve);
+        (!overrides.is_empty()).then_some(overrides)
+    };
+    let prose_sampling = {
+        let overrides = sampling_override_for_phase(&game, GameModelPhase::Prose);
+        (!overrides.is_empty()).then_some(overrides)
+    };
     let parser = resolve_tool_parser(
         &db::get_inference_config(pool).await?.tool_call_parser,
         model_override
@@ -88,6 +98,7 @@ pub async fn run_tools_structured_phase(
         guidance,
         settings,
         model_override.as_deref(),
+        mechanics_sampling,
         parser,
         &mut session,
         token,
@@ -128,6 +139,7 @@ pub async fn run_tools_structured_phase(
         guidance,
         settings,
         model_override.as_deref(),
+        prose_sampling,
         parser,
         token,
     )
@@ -190,6 +202,7 @@ async fn run_mechanics_pass(
     guidance: &str,
     settings: &Settings,
     model_override: Option<&str>,
+    sampling_override: Option<dreamwell_types::SamplingOverrides>,
     parser: Option<&'static str>,
     session: &mut ToolSessionState,
     token: &CancellationToken,
@@ -217,6 +230,7 @@ async fn run_mechanics_pass(
             Some(job_id),
             None,
             model_override,
+            sampling_override,
         )
         .await?;
         llm_calls += 1;
@@ -366,6 +380,7 @@ async fn run_prose_pass(
     guidance: &str,
     settings: &Settings,
     model_override: Option<&str>,
+    sampling_override: Option<dreamwell_types::SamplingOverrides>,
     parser: Option<&'static str>,
     token: &CancellationToken,
 ) -> AppResult<ProseOutcome> {
@@ -416,6 +431,7 @@ async fn run_prose_pass(
             Some(job_id),
             None,
             model_override,
+            sampling_override,
         )
         .await?;
         llm_calls += 1;
@@ -723,6 +739,10 @@ pub async fn run_prose_regenerate_job(
     let turn = db::get_turn(pool, game_id, turn_id).await?;
     let game = detail.game.clone();
     let model_override = model_override_for_phase(&game, settings, GameModelPhase::Prose);
+    let prose_sampling = {
+        let overrides = sampling_override_for_phase(&game, GameModelPhase::Prose);
+        (!overrides.is_empty()).then_some(overrides)
+    };
     let parser = resolve_tool_parser(
         &db::get_inference_config(pool).await?.tool_call_parser,
         model_override
@@ -753,6 +773,7 @@ pub async fn run_prose_regenerate_job(
         guidance,
         settings,
         model_override.as_deref(),
+        prose_sampling,
         parser,
         token,
     )

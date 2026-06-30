@@ -38,6 +38,26 @@ pub fn model_override_for_phase(
     }
 }
 
+pub fn sampling_override_for_phase(
+    game: &dreamwell_types::Game,
+    phase: GameModelPhase,
+) -> dreamwell_types::SamplingOverrides {
+    match phase {
+        GameModelPhase::Checks => dreamwell_types::SamplingOverrides {
+            temperature: game.temperature_checks,
+            top_p: game.top_p_checks,
+        },
+        GameModelPhase::Resolve => dreamwell_types::SamplingOverrides {
+            temperature: game.temperature_resolve,
+            top_p: game.top_p_resolve,
+        },
+        GameModelPhase::Prose => dreamwell_types::SamplingOverrides {
+            temperature: game.temperature_prose,
+            top_p: game.top_p_prose,
+        },
+    }
+}
+
 pub fn ensure_model_for_phase(
     game: &dreamwell_types::Game,
     settings: &Settings,
@@ -185,6 +205,10 @@ pub async fn declare_and_roll_checks(
         Some(job_id),
         None,
         model_override.as_deref(),
+        {
+            let overrides = sampling_override_for_phase(&game, GameModelPhase::Checks);
+            (!overrides.is_empty()).then_some(overrides)
+        },
         Some(declare_checks_repair_hint()),
     )
     .await?;
@@ -269,6 +293,12 @@ mod tests {
             model_checks: String::new(),
             model_resolve: String::new(),
             model_prose: String::new(),
+            temperature_checks: None,
+            top_p_checks: None,
+            temperature_resolve: None,
+            top_p_resolve: None,
+            temperature_prose: None,
+            top_p_prose: None,
             rules_blocks: vec![],
             state_schema: vec![],
             win_condition: None,
