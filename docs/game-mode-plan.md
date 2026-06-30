@@ -60,32 +60,33 @@ longer depends on the model remembering to emit tags.
 
 ## 2b. Implemented turn engine (`EngineMode::ToolsStructured`)
 
-The shipped agent (`game_turn_agent.rs`) runs each turn as **three sequenced
-LLM passes**, which is a refinement of §3's pipeline:
+The shipped agent (`game_turn_agent.rs`) runs each turn as **two sequenced
+LLM passes**:
 
 1. **Declare + roll checks** (`declare_and_roll_checks`) — JSON phase; dramatic
    checks are rolled in Rust.
-2. **Mechanics resolution** (`build_mechanics_agent_messages`,
-   `mechanics_agent_tool_specs`) — the model calls *only* the scenario mechanic
-   tools (`roll_dice` / `board_move` / `draw_card`) plus `present_fork`, with
-   **no prose**. Every dice/board/card outcome is therefore server-decided
-   before any narration exists.
-3. **Prose narration** (`build_prose_narration_messages`,
-   `prose_agent_tool_specs`) — the model writes the turn prose from a
-   "Resolved mechanics (canonical)" block (each line includes its `⟦mech:N⟧`
-   reference) and embeds those markers at the narration point. The frontend
-   expands markers into inline dice/card/board blocks from the canonical
-   `mechanical_results`, so the player discovers outcomes as they read without
-   the model restating numbers in prose. State / ask tools still run after the
-   prose; outcome tools are not offered and any the model emits anyway are dropped.
+2. **Inline prose** (`build_inline_prose_agent_messages`,
+   `inline_prose_tool_specs`) — one streaming pass where the model narrates and
+   calls scenario mechanic tools (`roll_dice` / `board_move` / `draw_card`)
+   inline when the rules require them. Each mechanic result is anchored with a
+   `⟦mech:N⟧` marker at the point in the narration where it belongs; the frontend
+   expands markers into inline dice/card/board blocks from canonical
+   `mechanical_results`. State, author-notes, and `present_fork` tools run in the
+   same pass.
 
-**Why the split:** a single inline pass let weaker local models narrate a
-fabricated dice result first ("you roll a 4…") and then emit a contradicting
-`roll_dice` tool call, so the prose never matched the real roll. Resolving all
-mechanics *before* narration removes the contradiction entirely. Inline markers
-restore the "outcome as you read" feel: the marker is only a pointer — the UI
-renders the real result from `mechanical_results`, not from model text. Omitted
-markers are not backfilled; only inline-placed mechanics appear in narration.
+**Prose regeneration** (re-narrate an existing turn without re-rolling) still
+uses the two-step mechanics→prose split: canonical results are fixed, and the
+narration pass (`build_prose_narration_messages`) embeds existing `⟦mech:N⟧`
+markers without offering outcome tools.
+
+**Why inline (not a separate mechanics-first pass):** resolving every mechanic
+before any narration let the rules engine over-roll — it lacked the prose
+context to know which dice/board/card steps actually applied to the player's
+action, and sometimes forced narration down paths the scene did not warrant.
+Inline tools keep mechanics tied to the beat being narrated; prompts steer the
+model to call mechanic tools only when scenario rules require them (many turns
+need none).
+
 See `crates/server/src/game_repro.rs` for the live reproduction/regression
 harness (run with `--ignored`).
 

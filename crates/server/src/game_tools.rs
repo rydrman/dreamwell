@@ -216,20 +216,18 @@ pub fn simple_state_tool_specs() -> Vec<Value> {
     ]
 }
 
-/// Tools for the legacy single-pass inline-prose agent: scenario mechanics fired inline
-/// plus tracked-state updates. Retained for the reproduction harness and tests.
-#[cfg(test)]
+/// Tools for the single-pass inline-prose agent: scenario mechanics fired inline
+/// plus tracked-state updates and author notes.
 pub fn inline_prose_tool_specs() -> Vec<Value> {
     let mut tools = inline_mechanical_tool_specs();
     tools.extend(simple_state_tool_specs());
+    tools.push(author_notes_spec());
     tools.push(present_fork_spec());
     tools
 }
 
-/// Tools for the mechanics-resolution pass: only the scenario mechanic primitives
-/// (which return real outcomes) plus `present_fork`. No prose and no state tools —
-/// this pass exists purely to roll/draw/move so the prose pass never has to guess an
-/// outcome.
+/// Tools for the mechanics-resolution pass (repro harness / two-pass comparison).
+#[cfg(test)]
 pub fn mechanics_agent_tool_specs() -> Vec<Value> {
     let mut tools = inline_mechanical_tool_specs();
     tools.push(author_notes_spec());
