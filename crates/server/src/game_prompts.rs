@@ -81,9 +81,7 @@ pub fn declare_checks_repair_hint() -> &'static str {
 - Do not use alternate key names like trait, name, mod, or dramatic_checks"#
 }
 
-/// Legacy single-pass inline-prose system prompt. Kept for the reproduction harness
-/// and prompt tests that document why the two-pass mechanics→prose split replaced it.
-#[cfg(test)]
+/// Single-pass inline-prose system prompt: narration and scenario mechanics interleaved.
 const INLINE_PROSE_AGENT_SYSTEM: &str = r#"You are a tabletop RPG narrator for one specific scenario. Write second-person prose that resolves the player's action and moves the scene forward, calling tools inline to fire any real game mechanic.
 
 POV (overrides GM style):
@@ -108,9 +106,11 @@ Turn scope (one beat):
 - Do NOT invent extra beats beyond that action: no new arrivals, scene changes, time skips, or unprompted follow-on actions the player did not take.
 - Stop at the next natural decision point; leave the next beat for the next turn.
 
-Inline mechanics (use tools, never invent outcomes):
-- board_move, draw_card, and roll_dice are generic primitives — use them whenever the scenario rules call for board movement, a deck draw, or a dice roll.
+Inline mechanics (use tools when required — never invent outcomes):
+- board_move, draw_card, and roll_dice are generic primitives — call them ONLY when the scenario rules require board movement, a deck draw, or a dice roll for THIS player action. Many turns need zero mechanic tools; do not over-roll just because the tools exist.
+- Read the player action, GM guidance, recent prose, and scenario rules first. If the action does not trigger a board/deck/dice step, narrate without mechanic tools.
 - For movement on a board, use board_move — it rolls the board's move die for you and returns the result. Do NOT call roll_dice to move a piece, and never pair roll_dice with board_move for the same step (that double-rolls). Reserve roll_dice for dice the scenario calls for outside of board movement (card effects, damage, encounter or skill rolls).
+- A card's fixed effect (e.g. "move forward 2 spaces") is applied via state tools, not a new board_move or roll_dice — only call board_move / roll_dice when the rules actually call for a die.
 - Follow the scenario's rules blocks for turn sequencing, deck selection, and when each mechanic applies.
 - draw_card requires an explicit deck_id — choose the deck per scenario rules (e.g. map space tags from board_move to the correct deck).
 - One mechanic per cycle: write lead-up prose (no outcome), call exactly one matching tool, then write outcome prose from the tool's actual result before starting the next mechanic. Never batch board_move, draw_card, or roll_dice in the same assistant message.
@@ -170,11 +170,16 @@ Tracked state (use the dedicated state tools — one attribute per call):
 - target is "pc", "world", or an NPC name; key is a short snake_case attribute; value is just the value, not a sentence.
 - When the scene establishes or changes durable tracked variables OR resolves a card or mechanic effect, call the matching state tool — do not only mention them in prose. The tool is the source of truth, not the prose alone.
 
+Author's notes (GM-only rolling memory — never in prose or player UI):
+- call:update_author_notes{notes:"..."} replaces the entire private notes block when narrative considerations, possible directions, or NPC unspoken interiority shift.
+- Carry forward still-valid bullets; use set_variable for durable facts; show feelings through behavior only — never quote author notes in narration.
+
 Ending the turn:
 - When the PC must make a choice the player did not specify, call present_fork with the situation and options, then stop.
 - Narrate up to the next decision point, then stop — do not narrate the PC's next choice for them.
 - Plain prose and tool calls only — no JSON, no meta commentary, no headers."#;
 
+#[cfg(test)]
 const MECHANICS_AGENT_SYSTEM: &str = r#"You are the rules engine for ONE turn of a tabletop scenario. Your ONLY job is to resolve the mechanical steps the player's action triggers by calling tools. You do NOT narrate — a separate narrator writes the prose afterward from the results you produce.
 
 Hard rules:
@@ -399,10 +404,10 @@ fn append_characters_section(body: &mut String, actors: &[GameActor]) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnPromptPhase {
     DeclareChecks,
-    /// Single-pass narration that calls scenario mechanic tools inline (legacy; test-only).
-    #[cfg(test)]
+    /// Single-pass narration that calls scenario mechanic tools inline.
     ProseInline,
-    /// Mechanics-resolution pass: roll/draw/move via tools only, no prose.
+    /// Mechanics-resolution pass: roll/draw/move via tools only, no prose (repro harness).
+    #[cfg(test)]
     MechanicsResolve,
     /// Narration pass: write prose from the already-resolved mechanics (no outcome tools).
     ProseNarrate,
@@ -416,10 +421,12 @@ impl TurnPromptPhase {
     }
 
     fn uses_author_notes(self) -> bool {
-        matches!(
-            self,
-            TurnPromptPhase::MechanicsResolve | TurnPromptPhase::ProseNarrate
-        )
+        match self {
+            TurnPromptPhase::ProseInline | TurnPromptPhase::ProseNarrate => true,
+            #[cfg(test)]
+            TurnPromptPhase::MechanicsResolve => true,
+            TurnPromptPhase::DeclareChecks => false,
+        }
     }
 }
 
@@ -643,6 +650,7 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
                  (checks, label, skill, modifier, stakes, justification, no_check_reason).",
             );
         }
+        #[cfg(test)]
         TurnPromptPhase::MechanicsResolve => {
             let mut instruction = String::from(
                 "Resolve this turn's mechanics now. Tool calls ONLY — write no prose. \
@@ -678,16 +686,18 @@ fn build_cumulative_turn_body(phase: TurnPromptPhase, inputs: &TurnPromptInputs<
             }
             push_section(&mut body, &instruction);
         }
-        #[cfg(test)]
         TurnPromptPhase::ProseInline => {
             let mut instruction = String::from(
                 "Narrate this turn now in second person (\"you\"). \
                  Advance one beat — fully resolve the player's action and the mechanics it requires — then stop; do not invent extra story beats. \
+                 Many turns need no board_move, draw_card, or roll_dice at all — only call those when the scenario rules require them for this action; do not over-roll. \
                  Follow the scenario rules for turn sequencing and when to call board_move, draw_card, or roll_dice. \
                  If a pending effect from a previous turn is listed above, resolve it before starting new mechanics. \
                  For each mechanic: lead-up prose that stops before any outcome → one tool call → outcome prose using the number/text the tool returned. \
                  Never state a die face, space count, or card name before its tool runs, and never let your prose contradict the tool's result; never batch multiple mechanics; \
-                 call tools inline for mechanics and tracked state; stop with present_fork only when the PC owes a choice at a concrete fork (never for NPC decisions).",
+                 call tools inline for mechanics and tracked state; \
+                 call update_author_notes when narrative considerations, possible directions, or NPC unspoken thoughts/feelings shift (replace the entire notes block; carry forward still-valid bullets; use set_variable for durable facts; show feelings through behavior only — never quote author notes); \
+                 stop with present_fork only when the PC owes a choice at a concrete fork (never for NPC decisions).",
             );
             if guidance_present {
                 instruction.push_str(
@@ -890,6 +900,8 @@ pub fn build_declare_checks_messages(
 /// Messages for the mechanics-resolution pass: the model resolves dice/board/card
 /// mechanics by calling tools only (no prose), so every outcome is server-decided
 /// before any narration is written.
+/// Messages for the mechanics-only pass used by the repro harness.
+#[cfg(test)]
 pub fn build_mechanics_agent_messages(
     game: &Game,
     detail: &GameDetail,
@@ -953,9 +965,8 @@ pub fn build_prose_narration_messages(
     ]
 }
 
-/// Messages for the legacy single-pass inline-prose tool agent. Retained for the
-/// reproduction harness and prompt tests that compare it against the two-pass split.
-#[cfg(test)]
+/// Messages for the single-pass inline-prose tool agent: narration and scenario
+/// mechanics interleaved in one streaming pass.
 pub fn build_inline_prose_agent_messages(
     game: &Game,
     detail: &GameDetail,
@@ -1604,6 +1615,13 @@ mod tests {
         assert!(prose_user.contains("Mira: performing calm."));
         assert!(prose_user.contains("update_author_notes"));
         assert!(prose_user.contains("NPC unspoken thoughts"));
+
+        let inline = build_inline_prose_agent_messages(&game, &detail, &turn, &[], "", &settings);
+        let inline_user = inline[1]["content"].as_str().unwrap();
+        assert!(inline_user.contains("Author's notes (GM only"));
+        assert!(inline_user.contains("Mira: performing calm."));
+        assert!(inline_user.contains("update_author_notes"));
+        assert!(inline_user.contains("do not over-roll"));
     }
 
     #[test]

@@ -10,12 +10,12 @@ use tokio_util::sync::CancellationToken;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
-use crate::game_prompts::{build_mechanics_agent_messages, build_prose_narration_messages};
+use crate::game_prompts::{build_inline_prose_agent_messages, build_prose_narration_messages};
 use crate::game_tools::{
-    format_pc_fork_blockquote, handle_mechanical_tool_call, is_author_notes_tool, is_outcome_tool,
-    is_present_fork_tool, is_state_tool, mechanics_agent_tool_specs, parse_author_notes_args,
-    parse_present_fork_args, parse_state_tool_call, prose_agent_tool_specs, PcFork,
-    ToolSessionState,
+    format_pc_fork_blockquote, handle_mechanical_tool_call, inline_prose_tool_specs,
+    is_author_notes_tool, is_outcome_tool, is_present_fork_tool, is_state_tool,
+    parse_author_notes_args, parse_present_fork_args, parse_state_tool_call,
+    prose_agent_tool_specs, PcFork, ToolSessionState,
 };
 use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
 use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
@@ -26,12 +26,12 @@ use crate::tool_stream::{
     tool_definitions_from_specs, JailEvent, ToolStreamJail,
 };
 
-/// Outcome of the mechanics-resolution pass.
-struct MechanicsOutcome {
+/// Outcome of a prose agent pass (inline or narration-only).
+struct ProseOutcome {
+    prose: String,
+    applied_state: Vec<AppliedStateChange>,
     llm_calls: u32,
     tool_calls: u32,
-    /// Set when the model paused for a player decision before mechanics could finish.
-    pending_fork: Option<PcFork>,
 }
 
 pub async fn run_tools_structured_phase(
@@ -72,12 +72,16 @@ pub async fn run_tools_structured_phase(
             .unwrap_or(""),
     );
 
-    // Phase 2 — resolve every dice/board/card mechanic up front via tool calls only.
-    // Doing this before any narration means the model never narrates a fabricated
-    // result and then contradicts it with a later tool call.
-    db::update_turn_phase(pool, turn_id, "mechanics").await?;
+    // Phase 2 — single narration pass that fires scenario mechanics inline.
+    if token.is_cancelled() {
+        return Err(AppError::bad_request("cancelled"));
+    }
+    db::update_turn_phase(pool, turn_id, "prose").await?;
+    if settings.thought_blocks_enabled {
+        db::clear_turn_thoughts(pool, turn_id).await?;
+    }
     let mut session = ToolSessionState::new(game.clone());
-    let mech = run_mechanics_pass(
+    let prose = run_inline_prose_pass(
         pool,
         job_id,
         game_id,
@@ -107,33 +111,6 @@ pub async fn run_tools_structured_phase(
         .await?;
     }
 
-    // Phase 3 — narrate the turn from the canonical mechanics (no outcome tools).
-    if token.is_cancelled() {
-        return Err(AppError::bad_request("cancelled"));
-    }
-    db::update_turn_phase(pool, turn_id, "prose").await?;
-    if settings.thought_blocks_enabled {
-        db::clear_turn_thoughts(pool, turn_id).await?;
-    }
-    let prose = run_prose_pass(
-        pool,
-        job_id,
-        game_id,
-        turn_id,
-        &game,
-        &detail,
-        &turn,
-        &checks,
-        &session.mechanical_results,
-        mech.pending_fork.as_ref(),
-        guidance,
-        settings,
-        model_override.as_deref(),
-        parser,
-        token,
-    )
-    .await?;
-
     if !prose.applied_state.is_empty() {
         db::update_turn_state_changes(pool, turn_id, &prose.applied_state).await?;
         db::invalidate_scene_summaries_from(pool, game_id, turn.sort_order).await?;
@@ -158,8 +135,8 @@ pub async fn run_tools_structured_phase(
     }
 
     let elapsed = started.elapsed().as_millis() as u64;
-    let llm_calls = mech.llm_calls + prose.llm_calls;
-    let tool_calls = mech.tool_calls + prose.tool_calls;
+    let llm_calls = prose.llm_calls;
+    let tool_calls = prose.tool_calls;
     let obs = TurnObservability {
         engine_mode: EngineMode::ToolsStructured,
         llm_call_count: llm_calls,
@@ -176,10 +153,9 @@ pub async fn run_tools_structured_phase(
     Ok(())
 }
 
-/// Resolve all scenario mechanics for the turn by calling the mechanic tools only.
-/// Produces real, server-decided outcomes (collected in `session`) with no prose.
+/// Single-pass narration: prose and scenario mechanic tools interleaved inline.
 #[allow(clippy::too_many_arguments)]
-async fn run_mechanics_pass(
+async fn run_inline_prose_pass(
     pool: &SqlitePool,
     job_id: i64,
     game_id: i64,
@@ -194,16 +170,33 @@ async fn run_mechanics_pass(
     parser: Option<&'static str>,
     session: &mut ToolSessionState,
     token: &CancellationToken,
-) -> AppResult<MechanicsOutcome> {
+) -> AppResult<ProseOutcome> {
     let mut messages =
-        build_mechanics_agent_messages(game, detail, turn, checks, guidance, settings);
-    let tools = mechanics_agent_tool_specs();
+        build_inline_prose_agent_messages(game, detail, turn, checks, guidance, settings);
+    let tools = inline_prose_tool_specs();
     let tool_defs = tool_definitions_from_specs(&tools);
     let loop_config = ToolLoopConfig::default();
 
+    let mut prose = String::new();
+    for check in checks {
+        append_inline_marker(
+            &mut prose,
+            dreamwell_types::prose_check_marker(check.sort_order),
+        );
+    }
+    if !prose.is_empty() {
+        db::update_turn_prose(pool, turn_id, &prose).await?;
+        db::touch_game(pool, game_id).await?;
+    }
+    let mut applied_state: Vec<AppliedStateChange> = Vec::new();
     let mut llm_calls = 0u32;
     let mut tool_calls = 0u32;
-    let mut pending_fork: Option<PcFork> = None;
+    let mut end_turn = false;
+    let mut prose_stream = ProseStreamState {
+        last_flush: Instant::now(),
+        thought_started_at: None,
+        thought_duration_ms: None,
+    };
 
     for _ in 0..loop_config.max_iterations {
         if token.is_cancelled() {
@@ -224,7 +217,6 @@ async fn run_mechanics_pass(
 
         let mut jail = ToolStreamJail::new(parser);
         let mut iteration_content = String::new();
-        let mut leaked = String::new();
         let mut pending: Vec<ToolCall> = Vec::new();
 
         while let Some(chunk_result) = stream.next().await {
@@ -236,7 +228,19 @@ async fn run_mechanics_pass(
                     iteration_content.push_str(&token_str);
                     for event in jail.push(&token_str, Some(&tool_defs)).await? {
                         match event {
-                            JailEvent::Prose(piece) => leaked.push_str(&piece),
+                            JailEvent::Prose(piece) => {
+                                prose.push_str(&piece);
+                                flush_prose_throttled(
+                                    pool,
+                                    game_id,
+                                    turn_id,
+                                    &prose,
+                                    settings,
+                                    &mut prose_stream,
+                                    false,
+                                )
+                                .await?;
+                            }
                             JailEvent::ToolCall(tc) => pending.push(tc),
                         }
                     }
@@ -248,20 +252,32 @@ async fn run_mechanics_pass(
         }
         for event in jail.finish(Some(&tool_defs)).await? {
             match event {
-                JailEvent::Prose(piece) => leaked.push_str(&piece),
+                JailEvent::Prose(piece) => prose.push_str(&piece),
                 JailEvent::ToolCall(tc) => pending.push(tc),
             }
         }
-        // The mechanics pass should emit tool calls only; salvage any that leaked as text.
-        let (salvaged, _) = salvage_bare_tool_calls(&leaked, Some(&tool_defs));
-        for call in salvaged {
-            if !pending
-                .iter()
-                .any(|tc| tc.name == call.name && tc.arguments == call.arguments)
-            {
-                pending.push(call);
+        let (salvaged, cleaned_prose) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
+        if !salvaged.is_empty() {
+            prose = cleaned_prose;
+            for call in salvaged {
+                if !pending
+                    .iter()
+                    .any(|tc| tc.name == call.name && tc.arguments == call.arguments)
+                {
+                    pending.push(call);
+                }
             }
         }
+        flush_prose_throttled(
+            pool,
+            game_id,
+            turn_id,
+            &prose,
+            settings,
+            &mut prose_stream,
+            true,
+        )
+        .await?;
 
         if pending.is_empty() {
             break;
@@ -287,13 +303,18 @@ async fn run_mechanics_pass(
             "tool_calls": assistant_tool_calls
         }));
 
-        let mut stop = false;
         for tc in pending {
             tool_calls += 1;
             let tool_result = if is_outcome_tool(&tc.name) {
                 let before = session.mechanical_results.len();
                 let res = handle_mechanical_tool_call(session, &tc).await?;
                 if session.mechanical_results.len() > before {
+                    if let Some(last) = session.mechanical_results.last() {
+                        append_inline_marker(
+                            &mut prose,
+                            dreamwell_types::prose_mech_marker(last.sort_order),
+                        );
+                    }
                     flush_turn_mechanicals_streaming(
                         pool,
                         game_id,
@@ -302,14 +323,70 @@ async fn run_mechanics_pass(
                         &session.instances,
                     )
                     .await?;
+                    flush_prose_throttled(
+                        pool,
+                        game_id,
+                        turn_id,
+                        &prose,
+                        settings,
+                        &mut prose_stream,
+                        true,
+                    )
+                    .await?;
                 }
                 res
+            } else if is_state_tool(&tc.name) {
+                let changes = parse_state_tool_call(&tc);
+                let fresh = db::get_game_detail(pool, game_id).await?;
+                let applied = crate::game_state::apply_state_changes(
+                    pool,
+                    game_id,
+                    turn_id,
+                    &changes,
+                    &fresh.actors,
+                    &fresh.state,
+                )
+                .await?;
+                let count = applied.len();
+                let start_idx = applied_state.len() as i64;
+                applied_state.extend(applied);
+                for offset in 0..count {
+                    append_inline_marker(
+                        &mut prose,
+                        dreamwell_types::prose_state_marker(start_idx + offset as i64),
+                    );
+                }
+                if !applied_state.is_empty() {
+                    db::update_turn_state_changes(pool, turn_id, &applied_state).await?;
+                    db::touch_game(pool, game_id).await?;
+                    flush_prose_throttled(
+                        pool,
+                        game_id,
+                        turn_id,
+                        &prose,
+                        settings,
+                        &mut prose_stream,
+                        true,
+                    )
+                    .await?;
+                }
+                serde_json::json!({ "applied": count })
             } else if is_present_fork_tool(&tc.name) {
                 let args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Object(Default::default()));
                 if let Some(fork) = parse_present_fork_args(&args) {
-                    pending_fork = Some(fork);
-                    stop = true;
+                    append_fork_blockquote(&mut prose, &fork);
+                    flush_prose_throttled(
+                        pool,
+                        game_id,
+                        turn_id,
+                        &prose,
+                        settings,
+                        &mut prose_stream,
+                        true,
+                    )
+                    .await?;
+                    end_turn = true;
                     serde_json::json!({ "ended": true })
                 } else {
                     serde_json::json!({ "error": "present_fork requires a non-empty situation and at least two options" })
@@ -318,9 +395,6 @@ async fn run_mechanics_pass(
                 let args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Object(Default::default()));
                 apply_author_notes_tool(pool, game_id, &args).await
-            } else if is_state_tool(&tc.name) {
-                // State updates belong to the narration pass, once outcomes are known.
-                serde_json::json!({ "deferred": "state is recorded during narration" })
             } else {
                 serde_json::json!({ "error": format!("unknown tool {}", tc.name) })
             };
@@ -329,28 +403,35 @@ async fn run_mechanics_pass(
                 "tool_call_id": tc.id,
                 "content": serde_json::to_string(&tool_result).unwrap_or_else(|_| "{}".to_string())
             }));
-            if stop {
+            if end_turn {
                 break;
             }
         }
-        if stop {
+        if end_turn {
             break;
         }
     }
 
-    Ok(MechanicsOutcome {
+    let (_, cleaned) = salvage_bare_tool_calls(&prose, Some(&tool_defs));
+    prose = strip_residual_call_syntax(&cleaned);
+
+    finalize_turn_prose(
+        pool,
+        turn_id,
+        &prose,
+        settings,
+        &mut prose_stream.thought_started_at,
+        &mut prose_stream.thought_duration_ms,
+        true,
+    )
+    .await?;
+
+    Ok(ProseOutcome {
+        prose,
+        applied_state,
         llm_calls,
         tool_calls,
-        pending_fork,
     })
-}
-
-/// Result of the narration pass.
-struct ProseOutcome {
-    prose: String,
-    applied_state: Vec<AppliedStateChange>,
-    llm_calls: u32,
-    tool_calls: u32,
 }
 
 /// Narrate the turn from the already-resolved mechanics. Outcome-bearing tools are

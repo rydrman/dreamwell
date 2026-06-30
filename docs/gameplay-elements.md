@@ -36,7 +36,7 @@ Results persist on `GameTurn.mechanical_results` and feed cumulative prompts. In
 
 ## Engine mode
 
-All game turns use `tools_structured`: dramatic checks are rolled first, then a single prose pass with inline tool calls for mechanics and state updates.
+All game turns use `tools_structured`: dramatic checks are rolled first, then a single prose pass with inline tool calls for mechanics and state updates when the scenario rules require them.
 
 ## Scenario import/export
 
