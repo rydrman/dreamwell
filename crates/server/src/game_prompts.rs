@@ -725,24 +725,6 @@ fn format_resolved_mechanics_block(results: &[dreamwell_types::MechanicalResult]
     format!("Resolved mechanics (canonical):\n{}", lines.join("\n"))
 }
 
-/// Ensure every resolved mechanic has its inline marker in the prose. The model is
-/// prompted to place markers, but weak models may omit them — append any missing ones
-/// in canonical order so the UI can still render outcomes inline.
-pub(crate) fn ensure_inline_mech_markers(
-    prose: &mut String,
-    results: &[dreamwell_types::MechanicalResult],
-) {
-    for result in results {
-        let marker = dreamwell_types::prose_mech_marker(result.sort_order);
-        if !prose.contains(&marker) {
-            if !prose.is_empty() {
-                prose.push_str("\n\n");
-            }
-            prose.push_str(&marker);
-        }
-    }
-}
-
 /// When the immediately previous turn ended on a freshly drawn card whose effect was
 /// never resolved, surface that card so the inline-prose agent finishes resolving it.
 fn card_in_play_section(detail: &GameDetail, current: &GameTurn) -> Option<String> {
@@ -1620,43 +1602,6 @@ mod tests {
         assert!(user.contains("⟦mech:0⟧ attack roll (1d6): rolled [5] = 5"));
         assert!(user.contains("⟦mech:1⟧ Card drawn from events: Boost"));
         assert!(user.contains("Embed each ⟦mech:N⟧ marker"));
-    }
-
-    #[test]
-    fn ensure_inline_mech_markers_appends_missing_in_order() {
-        use dreamwell_types::{MechanicalData, MechanicalKind, MechanicalResult};
-        let results = vec![
-            MechanicalResult {
-                kind: MechanicalKind::DiceRoll,
-                label: "roll".into(),
-                data: MechanicalData::DiceRoll {
-                    dice_expr: "1d6".into(),
-                    rolls: vec![3],
-                    total: 3,
-                },
-                sort_order: 0,
-            },
-            MechanicalResult {
-                kind: MechanicalKind::DiceRoll,
-                label: "roll".into(),
-                data: MechanicalData::DiceRoll {
-                    dice_expr: "1d6".into(),
-                    rolls: vec![6],
-                    total: 6,
-                },
-                sort_order: 1,
-            },
-        ];
-        let mut prose = format!(
-            "You reach for the die.\n\n{}",
-            dreamwell_types::prose_mech_marker(0)
-        );
-        ensure_inline_mech_markers(&mut prose, &results);
-        assert!(prose.contains(&dreamwell_types::prose_mech_marker(0)));
-        assert!(prose.contains(&dreamwell_types::prose_mech_marker(1)));
-        let first = prose.find(&dreamwell_types::prose_mech_marker(0)).unwrap();
-        let second = prose.find(&dreamwell_types::prose_mech_marker(1)).unwrap();
-        assert!(first < second);
     }
 
     #[test]

@@ -10,9 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
-use crate::game_prompts::{
-    build_mechanics_agent_messages, build_prose_narration_messages, ensure_inline_mech_markers,
-};
+use crate::game_prompts::{build_mechanics_agent_messages, build_prose_narration_messages};
 use crate::game_tools::{
     format_pc_fork_blockquote, handle_mechanical_tool_call, is_outcome_tool, is_present_fork_tool,
     is_state_tool, mechanics_agent_tool_specs, parse_present_fork_args, parse_state_tool_call,
@@ -600,7 +598,6 @@ async fn run_prose_pass(
     // Final safety net: drop any leaked/truncated `call:` tool-call syntax so it
     // never reaches the player as prose.
     prose = strip_residual_call_syntax(&cleaned);
-    ensure_inline_mech_markers(&mut prose, resolved_mechanics);
 
     finalize_turn_prose(
         pool,

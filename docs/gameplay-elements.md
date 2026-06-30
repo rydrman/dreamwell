@@ -48,4 +48,4 @@ All game turns use `tools_structured`: dramatic checks are rolled first, then a 
 ## Notes
 
 - `scenario_triggers` remain dormant in v1 (not evaluated at runtime).
-- Dice mechanicals are mirrored into `system_rolls` for legacy UI compat only; the Mechanics phase is the canonical detached view (styled the same as inline blocks). System rolls are shown only when a turn has rolls but no `mechanical_results` (older saves).
+- Dice mechanicals are mirrored into `system_rolls` for legacy UI compat only. Mechanics appear inline when the narrator embeds a `⟦mech:N⟧` marker; there is no detached fallback panel. System rolls are shown only when a turn has rolls but no `mechanical_results` (older saves).
