@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::chat_prompts::{build_plan_messages, build_prose_messages, chat_plan_schema};
+use crate::chat_prose_agent::run_chat_prose_pass;
 use crate::chat_state::{apply_state_changes, build_state_block};
 use crate::config;
 use crate::db;
@@ -810,50 +811,41 @@ async fn run_chat_typed_generation_attempt(
     )
     .await?;
 
-    let mut stream = match stream_chat_completion_with_connection_fallback(
+    if token.is_cancelled() {
+        return Ok(ChatGenerationOutcome::Cancelled);
+    }
+
+    if settings.thought_blocks_enabled {
+        db::clear_message_thoughts(pool, message_id).await?;
+    }
+
+    let prose = match run_chat_prose_pass(
         pool,
+        job_id,
+        chat_id,
+        message_id,
+        prose_messages,
+        &applied,
         settings,
-        &prose_messages,
-        Some(job_id),
-        Some(message_id),
-        None,
+        token,
     )
     .await
     {
-        Ok(stream) => stream,
+        Ok(outcome) => outcome,
         Err(err) => return Ok(ChatGenerationOutcome::Retryable(err.to_string())),
     };
-
-    let mut accumulated = String::new();
-    let mut db_throttle = StreamDbThrottle::new();
-    while let Some(token_result) = stream.next().await {
-        if token.is_cancelled() {
-            return Ok(ChatGenerationOutcome::Cancelled);
-        }
-        match token_result {
-            Ok(piece) => {
-                accumulated.push_str(&piece);
-                if db_throttle.ready() {
-                    db::update_message_content(pool, message_id, &accumulated).await?;
-                    db::touch_chat(pool, chat_id).await?;
-                    db_throttle.mark_flushed();
-                }
-            }
-            Err(err) => {
-                if accumulated.is_empty() {
-                    return Ok(ChatGenerationOutcome::Retryable(err.to_string()));
-                }
-                db::complete_job(pool, job_id, JobStatus::Failed, Some(err.to_string())).await?;
-                return Ok(ChatGenerationOutcome::Failed);
-            }
-        }
-    }
 
     if token.is_cancelled() {
         return Ok(ChatGenerationOutcome::Cancelled);
     }
 
-    if accumulated.trim().is_empty() {
+    let has_content = if settings.thought_blocks_enabled {
+        let parsed = crate::thoughts::parse_thought_blocks(&prose.prose);
+        !parsed.reply.trim().is_empty() || !parsed.thought.is_empty()
+    } else {
+        !prose.prose.trim().is_empty()
+    };
+    if !has_content {
         return Ok(ChatGenerationOutcome::Retryable(
             "model returned no text".to_string(),
         ));
@@ -862,12 +854,12 @@ async fn run_chat_typed_generation_attempt(
     db::finalize_message_typed_generation(
         pool,
         message_id,
-        &accumulated,
+        &prose.prose,
         "",
         None,
         false,
         &plan.beats,
-        &applied,
+        &prose.applied_state,
     )
     .await?;
     let _ = crate::model_fallback::clear_message_generation_notice(pool, message_id).await;

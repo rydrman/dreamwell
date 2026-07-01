@@ -1,10 +1,13 @@
 use dreamwell_types::{
     AppliedStateChange, ChatActor, ChatStateEntry, GameActor, GameStateEntry, SequencePayload,
-    StateKind, StateOp, StoryActor, StoryStateEntry,
+    StateKind, StateOp, StoryActor, StoryStateEntry, PROSE_INLINE_MARKER_CLOSE,
+    PROSE_STATE_MARKER_OPEN,
 };
 use dreamwell_units::{format_measurement_change_display, format_measurement_display};
 use web_sys::MouseEvent;
 use yew::prelude::*;
+
+use crate::markdown::render_message_content;
 
 #[derive(Properties, PartialEq)]
 pub struct PhaseSectionProps {
@@ -51,6 +54,69 @@ pub fn phase_section(props: &PhaseSectionProps) -> Html {
             }
         </div>
     }
+}
+
+/// Render message prose, expanding inline `⟦state:N⟧` markers into compact capsules.
+pub fn render_prose_with_state_markers(prose: &str, state_changes: &[AppliedStateChange]) -> Html {
+    if !prose.contains(PROSE_STATE_MARKER_OPEN) {
+        return render_message_content(prose);
+    }
+
+    let mut nodes: Vec<Html> = Vec::new();
+    let mut rest = prose;
+    while let Some((open_idx, open_tag)) = next_state_marker(rest) {
+        let before = &rest[..open_idx];
+        let after_open = &rest[open_idx + open_tag.len()..];
+        let Some(close_idx) = after_open.find(PROSE_INLINE_MARKER_CLOSE) else {
+            break;
+        };
+        let num_str = after_open[..close_idx].trim();
+        let remainder = &after_open[close_idx + PROSE_INLINE_MARKER_CLOSE.len()..];
+
+        let trimmed_before = before.trim();
+        if !trimmed_before.is_empty() {
+            nodes.push(render_message_content(trimmed_before));
+        }
+        if let Ok(index) = num_str.parse::<i64>() {
+            let mut indices = vec![index];
+            rest = remainder;
+            while let Some((next_idx, consumed)) = parse_state_marker_at(rest) {
+                indices.push(next_idx);
+                rest = &rest[consumed..];
+            }
+            let changes: Vec<AppliedStateChange> = indices
+                .iter()
+                .filter_map(|i| state_changes.get(*i as usize).cloned())
+                .collect();
+            nodes.push(render_inline_state_capsules(&changes));
+        } else {
+            rest = remainder;
+        }
+    }
+    let trimmed_rest = rest.trim();
+    if !trimmed_rest.is_empty() {
+        nodes.push(render_message_content(trimmed_rest));
+    }
+    html! { <>{ for nodes }</> }
+}
+
+fn next_state_marker(rest: &str) -> Option<(usize, &'static str)> {
+    rest.find(PROSE_STATE_MARKER_OPEN)
+        .map(|idx| (idx, PROSE_STATE_MARKER_OPEN))
+}
+
+fn parse_state_marker_at(s: &str) -> Option<(i64, usize)> {
+    let leading_ws = s.len() - s.trim_start().len();
+    let trimmed = s.trim_start();
+    if !trimmed.starts_with(PROSE_STATE_MARKER_OPEN) {
+        return None;
+    }
+    let after_open = &trimmed[PROSE_STATE_MARKER_OPEN.len()..];
+    let close_idx = after_open.find(PROSE_INLINE_MARKER_CLOSE)?;
+    let index: i64 = after_open[..close_idx].trim().parse().ok()?;
+    let consumed =
+        leading_ws + PROSE_STATE_MARKER_OPEN.len() + close_idx + PROSE_INLINE_MARKER_CLOSE.len();
+    Some((index, consumed))
 }
 
 #[derive(Properties, PartialEq)]

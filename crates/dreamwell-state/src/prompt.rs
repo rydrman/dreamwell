@@ -48,7 +48,7 @@ GOOD:
 
 pub const STATE_CHANGE_RULES: &str = concat!(
     r#"State change rules:
-- kind: measurement|condition|variable|sequence; op: set|add|remove|setmin|setmax|step
+- kind: measurement|condition|variable|sequence; op: set|add|remove|setmin|setmax|step (replace is accepted as an alias for set)
 - One atomic scalar per (target, key) — keys are unique per target regardless of kind
 - Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
 - value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"
@@ -61,7 +61,7 @@ pub const STATE_CHANGE_RULES: &str = concat!(
 pub const STATE_CHANGE_PROMPT: &str = concat!(
     r#"State change rules:
 - target: "pc" for the player character, "world" for global scope, or a named NPC
-- kind: measurement|condition|variable|sequence; op: set|add|remove|setmin|setmax|step
+- kind: measurement|condition|variable|sequence; op: set|add|remove|setmin|setmax|step (replace is accepted as an alias for set)
 - One atomic scalar per (target, key) — keys are unique per target regardless of kind
 - Use short snake_case keys for the attribute (shirt_color, location, mood) — not composite blobs (clothing_state, character_info)
 - value is only the attribute's current value ("green", "tavern") — not "Ryan's shirt is green"

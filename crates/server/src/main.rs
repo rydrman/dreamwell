@@ -1,6 +1,7 @@
 mod build_info;
 mod character_import;
 mod chat_prompts;
+mod chat_prose_agent;
 mod chat_state;
 mod config;
 mod db;

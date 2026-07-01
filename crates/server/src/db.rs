@@ -1163,6 +1163,21 @@ pub async fn save_message_plan(
     Ok(())
 }
 
+pub async fn update_message_state_changes(
+    pool: &SqlitePool,
+    message_id: i64,
+    state_changes: &[AppliedStateChange],
+) -> AppResult<()> {
+    let changes_json = serde_json::to_string(state_changes)
+        .map_err(|e| AppError::internal(format!("serialize state_changes: {e}")))?;
+    sqlx::query("UPDATE messages SET state_changes = ?1 WHERE id = ?2")
+        .bind(changes_json)
+        .bind(message_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn finalize_message_typed_generation(
     pool: &SqlitePool,
