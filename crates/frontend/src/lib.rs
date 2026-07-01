@@ -2,6 +2,7 @@ mod api;
 mod app_sync;
 mod auth;
 mod auto_grow;
+mod build_info;
 mod chat_sync;
 mod dice_ui;
 mod game_create_ui;
@@ -32,6 +33,7 @@ mod thought_ui;
 mod title_editor;
 mod variables;
 mod variables_ui;
+mod version_watch;
 mod view_scroll;
 
 use std::cell::RefCell;
@@ -773,6 +775,10 @@ fn app() -> Html {
 
     {
         use_effect_with((), move |_| app_sync::install_lifecycle());
+    }
+
+    {
+        use_effect_with((), move |_| version_watch::install());
     }
 
     let load_messages_for_chat = {

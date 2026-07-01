@@ -128,7 +128,7 @@ pub fn bottom_nav(props: &BottomNavProps) -> Html {
 
 #[function_component(BuildInfo)]
 fn build_info() -> Html {
-    let sha = option_env!("GIT_SHA").unwrap_or("dev");
+    let sha = crate::build_info::GIT_SHA;
     let short = &sha[..sha.len().min(7)];
     html! {
         <span class="mode-bar-version muted" title={format!("Build {sha}")}>{ short }</span>

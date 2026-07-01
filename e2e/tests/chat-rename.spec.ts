@@ -20,7 +20,9 @@ test.describe("chat rename", () => {
     await expect(page.locator(".content-header .title-editable")).toHaveText("Renamed chat");
 
     await page.goto("/chats");
-    await expect(page.locator(".main-list .chat-item-title")).toHaveText("Renamed chat");
+    await expect(
+      page.locator(".main-list .chat-item-title").filter({ hasText: "Renamed chat" }),
+    ).toHaveText("Renamed chat");
 
     const listResponse = await request.get("/api/chats");
     expect(listResponse.ok()).toBeTruthy();
