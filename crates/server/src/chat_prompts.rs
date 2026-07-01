@@ -1,4 +1,4 @@
-use dreamwell_state::{plan_schema, CHARACTER_ACTION_RULES, PLAN_BEAT_RULES, STATE_CHANGE_PROMPT};
+use dreamwell_state::{beats_only_plan_schema, CHARACTER_ACTION_RULES, PLAN_BEAT_RULES};
 use dreamwell_types::{Character, MacroContext, Settings};
 use serde_json::json;
 
@@ -12,11 +12,10 @@ const PLAN_SYSTEM: &str = r#"You plan the assistant's next reply before prose is
 
 Given the conversation — especially the latest user message — output JSON with:
 - reply_beats: short, specific bullet points this reply must cover (in order)
-- state_changes: leave as an empty array — durable state is updated via tools during the prose pass
 
 Plan ONLY the single assistant message that directly follows the latest user turn. Beats must be concrete to this turn, not generic chat patterns.
 
-Do not write the final reply prose in this step — beats only."#;
+Do not write the final reply prose in this step — beats only. Do not output state_changes; durable state is updated via tools during the prose pass."#;
 
 const PROSE_SYSTEM: &str = r#"You write the assistant's reply as natural prose.
 
@@ -35,7 +34,7 @@ Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
 - Quote string values that contain spaces or commas: call:set_variable{target:world,key:location,value:"tavern common room"}"#;
 
 pub fn chat_plan_schema() -> serde_json::Value {
-    plan_schema("reply_beats")
+    beats_only_plan_schema("reply_beats")
 }
 
 pub async fn build_plan_messages(
@@ -115,7 +114,7 @@ pub async fn build_plan_messages(
     Ok(vec![
         json!({
             "role": "system",
-            "content": format!("{PLAN_SYSTEM}\n\n{PLAN_BEAT_RULES}\n\n{STATE_CHANGE_PROMPT}"),
+            "content": format!("{PLAN_SYSTEM}\n\n{PLAN_BEAT_RULES}"),
         }),
         json!({
             "role": "user",
@@ -201,7 +200,7 @@ mod tests {
     #[test]
     fn plan_system_includes_specific_beat_rules() {
         assert!(PLAN_SYSTEM.contains("specific"));
-        assert!(PLAN_SYSTEM.contains("empty array"));
+        assert!(PLAN_SYSTEM.contains("Do not output state_changes"));
         assert!(PLAN_BEAT_RULES.contains("too generic"));
         assert!(PLAN_BEAT_RULES.contains("Describe how nervous Maya looks"));
     }

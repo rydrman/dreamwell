@@ -747,7 +747,22 @@ async fn list_turns(pool: &SqlitePool, game_id: i64) -> AppResult<Vec<GameTurn>>
 
 async fn turn_generation_error(pool: &SqlitePool, turn_id: i64) -> AppResult<Option<String>> {
     Ok(sqlx::query_scalar::<_, String>(
-        "SELECT error FROM generation_jobs WHERE turn_id = ?1 AND status = 'failed' AND error IS NOT NULL ORDER BY completed_at DESC LIMIT 1",
+        "SELECT gj.error FROM generation_jobs gj
+         WHERE gj.turn_id = ?1
+           AND gj.status = 'failed'
+           AND gj.error IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM generation_jobs active
+             WHERE active.turn_id = ?1
+               AND active.status IN ('queued', 'running')
+           )
+           AND gj.id = (
+             SELECT terminal.id FROM generation_jobs terminal
+             WHERE terminal.turn_id = ?1
+               AND terminal.status IN ('completed', 'failed')
+             ORDER BY terminal.completed_at DESC
+             LIMIT 1
+           )",
     )
     .bind(turn_id)
     .fetch_optional(pool)
