@@ -673,11 +673,29 @@ pub async fn list_active_jobs_for_chat(pool: &SqlitePool, chat_id: i64) -> AppRe
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
+const MESSAGE_GENERATION_ERROR_SUBQUERY: &str = r#"
+(SELECT gj.error FROM generation_jobs gj
+ WHERE gj.message_id = m.id
+   AND gj.status = 'failed'
+   AND gj.error IS NOT NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM generation_jobs active
+     WHERE active.message_id = m.id
+       AND active.status IN ('queued', 'running')
+   )
+   AND gj.id = (
+     SELECT terminal.id FROM generation_jobs terminal
+     WHERE terminal.message_id = m.id
+       AND terminal.status IN ('completed', 'failed')
+     ORDER BY terminal.completed_at DESC
+     LIMIT 1
+   ))"#;
+
 pub async fn list_messages(pool: &SqlitePool, chat_id: i64) -> AppResult<Vec<Message>> {
     let _ = get_chat(pool, chat_id).await?;
-    let rows = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.reply_beats, m.state_changes, m.generation_phase, m.is_summary, m.in_summary, m.created_at, m.generation_notice, j.status as job_status, (SELECT gj.error FROM generation_jobs gj WHERE gj.message_id = m.id AND gj.status = 'failed' ORDER BY gj.completed_at DESC LIMIT 1) as generation_error FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
-    )
+    let rows = sqlx::query_as::<_, MessageRow>(&format!(
+        "SELECT m.id, m.chat_id, m.role, m.content, m.thought_content, m.thought_duration_ms, m.thought_in_progress, m.variable_updates, m.reply_beats, m.state_changes, m.generation_phase, m.is_summary, m.in_summary, m.created_at, m.generation_notice, j.status as job_status, {MESSAGE_GENERATION_ERROR_SUBQUERY} as generation_error FROM messages m LEFT JOIN generation_jobs j ON j.id = (SELECT id FROM generation_jobs WHERE message_id = m.id AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1) WHERE m.chat_id = ?1 ORDER BY m.created_at ASC",
+    ))
     .bind(chat_id)
     .fetch_all(pool)
     .await?;
@@ -2589,6 +2607,78 @@ mod generation_failure_tests {
             .await
             .expect("message");
         assert_eq!(message.content, "[Generation failed: timeout]");
+    }
+
+    #[tokio::test]
+    async fn stale_generation_error_clears_after_later_success() {
+        let pool = test_pool().await;
+        let character_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO characters (name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at) VALUES ('c','','','','','','',datetime('now'),datetime('now')) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("character");
+        let chat_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO chats (title, character_id, summary, created_at, updated_at) VALUES ('t', ?1, '', datetime('now'), datetime('now')) RETURNING id",
+        )
+        .bind(character_id)
+        .fetch_one(&pool)
+        .await
+        .expect("chat");
+        let message_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO messages (chat_id, role, content, is_summary, created_at) VALUES (?1, 'assistant', 'Recovered reply', 0, datetime('now')) RETURNING id",
+        )
+        .bind(chat_id)
+        .fetch_one(&pool)
+        .await
+        .expect("message");
+
+        let failed_job_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO generation_jobs (job_type, chat_id, message_id, status, error, position, created_at, completed_at) VALUES ('chat_message', ?1, ?2, 'failed', 'JSON parse failed', 0, datetime('now'), datetime('now', '-10 seconds')) RETURNING id",
+        )
+        .bind(chat_id)
+        .bind(message_id)
+        .fetch_one(&pool)
+        .await
+        .expect("failed job");
+
+        let message = get_message(&pool, chat_id, message_id)
+            .await
+            .expect("message");
+        assert_eq!(
+            message.generation_error.as_deref(),
+            Some("JSON parse failed")
+        );
+
+        sqlx::query(
+            "INSERT INTO generation_jobs (job_type, chat_id, message_id, status, position, created_at, completed_at) VALUES ('chat_message', ?1, ?2, 'completed', 0, datetime('now'), datetime('now'))",
+        )
+        .bind(chat_id)
+        .bind(message_id)
+        .execute(&pool)
+        .await
+        .expect("completed job");
+
+        let message = get_message(&pool, chat_id, message_id)
+            .await
+            .expect("message");
+        assert!(message.generation_error.is_none());
+
+        sqlx::query(
+            "INSERT INTO generation_jobs (job_type, chat_id, message_id, status, position, created_at) VALUES ('chat_message', ?1, ?2, 'running', 0, datetime('now'))",
+        )
+        .bind(chat_id)
+        .bind(message_id)
+        .execute(&pool)
+        .await
+        .expect("running job");
+
+        let message = get_message(&pool, chat_id, message_id)
+            .await
+            .expect("message");
+        assert!(message.generation_error.is_none());
+
+        let _ = failed_job_id;
     }
 }
 
