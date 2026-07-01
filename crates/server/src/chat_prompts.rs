@@ -12,11 +12,11 @@ const PLAN_SYSTEM: &str = r#"You plan the assistant's next reply before prose is
 
 Given the conversation — especially the latest user message — output JSON with:
 - reply_beats: short, specific bullet points this reply must cover (in order)
-- state_changes: typed durable state updates that should persist after this reply
+- state_changes: leave as an empty array — durable state is updated via tools during the prose pass
 
 Plan ONLY the single assistant message that directly follows the latest user turn. Beats must be concrete to this turn, not generic chat patterns.
 
-Do not write the final reply prose in this step — beats and state only."#;
+Do not write the final reply prose in this step — beats only."#;
 
 const PROSE_SYSTEM: &str = r#"You write the assistant's reply as natural prose.
 
@@ -24,7 +24,15 @@ Rules:
 - Cover every reply beat in order — each beat should be clearly reflected in the prose
 - Beats are mandatory staging notes for THIS reply; do not substitute generic filler
 - Do not contradict established typed state
-- No JSON, no XML tags, no meta commentary — prose only"#;
+- When the narration establishes or changes durable state, call the matching state tool — the tool is the source of truth
+- DEFAULT to set_variable for durable text attributes. Use set_condition for ephemeral statuses; set_measurement for floats; set_sequence/step_sequence for ordered lists.
+- target is "pc", "world", or a named character; key is a short snake_case attribute; value is just the value, not a sentence.
+- When the user must make a choice they have not specified, call present_fork with the situation and options, then stop.
+- Plain prose and state tool calls only — no JSON, no XML tags, no meta commentary
+
+Tool call syntax (use this exact format): call:tool_name{key:value,key2:value2}
+- Do NOT use parentheses like set_variable(key="mood") — those are not parsed.
+- Quote string values that contain spaces or commas: call:set_variable{target:world,key:location,value:"tavern common room"}"#;
 
 pub fn chat_plan_schema() -> serde_json::Value {
     plan_schema("reply_beats")
@@ -193,8 +201,15 @@ mod tests {
     #[test]
     fn plan_system_includes_specific_beat_rules() {
         assert!(PLAN_SYSTEM.contains("specific"));
+        assert!(PLAN_SYSTEM.contains("empty array"));
         assert!(PLAN_BEAT_RULES.contains("too generic"));
         assert!(PLAN_BEAT_RULES.contains("Describe how nervous Maya looks"));
+    }
+
+    #[test]
+    fn prose_system_includes_state_tools() {
+        assert!(PROSE_SYSTEM.contains("set_variable"));
+        assert!(PROSE_SYSTEM.contains("present_fork"));
     }
 
     #[test]

@@ -64,8 +64,8 @@ use router::{use_router, AppRoute, Overlay, StoryNav};
 use scenario_ui::{default_game_title, game_create_from_scenario, ScenariosPage};
 use sidebar::AppSidebar;
 use state_ui::{
-    PhaseSection, PlanBeatsList, StateChangesList, StateEntriesPanel, StateEntryRow,
-    StateScopeActor,
+    render_prose_with_state_markers, PhaseSection, PlanBeatsList, StateChangesList,
+    StateEntriesPanel, StateEntryRow, StateScopeActor,
 };
 use stories_ui::StoriesShell;
 use story_save::{AutoSaveField, AutoSavePhase};
@@ -2842,6 +2842,7 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
     let generation_error = message_generation_error(&props.message);
     let failure_only = legacy_failure_only_message(&props.message);
     let show_body = !props.display_content.is_empty() && !failure_only;
+    let prose_has_inline_state = props.display_content.contains(PROSE_STATE_MARKER_OPEN);
     html! {
         <div
             id={format!("message-{}", props.message.id)}
@@ -2904,15 +2905,10 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     thought_in_progress={props.message.thought_in_progress}
                 />
             }
-            if props.message.role == MessageRole::Assistant && !props.message.state_changes.is_empty() {
-                <PhaseSection label={"State changes".to_string()} default_expanded={false}>
-                    <StateChangesList changes={props.message.state_changes.clone()} />
-                </PhaseSection>
-            }
             if props.message.role == MessageRole::Assistant && !props.message.reply_beats.is_empty() {
                 <PhaseSection
                     label={"Plan".to_string()}
-                    default_expanded={active || !show_body}
+                    default_expanded={false}
                 >
                     <PlanBeatsList beats={props.message.reply_beats.clone()} inline={true} />
                 </PhaseSection>
@@ -2959,7 +2955,11 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                 <span class="muted">{"(Empty response)"}</span>
             } else {
                 if show_body {
-                    <markdown::MemoizedMessageBody text={props.render_text.clone()} />
+                    if prose_has_inline_state {
+                        { render_prose_with_state_markers(&props.render_text, &props.message.state_changes) }
+                    } else {
+                        <markdown::MemoizedMessageBody text={props.render_text.clone()} />
+                    }
                     if streaming {
                         <span class="streaming-cursor" aria-hidden="true">{"▍"}</span>
                         <div class="message-streaming-note muted">{"Still writing…"}</div>
@@ -2971,6 +2971,16 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                         <span>{ error }</span>
                     </div>
                 }
+            }
+            if props.message.role == MessageRole::Assistant && !props.message.state_changes.is_empty() {
+                <div class="game-state-changes-bar">
+                    <PhaseSection
+                        label={format!("State changes ({})", props.message.state_changes.len())}
+                        default_expanded={false}
+                    >
+                        <StateChangesList changes={props.message.state_changes.clone()} />
+                    </PhaseSection>
+                </div>
             }
         </div>
     }

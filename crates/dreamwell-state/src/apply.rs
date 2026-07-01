@@ -884,4 +884,12 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn replace_op_deserializes_as_set() {
+        let change: StateChangeRequest =
+            serde_json::from_str(r#"{"target":"pc","kind":"variable","key":"mood","op":"replace","value":"calm"}"#)
+                .expect("replace should alias to set");
+        assert_eq!(change.op, StateOp::Set);
+    }
 }

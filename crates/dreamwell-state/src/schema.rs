@@ -9,7 +9,7 @@ pub fn state_changes_schema() -> serde_json::Value {
                 "target": { "type": "string" },
                 "kind": { "type": "string", "enum": ["measurement", "condition", "variable", "sequence"] },
                 "key": { "type": "string" },
-                "op": { "type": "string", "enum": ["set", "add", "remove", "setmin", "setmax", "step"] },
+                "op": { "type": "string", "enum": ["set", "add", "remove", "setmin", "setmax", "step", "replace"] },
                 "value": {
                     "oneOf": [
                         { "type": "string" },
