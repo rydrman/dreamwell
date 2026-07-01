@@ -16,4 +16,6 @@ pub use prompt::{
 pub use resolve::{
     normalize_target, resolve_actor_id, should_vivify_actor, skill_modifier, validate_skill,
 };
-pub use schema::{plan_schema, resolve_schema, state_changes_schema, state_recheck_schema};
+pub use schema::{
+    beats_only_plan_schema, plan_schema, resolve_schema, state_changes_schema, state_recheck_schema,
+};
