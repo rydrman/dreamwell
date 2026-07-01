@@ -47,9 +47,10 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use chat_sync::{
-    message_generation_live, messages_display_equivalent, messages_stale_vs_chat,
-    should_apply_messages_from_sse,
+    message_generation_live, messages_display_equivalent, messages_need_refetch,
+    messages_stale_vs_chat, should_apply_messages_from_sse,
 };
+use chrono::{DateTime, Utc};
 use dreamwell_types::*;
 use game_create_ui::GameCreateModal;
 use game_ui::GameShell;
@@ -354,6 +355,8 @@ fn spawn_gated_messages_fetch(
     messages: &UseStateHandle<Vec<Message>>,
     messages_loading: &UseStateHandle<bool>,
     messages_fetch_gen: &UseStateHandle<u64>,
+    messages_synced_at: &UseStateHandle<Option<DateTime<Utc>>>,
+    chat_updated_at: Option<DateTime<Utc>>,
     show_loading: bool,
 ) {
     let generation = FetchGeneration::from_raw(**messages_fetch_gen).bump();
@@ -364,16 +367,27 @@ fn spawn_gated_messages_fetch(
     let messages = messages.clone();
     let messages_loading = messages_loading.clone();
     let messages_fetch_gen = messages_fetch_gen.clone();
+    let messages_synced_at = messages_synced_at.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let result = api::get_messages(chat_id).await;
         let latest = FetchGeneration::from_raw(*messages_fetch_gen);
         if generation.is_current(latest) {
             if let Ok(msgs) = result {
                 messages.set(msgs);
+                if let Some(updated_at) = chat_updated_at {
+                    messages_synced_at.set(Some(updated_at));
+                }
             }
             messages_loading.set(false);
         }
     });
+}
+
+fn chat_updated_at_for_sync(chats: &[Chat], chat_id: i64) -> Option<DateTime<Utc>> {
+    chats
+        .iter()
+        .find(|chat| chat.id == chat_id)
+        .map(|chat| chat.updated_at)
 }
 
 #[function_component(App)]
@@ -394,6 +408,7 @@ fn app() -> Html {
     let messages = use_state(Vec::<Message>::new);
     let messages_loading = use_state(|| false);
     let messages_fetch_gen = use_state(|| 0u64);
+    let messages_synced_at = use_state(|| None::<DateTime<Utc>>);
     let settings = use_state(|| None::<Settings>);
     let queue = use_state(|| None::<QueueStatus>);
     let loading = use_state(|| true);
@@ -582,6 +597,7 @@ fn app() -> Html {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
         let messages_fetch_gen = messages_fetch_gen.clone();
+        let messages_synced_at = messages_synced_at.clone();
         let chats = chats.clone();
         let chat_stream_nudge = chat_stream_nudge.clone();
         let summarize_watch = summarize_watch.clone();
@@ -592,17 +608,22 @@ fn app() -> Html {
                 let mut stream_holder = None::<api::ChatStream>;
                 *chat_stream_nudge.borrow_mut() = None;
                 *summarize_watch.borrow_mut() = None;
+                messages_synced_at.set(None);
                 if let Some(chat_id) = *chat_id {
+                    let sync_at = chat_updated_at_for_sync(&chats, chat_id);
                     spawn_gated_messages_fetch(
                         chat_id,
                         &messages,
                         &messages_loading,
                         &messages_fetch_gen,
+                        &messages_synced_at,
+                        sync_at,
                         true,
                     );
                     let messages = messages.clone();
                     let messages_fetch_gen = messages_fetch_gen.clone();
                     let messages_loading = messages_loading.clone();
+                    let messages_synced_at = messages_synced_at.clone();
                     let chats = chats.clone();
                     let summarize_watch = summarize_watch.clone();
                     let had_active_job = Rc::new(RefCell::new(false));
@@ -638,18 +659,23 @@ fn app() -> Html {
                         if now_active {
                             *had_active_job.borrow_mut() = true;
                         }
-                        let job_just_finished = was_active && !now_active;
+                        let job_just_finished = (was_active && !now_active)
+                            || messages_stale_vs_chat(&payload.messages, &payload.chat)
+                            || messages_need_refetch(&messages, &payload.chat, *messages_synced_at);
                         update_chat_in_list(&chats, payload.chat.clone());
                         if job_just_finished {
                             if should_apply_messages_from_sse(&payload.messages, &payload.chat) {
                                 messages.set(payload.messages.clone());
                                 messages_loading.set(false);
+                                messages_synced_at.set(Some(payload.chat.updated_at));
                             }
                             spawn_gated_messages_fetch(
                                 chat_id,
                                 &messages,
                                 &messages_loading,
                                 &messages_fetch_gen,
+                                &messages_synced_at,
+                                Some(payload.chat.updated_at),
                                 false,
                             );
                             *had_active_job.borrow_mut() = false;
@@ -658,6 +684,7 @@ fn app() -> Html {
                         {
                             messages.set(payload.messages.clone());
                             messages_loading.set(false);
+                            messages_synced_at.set(Some(payload.chat.updated_at));
                         }
                     });
                     *chat_stream_nudge.borrow_mut() = Some(stream.nudge());
@@ -678,18 +705,26 @@ fn app() -> Html {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
         let messages_fetch_gen = messages_fetch_gen.clone();
+        let messages_synced_at = messages_synced_at.clone();
         let chats = chats.clone();
         use_effect_with(
-            (selected_chat_id, (*chats).clone(), (*messages).clone()),
-            move |(chat_id, chats, message_list)| {
+            (
+                selected_chat_id,
+                (*chats).clone(),
+                (*messages).clone(),
+                *messages_synced_at,
+            ),
+            move |(chat_id, chats, message_list, synced_at)| {
                 if let Some(chat_id) = *chat_id {
                     if let Some(chat) = chats.iter().find(|chat| chat.id == chat_id) {
-                        if messages_stale_vs_chat(message_list, chat) {
+                        if messages_need_refetch(message_list, chat, *synced_at) {
                             spawn_gated_messages_fetch(
                                 chat_id,
                                 &messages,
                                 &messages_loading,
                                 &messages_fetch_gen,
+                                &messages_synced_at,
+                                Some(chat.updated_at),
                                 false,
                             );
                         }
@@ -710,6 +745,7 @@ fn app() -> Html {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
         let messages_fetch_gen = messages_fetch_gen.clone();
+        let messages_synced_at = messages_synced_at.clone();
         use_effect_with((), move |_| {
             let guard = app_sync::register_scope(
                 {
@@ -722,6 +758,7 @@ fn app() -> Html {
                     let messages = messages.clone();
                     let messages_loading = messages_loading.clone();
                     let messages_fetch_gen = messages_fetch_gen.clone();
+                    let messages_synced_at = messages_synced_at.clone();
                     move |ctx| {
                         if let Some(nudge) = chat_stream_nudge.borrow().clone() {
                             if ctx.force() {
@@ -731,11 +768,14 @@ fn app() -> Html {
                             }
                         }
                         if let Some(chat_id) = chat_id_from_route(&router.route()) {
+                            let sync_at = chat_updated_at_for_sync(&chats, chat_id);
                             spawn_gated_messages_fetch(
                                 chat_id,
                                 &messages,
                                 &messages_loading,
                                 &messages_fetch_gen,
+                                &messages_synced_at,
+                                sync_at,
                                 false,
                             );
                         }
@@ -785,12 +825,17 @@ fn app() -> Html {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
         let messages_fetch_gen = messages_fetch_gen.clone();
+        let messages_synced_at = messages_synced_at.clone();
+        let chats = chats.clone();
         Callback::from(move |chat_id: i64| {
+            let sync_at = chat_updated_at_for_sync(&chats, chat_id);
             spawn_gated_messages_fetch(
                 chat_id,
                 &messages,
                 &messages_loading,
                 &messages_fetch_gen,
+                &messages_synced_at,
+                sync_at,
                 true,
             );
         })
@@ -845,6 +890,7 @@ fn app() -> Html {
         let messages = messages.clone();
         let messages_loading = messages_loading.clone();
         let messages_fetch_gen = messages_fetch_gen.clone();
+        let messages_synced_at = messages_synced_at.clone();
         use_effect_with((), move |_| {
             let queue = queue.clone();
             let chats = chats.clone();
@@ -855,6 +901,7 @@ fn app() -> Html {
             let messages = messages.clone();
             let messages_loading = messages_loading.clone();
             let messages_fetch_gen = messages_fetch_gen.clone();
+            let messages_synced_at = messages_synced_at.clone();
             let poll_ms = if notifications::is_enabled() {
                 1500
             } else {
@@ -876,6 +923,7 @@ fn app() -> Html {
                 let messages = messages.clone();
                 let messages_loading = messages_loading.clone();
                 let messages_fetch_gen = messages_fetch_gen.clone();
+                let messages_synced_at = messages_synced_at.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     let status = api::get_queue().await.ok();
                     let chat_list = api::list_chats().await.ok().map(sort_chats);
@@ -915,12 +963,14 @@ fn app() -> Html {
                     if let Some(list) = chat_list {
                         if let Some(chat_id) = view.selected_chat_id {
                             if let Some(chat) = list.iter().find(|chat| chat.id == chat_id) {
-                                if messages_stale_vs_chat(&messages, chat) {
+                                if messages_need_refetch(&messages, chat, *messages_synced_at) {
                                     spawn_gated_messages_fetch(
                                         chat_id,
                                         &messages,
                                         &messages_loading,
                                         &messages_fetch_gen,
+                                        &messages_synced_at,
+                                        Some(chat.updated_at),
                                         false,
                                     );
                                 }
@@ -1955,6 +2005,7 @@ fn app() -> Html {
                                         let messages = messages.clone();
                                         let messages_loading = messages_loading.clone();
                                         let messages_fetch_gen = messages_fetch_gen.clone();
+                                        let messages_synced_at = messages_synced_at.clone();
                                         let chats = chats.clone();
                                         let queue = queue.clone();
                                         let bump_stream = bump_stream.clone();
@@ -1962,6 +2013,7 @@ fn app() -> Html {
                                             let messages = messages.clone();
                                             let messages_loading = messages_loading.clone();
                                             let messages_fetch_gen = messages_fetch_gen.clone();
+                                            let messages_synced_at = messages_synced_at.clone();
                                             let chats = chats.clone();
                                             let queue = queue.clone();
                                             let bump_stream = bump_stream.clone();
@@ -1969,16 +2021,23 @@ fn app() -> Html {
                                                 match api::summarize_chat(chat_id).await {
                                                     Ok(_) => {
                                                         bump_stream.emit(());
+                                                        let sync_at = if let Ok(list) =
+                                                            api::list_chats().await
+                                                        {
+                                                            publish_chats(&chats, list, Some(chat_id));
+                                                            chat_updated_at_for_sync(&chats, chat_id)
+                                                        } else {
+                                                            None
+                                                        };
                                                         spawn_gated_messages_fetch(
                                                             chat_id,
                                                             &messages,
                                                             &messages_loading,
                                                             &messages_fetch_gen,
+                                                            &messages_synced_at,
+                                                            sync_at,
                                                             false,
                                                         );
-                                                        if let Ok(list) = api::list_chats().await {
-                                                            publish_chats(&chats, list, Some(chat_id));
-                                                        }
                                                         if let Ok(status) = api::get_queue().await {
                                                             queue.set(Some(status));
                                                         }
@@ -2043,6 +2102,7 @@ fn app() -> Html {
                             let messages = messages.clone();
                             let messages_loading = messages_loading.clone();
                             let messages_fetch_gen = messages_fetch_gen.clone();
+                            let messages_synced_at = messages_synced_at.clone();
                             let chats = chats.clone();
                             let queue = queue.clone();
                             let bump_stream = bump_stream.clone();
@@ -2051,6 +2111,7 @@ fn app() -> Html {
                                 let messages = messages.clone();
                                 let messages_loading = messages_loading.clone();
                                 let messages_fetch_gen = messages_fetch_gen.clone();
+                                let messages_synced_at = messages_synced_at.clone();
                                 let chats = chats.clone();
                                 let queue = queue.clone();
                                 bump_stream.emit(());
@@ -2059,6 +2120,8 @@ fn app() -> Html {
                                     &messages,
                                     &messages_loading,
                                     &messages_fetch_gen,
+                                    &messages_synced_at,
+                                    chat_updated_at_for_sync(&chats, chat_id),
                                     false,
                                 );
                                 wasm_bindgen_futures::spawn_local(async move {
@@ -2127,29 +2190,34 @@ fn app() -> Html {
                         let messages = messages.clone();
                         let messages_loading = messages_loading.clone();
                         let messages_fetch_gen = messages_fetch_gen.clone();
+                        let messages_synced_at = messages_synced_at.clone();
                         let chats = chats.clone();
                         let queue = queue.clone();
-                        let bump_stream = bump_stream.clone();
                         move |content: String| {
                             let Some(chat_id) = selected_chat_id else { return };
                             let messages = messages.clone();
                             let messages_loading = messages_loading.clone();
                             let messages_fetch_gen = messages_fetch_gen.clone();
+                            let messages_synced_at = messages_synced_at.clone();
                             let chats = chats.clone();
                             let queue = queue.clone();
-                            bump_stream.emit(());
                             wasm_bindgen_futures::spawn_local(async move {
                                 let _ = api::send_message(chat_id, &content).await;
+                                let sync_at = if let Ok(list) = api::list_chats().await {
+                                    publish_chats(&chats, list, Some(chat_id));
+                                    chat_updated_at_for_sync(&chats, chat_id)
+                                } else {
+                                    None
+                                };
                                 spawn_gated_messages_fetch(
                                     chat_id,
                                     &messages,
                                     &messages_loading,
                                     &messages_fetch_gen,
+                                    &messages_synced_at,
+                                    sync_at,
                                     false,
                                 );
-                                if let Ok(list) = api::list_chats().await {
-                                    publish_chats(&chats, list, Some(chat_id));
-                                }
                                 if let Ok(status) = api::get_queue().await {
                                     queue.set(Some(status));
                                 }

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use dreamwell_types::{Chat, JobStatus, Message};
 
 /// Whether any message still shows a queued or running generation job.
@@ -24,6 +25,37 @@ pub fn message_generation_live(chat: &Chat, messages: &[Message]) -> bool {
 /// Open-chat messages still show generation, but the sidebar row no longer has an active job.
 pub fn messages_stale_vs_chat(messages: &[Message], chat: &Chat) -> bool {
     messages_show_active_job(messages) && chat.active_job.is_none()
+}
+
+/// Whether the open chat likely has server-side messages we have not loaded yet.
+///
+/// Used on poll ticks and tab resume when generation is idle locally but the chat row
+/// was touched after our last successful sync (e.g. user sent while the tab was hidden).
+pub fn messages_need_refetch(
+    messages: &[Message],
+    chat: &Chat,
+    last_synced_chat_updated_at: Option<DateTime<Utc>>,
+) -> bool {
+    if messages_stale_vs_chat(messages, chat) {
+        return true;
+    }
+    if let Some(job) = &chat.active_job {
+        if let Some(msg_id) = job.message_id {
+            if !messages.iter().any(|message| message.id == msg_id) {
+                return true;
+            }
+        }
+        if message_generation_live(chat, messages) {
+            return false;
+        }
+    }
+    if messages_show_active_job(messages) {
+        return false;
+    }
+    match last_synced_chat_updated_at {
+        Some(synced) => chat.updated_at > synced,
+        None => chat.active_job.is_some() || chat.queued_jobs > 0,
+    }
 }
 
 /// Apply SSE message updates for live generation or benign idle snapshots.
@@ -249,5 +281,76 @@ mod tests {
         let messages = vec![assistant_message(Some(JobStatus::Running))];
         let chat = sample_chat(Some(job));
         assert!(message_generation_live(&chat, &messages));
+    }
+
+    #[test]
+    fn need_refetch_when_chat_touched_after_last_sync() {
+        let messages = vec![assistant_message(None)];
+        let mut chat = sample_chat(None);
+        let synced = chat.updated_at;
+        chat.updated_at = synced + chrono::Duration::seconds(5);
+        assert!(messages_need_refetch(&messages, &chat, Some(synced)));
+    }
+
+    #[test]
+    fn need_refetch_when_active_job_message_missing_locally() {
+        let messages = vec![assistant_message(None)];
+        let job = Job {
+            id: 1,
+            job_type: JobType::ChatMessage,
+            status: JobStatus::Running,
+            chat_id: Some(1),
+            message_id: Some(99),
+            story_id: None,
+            chapter_id: None,
+            beat_id: None,
+            game_id: None,
+            turn_id: None,
+            guidance_notes: String::new(),
+            error: None,
+            position: 0,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            generation_provider: String::new(),
+            generation_model: String::new(),
+            generation_notice: String::new(),
+        };
+        let chat = sample_chat(Some(job));
+        assert!(messages_need_refetch(
+            &messages,
+            &chat,
+            Some(chat.updated_at)
+        ));
+    }
+
+    #[test]
+    fn skip_refetch_while_generation_live() {
+        let job = Job {
+            id: 1,
+            job_type: JobType::ChatMessage,
+            status: JobStatus::Running,
+            chat_id: Some(1),
+            message_id: Some(1),
+            story_id: None,
+            chapter_id: None,
+            beat_id: None,
+            game_id: None,
+            turn_id: None,
+            guidance_notes: String::new(),
+            error: None,
+            position: 0,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            generation_provider: String::new(),
+            generation_model: String::new(),
+            generation_notice: String::new(),
+        };
+        let messages = vec![assistant_message(Some(JobStatus::Running))];
+        let mut chat = sample_chat(Some(job));
+        let synced = chat.updated_at;
+        chat.updated_at = synced + chrono::Duration::seconds(5);
+        assert!(!messages_need_refetch(&messages, &chat, Some(synced)));
     }
 }
