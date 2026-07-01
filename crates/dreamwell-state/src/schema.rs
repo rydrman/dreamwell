@@ -44,6 +44,17 @@ pub fn plan_schema(beats_field: &str) -> serde_json::Value {
     })
 }
 
+/// Plan schema with beats only — state updates happen elsewhere (e.g. prose tools).
+pub fn beats_only_plan_schema(beats_field: &str) -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            beats_field: { "type": "array", "items": { "type": "string" } }
+        },
+        "required": [beats_field]
+    })
+}
+
 pub fn resolve_schema() -> serde_json::Value {
     plan_schema("scene_beats")
 }
