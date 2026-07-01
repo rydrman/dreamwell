@@ -1636,8 +1636,6 @@ fn app() -> Html {
                 on_mode={on_mode.clone()}
                 on_open_settings={open_settings.clone()}
                 on_open_queue={open_queue.clone()}
-                on_open_characters={open_characters.clone()}
-                on_open_scenarios={open_scenarios.clone()}
             />
             if picker_open {
                 <CharacterPickerModal
