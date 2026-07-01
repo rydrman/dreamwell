@@ -91,12 +91,12 @@ impl ToolStreamJail {
         self.buffer.push_str(token);
         let mut events = Vec::new();
 
-        if only_partial_start_marker(&self.buffer, self.parser) {
+        if only_partial_start_marker(&self.buffer, self.parser, tools) {
             return Ok(events);
         }
 
-        if detect_tool_call_start(&self.buffer, self.parser).unwrap_or(false) {
-            if let Some(start) = find_tool_call_start(&self.buffer, self.parser) {
+        if detect_any_tool_call_start(&self.buffer, self.parser, tools) {
+            if let Some(start) = find_any_tool_call_start(&self.buffer, self.parser, tools) {
                 let tail = self.buffer.split_off(start);
                 if !self.buffer.is_empty() {
                     events.push(JailEvent::Prose(std::mem::take(&mut self.buffer)));
@@ -133,15 +133,19 @@ impl ToolStreamJail {
                 .await
                 .map_err(|err| AppError::inference(err.to_string()))?;
             let (calls, normal_text) = merge_with_fallback(calls, normal_text, &section, tools);
-            events.extend(tool_calls_to_events_from_calls(calls));
-            self.buffer = remainder;
-            self.state = JailState::Prose;
-            if let Some(text) = normal_text.filter(|s| !s.is_empty()) {
+            events.extend(tool_calls_to_events_from_calls(calls.clone()));
+            if let Some(text) =
+                residual_prose_after_tool_calls(&section, &calls, normal_text, tools)
+                    .filter(|s| !s.is_empty())
+            {
                 events.push(JailEvent::Prose(text));
             }
+            self.buffer = remainder;
+            self.state = JailState::Prose;
             if matches!(self.state, JailState::Prose) && !self.buffer.is_empty() {
-                if detect_tool_call_start(&self.buffer, self.parser).unwrap_or(false) {
-                    if let Some(start) = find_tool_call_start(&self.buffer, self.parser) {
+                if detect_any_tool_call_start(&self.buffer, self.parser, tools) {
+                    if let Some(start) = find_any_tool_call_start(&self.buffer, self.parser, tools)
+                    {
                         let tail = self.buffer.split_off(start);
                         if !self.buffer.is_empty() {
                             events.push(JailEvent::Prose(std::mem::take(&mut self.buffer)));
@@ -172,8 +176,10 @@ impl ToolStreamJail {
                 .await
                 .map_err(|err| AppError::inference(err.to_string()))?;
         let (calls, normal_text) = merge_with_fallback(calls, normal_text, &section, tools);
-        let mut events = tool_calls_to_events_from_calls(calls);
-        if let Some(text) = normal_text.filter(|s| !s.is_empty()) {
+        let mut events = tool_calls_to_events_from_calls(calls.clone());
+        if let Some(text) = residual_prose_after_tool_calls(&section, &calls, normal_text, tools)
+            .filter(|s| !s.is_empty())
+        {
             events.push(JailEvent::Prose(text));
         } else if events.is_empty() {
             events.push(JailEvent::Prose(section));
@@ -230,6 +236,24 @@ async fn extract_tool_calls_from_text(
     };
     let (calls, prose) = merge_with_fallback(dynamo_calls, normal_text, text, tools);
     Ok((calls, prose))
+}
+
+fn residual_prose_after_tool_calls(
+    section: &str,
+    calls: &[ToolCall],
+    normal_text: Option<String>,
+    tools: Option<&[ToolDefinition]>,
+) -> Option<String> {
+    if calls.is_empty() {
+        return normal_text;
+    }
+    let known = known_tool_names(tools);
+    let (_, cleaned) = fallback_extract_bare_calls(section, known.as_deref());
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
 }
 
 fn merge_with_fallback(
@@ -309,7 +333,7 @@ fn find_next_fallback_start(text: &str, cursor: usize, known_tools: &[&str]) -> 
 
     if let Some(rel) = slice.find(BARE_CALL_PREFIX) {
         let start = cursor + rel;
-        if is_bare_call_boundary(text, start) {
+        if is_valid_bare_call_prefix_at(text, start) {
             best = Some(start);
         }
     }
@@ -318,7 +342,7 @@ fn find_next_fallback_start(text: &str, cursor: usize, known_tools: &[&str]) -> 
         let mut search_from = 0usize;
         while let Some(rel) = slice[search_from..].find(name) {
             let start = cursor + search_from + rel;
-            if is_direct_tool_call_start(text, start, name) {
+            if is_fallback_tool_name_at(text, start, name) {
                 best = Some(best.map_or(start, |current| current.min(start)));
                 break;
             }
@@ -329,15 +353,8 @@ fn find_next_fallback_start(text: &str, cursor: usize, known_tools: &[&str]) -> 
     best
 }
 
-fn is_direct_tool_call_start(text: &str, idx: usize, name: &str) -> bool {
-    if !is_bare_call_boundary(text, idx) || !text[idx..].starts_with(name) {
-        return false;
-    }
-    let after_name = idx + name.len();
-    if text
-        .get(after_name..)
-        .is_none_or(|rest| !rest.starts_with('{'))
-    {
+fn is_fallback_tool_name_at(text: &str, idx: usize, name: &str) -> bool {
+    if !text[idx..].starts_with(name) {
         return false;
     }
     // `call:present_fork{...}` is handled by the `call:` path above.
@@ -345,7 +362,43 @@ fn is_direct_tool_call_start(text: &str, idx: usize, name: &str) -> bool {
     {
         return false;
     }
-    true
+    let after_name = &text[idx + name.len()..];
+    after_name.is_empty() || after_name.starts_with('{')
+}
+fn bare_call_tool_name_end(rest: &str) -> usize {
+    let mut end = 0usize;
+    for (i, ch) in rest.char_indices() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            end = i + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    end
+}
+
+fn is_valid_bare_call_prefix_at(text: &str, idx: usize) -> bool {
+    if !text[idx..].starts_with(BARE_CALL_PREFIX) {
+        return false;
+    }
+    // `recall:` embeds `call:` but is narration, not a tool invocation.
+    if idx >= 2 && text.get(idx - 2..idx) == Some("re") {
+        return false;
+    }
+    let rest = &text[idx + BARE_CALL_PREFIX.len()..];
+    let name_end = bare_call_tool_name_end(rest);
+    if name_end == 0 {
+        return true;
+    }
+    let name = &rest[..name_end];
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    {
+        return false;
+    }
+    let after_name = &rest[name_end..];
+    after_name.is_empty() || after_name.starts_with('{')
 }
 
 fn parse_fallback_call_at(
@@ -379,17 +432,6 @@ fn parse_direct_tool_call_at(s: &str, name: &str, index: usize) -> Option<(ToolC
         },
         name.len() + close_len,
     ))
-}
-
-fn is_bare_call_boundary(text: &str, idx: usize) -> bool {
-    if idx == 0 {
-        return true;
-    }
-    // `call:` must not be a substring of a longer token (e.g. `recall:`).
-    text[..idx]
-        .chars()
-        .last()
-        .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
 }
 
 fn parse_bare_call_at(s: &str, index: usize) -> Option<(ToolCall, usize)> {
@@ -616,11 +658,25 @@ pub fn strip_residual_call_syntax(text: &str) -> String {
     let mut rest = text;
     while let Some(rel) = rest.find(BARE_CALL_PREFIX) {
         let start = rel;
-        if !is_bare_call_boundary(rest, start) {
-            // `recall:` etc — keep up to and including this prefix, continue scanning.
-            let keep = start + BARE_CALL_PREFIX.len();
-            out.push_str(&rest[..keep]);
-            rest = &rest[keep..];
+        if !is_valid_bare_call_prefix_at(rest, start) {
+            if start >= 2 && rest.get(start - 2..start) == Some("re") {
+                let keep = start + BARE_CALL_PREFIX.len();
+                out.push_str(&rest[..keep]);
+                rest = &rest[keep..];
+            } else {
+                rest = &rest[start + BARE_CALL_PREFIX.len()..];
+                if let Some(next) = rest.find(BARE_CALL_PREFIX) {
+                    if is_valid_bare_call_prefix_at(rest, next) {
+                        rest = &rest[next..];
+                    } else {
+                        let name_end = bare_call_tool_name_end(rest);
+                        rest = &rest[name_end..];
+                    }
+                } else {
+                    let name_end = bare_call_tool_name_end(rest);
+                    rest = &rest[name_end..];
+                }
+            }
             continue;
         }
         out.push_str(&rest[..start]);
@@ -661,11 +717,50 @@ pub fn strip_residual_call_syntax(text: &str) -> String {
     out.trim().to_string()
 }
 
-fn only_partial_start_marker(buffer: &str, parser: Option<&'static str>) -> bool {
+fn detect_fallback_tool_call_start(buffer: &str, tools: Option<&[ToolDefinition]>) -> bool {
+    find_fallback_tool_call_start(buffer, tools).is_some()
+}
+
+fn find_fallback_tool_call_start(buffer: &str, tools: Option<&[ToolDefinition]>) -> Option<usize> {
+    let known = known_tool_names(tools)?;
+    find_next_fallback_start(buffer, 0, known.as_slice())
+}
+
+fn detect_any_tool_call_start(
+    buffer: &str,
+    parser: Option<&'static str>,
+    tools: Option<&[ToolDefinition]>,
+) -> bool {
+    detect_tool_call_start(buffer, parser).unwrap_or(false)
+        || detect_fallback_tool_call_start(buffer, tools)
+}
+
+fn find_any_tool_call_start(
+    buffer: &str,
+    parser: Option<&'static str>,
+    tools: Option<&[ToolDefinition]>,
+) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    if detect_tool_call_start(buffer, parser).unwrap_or(false) {
+        if let Some(start) = find_tool_call_start(buffer, parser) {
+            best = Some(start);
+        }
+    }
+    if let Some(start) = find_fallback_tool_call_start(buffer, tools) {
+        best = Some(best.map_or(start, |current| current.min(start)));
+    }
+    best
+}
+
+fn only_partial_start_marker(
+    buffer: &str,
+    parser: Option<&'static str>,
+    tools: Option<&[ToolDefinition]>,
+) -> bool {
     if buffer.is_empty() {
         return false;
     }
-    if detect_tool_call_start(buffer, parser).unwrap_or(false) {
+    if detect_any_tool_call_start(buffer, parser, tools) {
         return false;
     }
     for end in 1..=buffer.len().min(HOLDBACK_CHARS) {
@@ -673,7 +768,7 @@ fn only_partial_start_marker(buffer: &str, parser: Option<&'static str>) -> bool
         if !buffer.is_char_boundary(start) {
             continue;
         }
-        if detect_tool_call_start(&buffer[start..], parser).unwrap_or(false) {
+        if detect_any_tool_call_start(&buffer[start..], parser, tools) {
             return true;
         }
     }
@@ -684,7 +779,7 @@ fn find_tool_call_start(buffer: &str, parser: Option<&'static str>) -> Option<us
     for (idx, _) in buffer.char_indices() {
         let suffix = &buffer[idx..];
         if detect_tool_call_start(suffix, parser).unwrap_or(false)
-            && !only_partial_start_marker(suffix, parser)
+            && !only_partial_start_marker(suffix, parser, None)
         {
             return Some(idx);
         }
@@ -859,6 +954,92 @@ present_fork{situation: "The game is set up and your friends are ready.", option
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "present_fork");
         assert!(prose.is_empty());
+    }
+
+    #[test]
+    fn fallback_parses_known_tool_glued_to_prose_without_whitespace() {
+        let text = r#"Ready to begin.present_fork{situation: "The game is set up.", options: ["Go first", "Let Sophie start"]}"#;
+        let known = ["present_fork"];
+        let (calls, prose) = fallback_extract_bare_calls(text, Some(&known));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "present_fork");
+        assert_eq!(prose, "Ready to begin.");
+    }
+
+    #[test]
+    fn fallback_parses_call_prefix_glued_to_prose() {
+        let text = "You shake the die.call:roll_dice{dice_expr:1d6,label:test}";
+        let (calls, prose) = fallback_extract_bare_calls(text, None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "roll_dice");
+        assert_eq!(prose, "You shake the die.");
+    }
+
+    #[test]
+    fn strip_residual_call_syntax_strips_glued_call_prefix() {
+        let mixed = "You shake the die.call:roll_dice{dice_expr:1d6,label:test}";
+        assert_eq!(strip_residual_call_syntax(mixed), "You shake the die.");
+    }
+
+    #[tokio::test]
+    async fn jail_streams_glued_bare_tool_across_tokens() {
+        let parser = resolve_tool_parser("auto", "gemma-4-test");
+        let known = tool_definitions_from_specs(&crate::game_tools::prose_agent_tool_specs());
+        let jail = &mut ToolStreamJail::new(parser);
+        let mut events = Vec::new();
+        for token in [
+            "Ready to begin.",
+            "present_fork",
+            "{situation: Pick a path., options: [Left, Right]}",
+        ] {
+            events.extend(jail.push(token, Some(&known)).await.unwrap());
+        }
+        events.extend(jail.finish(Some(&known)).await.unwrap());
+
+        let tool_names: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                JailEvent::ToolCall(call) => Some(call.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tool_names, vec!["present_fork"]);
+        let prose: String = events
+            .iter()
+            .filter_map(|event| match event {
+                JailEvent::Prose(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(prose, "Ready to begin.");
+    }
+
+    #[tokio::test]
+    async fn jail_streams_glued_call_prefix_across_tokens() {
+        let parser = resolve_tool_parser("auto", "gemma-4-test");
+        let jail = &mut ToolStreamJail::new(parser);
+        let mut events = Vec::new();
+        for token in ["You reach.", "call:roll_dice", "{dice_expr:1d6,label:test}"] {
+            events.extend(jail.push(token, None).await.unwrap());
+        }
+        events.extend(jail.finish(None).await.unwrap());
+
+        let tool_names: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                JailEvent::ToolCall(call) => Some(call.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tool_names, vec!["roll_dice"]);
+        let prose: String = events
+            .iter()
+            .filter_map(|event| match event {
+                JailEvent::Prose(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(prose, "You reach.");
     }
 
     #[tokio::test]
