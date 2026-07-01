@@ -27,35 +27,35 @@ fn primary_mode_active(mode: AppMode, target: AppMode) -> bool {
 pub fn mode_bar(props: &ModeBarProps) -> Html {
     html! {
         <div class="mode-bar">
-            <div class="mode-bar-start">
+            <div class="mode-bar-lead">
                 <div class="mode-bar-brand">
                     <span class="mode-bar-title">{"Dreamwell"}</span>
                     <BuildInfo />
                 </div>
+                <nav class="mode-bar-primary" aria-label="Primary navigation">
+                    <button
+                        type="button"
+                        class={classes!("mode-tab", primary_mode_active(props.mode, AppMode::Chats).then_some("active"))}
+                        onclick={props.on_mode.reform(|_| AppMode::Chats)}
+                    >
+                        {"Chats"}
+                    </button>
+                    <button
+                        type="button"
+                        class={classes!("mode-tab", primary_mode_active(props.mode, AppMode::Stories).then_some("active"))}
+                        onclick={props.on_mode.reform(|_| AppMode::Stories)}
+                    >
+                        {"Stories"}
+                    </button>
+                    <button
+                        type="button"
+                        class={classes!("mode-tab", primary_mode_active(props.mode, AppMode::Game).then_some("active"))}
+                        onclick={props.on_mode.reform(|_| AppMode::Game)}
+                    >
+                        {"Games"}
+                    </button>
+                </nav>
             </div>
-            <nav class="mode-bar-primary" aria-label="Primary navigation">
-                <button
-                    type="button"
-                    class={classes!("mode-tab", primary_mode_active(props.mode, AppMode::Chats).then_some("active"))}
-                    onclick={props.on_mode.reform(|_| AppMode::Chats)}
-                >
-                    {"Chats"}
-                </button>
-                <button
-                    type="button"
-                    class={classes!("mode-tab", primary_mode_active(props.mode, AppMode::Stories).then_some("active"))}
-                    onclick={props.on_mode.reform(|_| AppMode::Stories)}
-                >
-                    {"Stories"}
-                </button>
-                <button
-                    type="button"
-                    class={classes!("mode-tab", primary_mode_active(props.mode, AppMode::Game).then_some("active"))}
-                    onclick={props.on_mode.reform(|_| AppMode::Game)}
-                >
-                    {"Games"}
-                </button>
-            </nav>
             <div class="mode-bar-actions">
                 <TopBarQueueButton
                     queue={props.queue.clone()}
