@@ -289,6 +289,13 @@ fn story_nav_from_route(route: &AppRoute) -> StoryNav {
     }
 }
 
+fn story_reading_from_route(route: &AppRoute) -> bool {
+    match route {
+        AppRoute::Stories { reading, .. } => *reading,
+        _ => false,
+    }
+}
+
 fn selection_anchor_id(selection: StorySelection) -> Option<String> {
     match selection {
         StorySelection::Closed => None,
@@ -313,6 +320,10 @@ pub struct StoriesShellProps {
     pub route: AppRoute,
     pub on_navigate: Callback<(AppRoute, bool)>,
     pub variables_enabled: bool,
+    pub archived_stories: Vec<Story>,
+    pub on_archive_story: Callback<i64>,
+    pub on_restore_story: Callback<i64>,
+    pub on_permanent_delete_story: Callback<i64>,
 }
 
 #[function_component(StoriesShell)]
@@ -420,8 +431,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                         AppRoute::Stories {
                             story_id: story_ids.first().copied(),
                             nav: StoryNav::None,
+                            reading: story_reading_from_route(route),
                             overlay: None,
-                            sidebar: false,
                         },
                         false,
                     ));
@@ -442,8 +453,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     AppRoute::Stories {
                         story_id,
                         nav,
+                        reading,
                         overlay,
-                        sidebar,
                     },
                     Some(detail),
                 ) = (route, detail.as_ref())
@@ -456,8 +467,8 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                             AppRoute::Stories {
                                 story_id: *story_id,
                                 nav: StoryNav::None,
+                                reading: *reading,
                                 overlay: *overlay,
-                                sidebar: *sidebar,
                             },
                             false,
                         ));
@@ -551,6 +562,43 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
 
     let active_story_id = selected_story_id.or_else(|| (*detail).as_ref().map(|d| d.story.id));
 
+    let refresh_stories_after_archive = {
+        let stories = stories.clone();
+        Callback::from(move |_| {
+            let stories = stories.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(list) = api::list_stories().await {
+                    stories.set(list);
+                }
+            });
+        })
+    };
+
+    let on_archive_story = {
+        let parent = props.on_archive_story.clone();
+        let refresh = refresh_stories_after_archive.clone();
+        Callback::from(move |id| {
+            parent.emit(id);
+            refresh.emit(());
+        })
+    };
+    let on_restore_story = {
+        let parent = props.on_restore_story.clone();
+        let refresh = refresh_stories_after_archive.clone();
+        Callback::from(move |id| {
+            parent.emit(id);
+            refresh.emit(());
+        })
+    };
+    let on_permanent_delete_story = {
+        let parent = props.on_permanent_delete_story.clone();
+        let refresh = refresh_stories_after_archive;
+        Callback::from(move |id| {
+            parent.emit(id);
+            refresh.emit(());
+        })
+    };
+
     let navigate_story = {
         let on_navigate = props.on_navigate.clone();
         let route = props.route.clone();
@@ -560,11 +608,35 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                 AppRoute::Stories {
                     story_id,
                     nav,
+                    reading: story_reading_from_route(&route),
                     overlay,
-                    sidebar: false,
                 },
                 true,
             ));
+        })
+    };
+
+    let on_reading_change = {
+        let on_navigate = props.on_navigate.clone();
+        let route = props.route.clone();
+        Callback::from(move |reading: bool| {
+            if let AppRoute::Stories {
+                story_id,
+                nav,
+                overlay,
+                ..
+            } = route.clone()
+            {
+                on_navigate.emit((
+                    AppRoute::Stories {
+                        story_id,
+                        nav,
+                        reading,
+                        overlay,
+                    },
+                    true,
+                ));
+            }
         })
     };
 
@@ -627,12 +699,17 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
             }
             <StoryEditor
             stories={(*stories).clone()}
+            archived_stories={props.archived_stories.clone()}
             detail={(*detail).clone()}
             detail_loading={*detail_loading}
             selection={selection}
             guidance={(*guidance).clone()}
             variables_enabled={props.variables_enabled}
+            reading={story_reading_from_route(&props.route)}
             bump_stream={bump_stream.clone()}
+            on_archive_story={on_archive_story.clone()}
+            on_restore_story={on_restore_story.clone()}
+            on_permanent_delete_story={on_permanent_delete_story.clone()}
             on_select_story={Callback::from({
                 let navigate_story = navigate_story.clone();
                 move |id| {
@@ -702,6 +779,7 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
                     }
                 }
             })}
+            on_reading_change={on_reading_change.clone()}
         />
         </>
     }
@@ -710,11 +788,13 @@ pub fn stories_shell(props: &StoriesShellProps) -> Html {
 #[derive(Properties, PartialEq)]
 struct StoryEditorProps {
     pub stories: Vec<Story>,
+    pub archived_stories: Vec<Story>,
     detail: Option<StoryDetail>,
     detail_loading: bool,
     selection: StorySelection,
     guidance: String,
     variables_enabled: bool,
+    reading: bool,
     bump_stream: Callback<()>,
     on_select_story: Callback<i64>,
     on_new_story: Callback<()>,
@@ -722,11 +802,28 @@ struct StoryEditorProps {
     on_guidance: Callback<String>,
     on_detail: Callback<StoryDetail>,
     on_selection: Callback<StorySelection>,
+    on_archive_story: Callback<i64>,
+    on_restore_story: Callback<i64>,
+    on_permanent_delete_story: Callback<i64>,
+    on_reading_change: Callback<bool>,
 }
 
 #[function_component(StoryEditor)]
 fn story_editor(props: &StoryEditorProps) -> Html {
     let view_mode = use_state(StoryViewMode::default);
+
+    {
+        let view_mode = view_mode.clone();
+        use_effect_with(props.reading, move |reading| {
+            view_mode.set(if *reading {
+                StoryViewMode::Reading
+            } else {
+                StoryViewMode::Outline
+            });
+            || ()
+        });
+    }
+
     let stale_dialog_action = use_state(|| None::<String>);
     let queueing_stale = use_state(|| false);
     let editor_ref = use_node_ref();
@@ -784,6 +881,15 @@ fn story_editor(props: &StoryEditorProps) -> Html {
             <>
                 <header class="header content-header">
                     <h1 class="header-title">{"Stories"}</h1>
+                    <div class="header-actions">
+                        <button
+                            class="btn btn-compact"
+                            title="New story"
+                            onclick={props.on_new_story.reform(|_| ())}
+                        >
+                            {"New story"}
+                        </button>
+                    </div>
                     if props.stories.is_empty() {
                         <p class="header-subtitle muted">{"Create a story to start outlining chapters and beats."}</p>
                     } else {
@@ -793,7 +899,7 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                 <div class="content-scroll">
                     if props.stories.is_empty() {
                         <div class="empty-state muted">
-                            <p>{"No stories yet. Click New story in the sidebar to create one."}</p>
+                            <p>{"No stories yet. Click New story to create one."}</p>
                             <button class="btn" style="margin-top:0.75rem;" onclick={props.on_new_story.reform(|_| ())}>
                                 {"New story"}
                             </button>
@@ -801,7 +907,11 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                     } else {
                         <StoryList
                             stories={props.stories.clone()}
+                            archived={props.archived_stories.clone()}
                             on_select={props.on_select_story.clone()}
+                            on_archive={props.on_archive_story.clone()}
+                            on_restore={props.on_restore_story.clone()}
+                            on_permanent_delete={props.on_permanent_delete_story.clone()}
                         />
                     }
                 </div>
@@ -875,8 +985,8 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                                     (*view_mode == StoryViewMode::Outline).then_some("view-mode-btn--active"),
                                 )}
                                 onclick={{
-                                    let view_mode = view_mode.clone();
-                                    Callback::from(move |_| view_mode.set(StoryViewMode::Outline))
+                                    let on_reading_change = props.on_reading_change.clone();
+                                    Callback::from(move |_| on_reading_change.emit(false))
                                 }}
                             >
                                 {"Outline"}
@@ -890,8 +1000,8 @@ fn story_editor(props: &StoryEditorProps) -> Html {
                                     (*view_mode == StoryViewMode::Reading).then_some("view-mode-btn--active"),
                                 )}
                                 onclick={{
-                                    let view_mode = view_mode.clone();
-                                    Callback::from(move |_| view_mode.set(StoryViewMode::Reading))
+                                    let on_reading_change = props.on_reading_change.clone();
+                                    Callback::from(move |_| on_reading_change.emit(true))
                                 }}
                             >
                                 {"Reading"}

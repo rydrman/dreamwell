@@ -27,34 +27,26 @@ pub enum AppRoute {
     Chats {
         chat_id: Option<i64>,
         overlay: Option<Overlay>,
-        sidebar: bool,
     },
     Stories {
         story_id: Option<i64>,
         nav: StoryNav,
+        reading: bool,
         overlay: Option<Overlay>,
-        sidebar: bool,
     },
     Games {
         game_id: Option<i64>,
         overlay: Option<Overlay>,
-        sidebar: bool,
     },
-    Queue {
-        sidebar: bool,
-    },
-    Settings {
-        sidebar: bool,
-    },
+    Queue,
+    Settings,
     Characters {
         character_id: Option<i64>,
         chat_id: Option<i64>,
-        sidebar: bool,
     },
     Scenarios {
         scenario_id: Option<i64>,
         game_id: Option<i64>,
-        sidebar: bool,
     },
 }
 
@@ -63,7 +55,6 @@ impl Default for AppRoute {
         Self::Chats {
             chat_id: None,
             overlay: None,
-            sidebar: false,
         }
     }
 }
@@ -95,80 +86,64 @@ impl AppRoute {
     #[allow(dead_code)]
     pub fn without_overlay(&self) -> Self {
         match self {
-            Self::Chats {
-                chat_id, sidebar, ..
-            } => Self::Chats {
+            Self::Chats { chat_id, .. } => Self::Chats {
                 chat_id: *chat_id,
                 overlay: None,
-                sidebar: *sidebar,
             },
             Self::Stories {
                 story_id,
                 nav,
-                sidebar,
+                reading,
                 ..
             } => Self::Stories {
                 story_id: *story_id,
                 nav: *nav,
+                reading: *reading,
                 overlay: None,
-                sidebar: *sidebar,
             },
-            Self::Games {
-                game_id, sidebar, ..
-            } => Self::Games {
+            Self::Games { game_id, .. } => Self::Games {
                 game_id: *game_id,
                 overlay: None,
-                sidebar: *sidebar,
             },
-            Self::Queue { sidebar } => Self::Queue { sidebar: *sidebar },
-            Self::Settings { sidebar } => Self::Settings { sidebar: *sidebar },
+            Self::Queue => Self::Queue,
+            Self::Settings => Self::Settings,
             Self::Characters {
                 character_id,
                 chat_id,
-                sidebar,
             } => Self::Characters {
                 character_id: *character_id,
                 chat_id: *chat_id,
-                sidebar: *sidebar,
             },
             Self::Scenarios {
                 scenario_id,
                 game_id,
-                sidebar,
             } => Self::Scenarios {
                 scenario_id: *scenario_id,
                 game_id: *game_id,
-                sidebar: *sidebar,
             },
         }
     }
 
     pub fn with_overlay(self, overlay: Overlay) -> Self {
         match self {
-            Self::Chats {
-                chat_id, sidebar, ..
-            } => Self::Chats {
+            Self::Chats { chat_id, .. } => Self::Chats {
                 chat_id,
                 overlay: Some(overlay),
-                sidebar,
             },
             Self::Stories {
                 story_id,
                 nav,
-                sidebar,
+                reading,
                 ..
             } => Self::Stories {
                 story_id,
                 nav,
+                reading,
                 overlay: Some(overlay),
-                sidebar,
             },
-            Self::Games {
-                game_id, sidebar, ..
-            } => Self::Games {
+            Self::Games { game_id, .. } => Self::Games {
                 game_id,
                 overlay: Some(overlay),
-                sidebar,
             },
             Self::Queue { .. }
             | Self::Settings { .. }
@@ -177,343 +152,111 @@ impl AppRoute {
         }
     }
 
-    pub fn with_sidebar(self, sidebar: bool) -> Self {
-        match self {
-            Self::Chats {
-                chat_id, overlay, ..
-            } => Self::Chats {
-                chat_id,
-                overlay,
-                sidebar,
-            },
-            Self::Stories {
-                story_id,
-                nav,
-                overlay,
-                ..
-            } => Self::Stories {
-                story_id,
-                nav,
-                overlay,
-                sidebar,
-            },
-            Self::Games {
-                game_id, overlay, ..
-            } => Self::Games {
-                game_id,
-                overlay,
-                sidebar,
-            },
-            Self::Queue { .. } => Self::Queue { sidebar },
-            Self::Settings { .. } => Self::Settings { sidebar },
-            Self::Characters {
-                character_id,
-                chat_id,
-                ..
-            } => Self::Characters {
-                character_id,
-                chat_id,
-                sidebar,
-            },
-            Self::Scenarios {
-                scenario_id,
-                game_id,
-                ..
-            } => Self::Scenarios {
-                scenario_id,
-                game_id,
-                sidebar,
-            },
-        }
-    }
-
     pub fn to_path(&self) -> String {
         match self {
-            Self::Chats {
-                chat_id,
+            Self::Chats { chat_id, overlay } => chats_to_path(*chat_id, *overlay),
+            Self::Stories {
+                story_id,
+                nav,
+                reading,
                 overlay,
-                sidebar,
-            } => chats_to_path(*chat_id, *overlay, *sidebar),
-            Self::Stories {
-                story_id: None,
-                nav: StoryNav::None | StoryNav::Basics,
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!("/stories/{}", overlay_segment(*overlay)),
-            Self::Stories {
-                story_id: None,
-                nav: StoryNav::None | StoryNav::Basics,
-                overlay: None,
-                sidebar: true,
-            } => "/stories/sidebar".to_string(),
-            Self::Stories {
-                story_id: None,
-                nav: StoryNav::None | StoryNav::Basics,
-                overlay: None,
-                sidebar: false,
-            } => "/stories".to_string(),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::None,
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!("/stories/{id}/{}", overlay_segment(*overlay)),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::None,
-                overlay: None,
-                sidebar: true,
-            } => format!("/stories/{id}/sidebar"),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::None,
-                overlay: None,
-                sidebar: false,
-            } => format!("/stories/{id}"),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Basics,
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!("/stories/{id}/basics/{}", overlay_segment(*overlay)),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Basics,
-                overlay: None,
-                sidebar: true,
-            } => format!("/stories/{id}/basics/sidebar"),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Basics,
-                overlay: None,
-                sidebar: false,
-            } => format!("/stories/{id}/basics"),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Chapter(chapter_id),
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!(
-                "/stories/{id}/chapters/{chapter_id}/{}",
-                overlay_segment(*overlay)
-            ),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Chapter(chapter_id),
-                overlay: None,
-                sidebar: true,
-            } => format!("/stories/{id}/chapters/{chapter_id}/sidebar"),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Chapter(chapter_id),
-                overlay: None,
-                sidebar: false,
-            } => format!("/stories/{id}/chapters/{chapter_id}"),
-            Self::Stories {
-                story_id: Some(id),
-                nav:
-                    StoryNav::Beat {
-                        chapter_id,
-                        beat_id,
-                    },
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!(
-                "/stories/{id}/chapters/{chapter_id}/beats/{beat_id}/{}",
-                overlay_segment(*overlay)
-            ),
-            Self::Stories {
-                story_id: Some(id),
-                nav:
-                    StoryNav::Beat {
-                        chapter_id,
-                        beat_id,
-                    },
-                overlay: None,
-                sidebar: true,
-            } => format!("/stories/{id}/chapters/{chapter_id}/beats/{beat_id}/sidebar"),
-            Self::Stories {
-                story_id: Some(id),
-                nav:
-                    StoryNav::Beat {
-                        chapter_id,
-                        beat_id,
-                    },
-                overlay: None,
-                sidebar: false,
-            } => format!("/stories/{id}/chapters/{chapter_id}/beats/{beat_id}"),
-            Self::Games {
-                game_id: None,
-                overlay: None,
-                sidebar: false,
-            } => "/games".to_string(),
-            Self::Games {
-                game_id: None,
-                overlay: Some(Overlay::NewGame),
-                sidebar: false,
-            } => "/games/new".to_string(),
-            Self::Games {
-                game_id: None,
-                overlay: Some(Overlay::NewGame),
-                sidebar: true,
-            } => "/games/new/sidebar".to_string(),
-            Self::Games {
-                game_id: None,
-                overlay: None,
-                sidebar: true,
-            } => "/games/sidebar".to_string(),
-            Self::Games {
-                game_id: Some(id),
-                overlay: None,
-                sidebar: false,
-            } => format!("/games/{id}"),
-            Self::Games {
-                game_id: Some(id),
-                overlay: None,
-                sidebar: true,
-            } => format!("/games/{id}/sidebar"),
-            Self::Games {
-                game_id: Some(id),
-                overlay: Some(overlay),
-                sidebar: false,
-            } => format!("/games/{id}/{}", overlay_segment(*overlay)),
-            Self::Games {
-                game_id: Some(id),
-                overlay: Some(overlay),
-                sidebar: true,
-            } => format!("/games/{id}/{}/sidebar", overlay_segment(*overlay)),
-            Self::Queue { sidebar: false } => "/queue".to_string(),
-            Self::Queue { sidebar: true } => "/queue/sidebar".to_string(),
-            Self::Settings { sidebar: false } => "/settings".to_string(),
-            Self::Settings { sidebar: true } => "/settings/sidebar".to_string(),
+            } => stories_to_path(*story_id, *nav, *reading, *overlay),
+            Self::Games { game_id, overlay } => games_to_path(*game_id, *overlay),
+            Self::Queue => "/queue".to_string(),
+            Self::Settings => "/settings".to_string(),
             Self::Characters {
-                character_id: None,
-                chat_id: None,
-                sidebar: false,
-            } => "/characters".to_string(),
-            Self::Characters {
-                character_id: None,
-                chat_id: None,
-                sidebar: true,
-            } => "/characters/sidebar".to_string(),
-            Self::Characters {
-                character_id: Some(id),
-                chat_id: None,
-                sidebar: false,
-            } => format!("/characters/{id}"),
-            Self::Characters {
-                character_id: Some(id),
-                chat_id: None,
-                sidebar: true,
-            } => format!("/characters/{id}/sidebar"),
-            Self::Characters {
-                character_id: None,
-                chat_id: Some(chat_id),
-                sidebar: false,
-            } => format!("/characters/chat/{chat_id}"),
-            Self::Characters {
-                character_id: None,
-                chat_id: Some(chat_id),
-                sidebar: true,
-            } => format!("/characters/chat/{chat_id}/sidebar"),
-            Self::Characters {
-                character_id: Some(id),
-                chat_id: Some(chat_id),
-                sidebar: false,
-            } => format!("/characters/{id}/chat/{chat_id}"),
-            Self::Characters {
-                character_id: Some(id),
-                chat_id: Some(chat_id),
-                sidebar: true,
-            } => format!("/characters/{id}/chat/{chat_id}/sidebar"),
+                character_id,
+                chat_id,
+            } => characters_to_path(*character_id, *chat_id),
             Self::Scenarios {
-                scenario_id: None,
-                game_id: None,
-                sidebar: false,
-            } => "/scenarios".to_string(),
-            Self::Scenarios {
-                scenario_id: None,
-                game_id: None,
-                sidebar: true,
-            } => "/scenarios/sidebar".to_string(),
-            Self::Scenarios {
-                scenario_id: Some(id),
-                game_id: None,
-                sidebar: false,
-            } => format!("/scenarios/{id}"),
-            Self::Scenarios {
-                scenario_id: Some(id),
-                game_id: None,
-                sidebar: true,
-            } => format!("/scenarios/{id}/sidebar"),
-            Self::Scenarios {
-                scenario_id: None,
-                game_id: Some(game_id),
-                sidebar: false,
-            } => format!("/scenarios/game/{game_id}"),
-            Self::Scenarios {
-                scenario_id: None,
-                game_id: Some(game_id),
-                sidebar: true,
-            } => format!("/scenarios/game/{game_id}/sidebar"),
-            Self::Scenarios {
-                scenario_id: Some(id),
-                game_id: Some(game_id),
-                sidebar: false,
-            } => format!("/scenarios/{id}/game/{game_id}"),
-            Self::Scenarios {
-                scenario_id: Some(id),
-                game_id: Some(game_id),
-                sidebar: true,
-            } => format!("/scenarios/{id}/game/{game_id}/sidebar"),
-            Self::Stories {
-                story_id: None,
-                nav: StoryNav::Chapter(_) | StoryNav::Beat { .. },
-                overlay: None,
-                sidebar: false,
-            } => "/stories".to_string(),
-            Self::Stories {
-                story_id: None,
-                nav: StoryNav::None | StoryNav::Basics,
-                overlay: Some(overlay),
-                sidebar: true,
-            } => format!("/stories/{}/sidebar", overlay_segment(*overlay)),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::None,
-                overlay: Some(overlay),
-                sidebar: true,
-            } => format!("/stories/{id}/{}/sidebar", overlay_segment(*overlay)),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Basics,
-                overlay: Some(overlay),
-                sidebar: true,
-            } => format!("/stories/{id}/basics/{}/sidebar", overlay_segment(*overlay)),
-            Self::Stories {
-                story_id: Some(id),
-                nav: StoryNav::Chapter(chapter_id),
-                overlay: Some(overlay),
-                sidebar: true,
-            } => format!(
-                "/stories/{id}/chapters/{chapter_id}/{}/sidebar",
-                overlay_segment(*overlay)
-            ),
-            Self::Stories {
-                story_id: Some(id),
-                nav:
-                    StoryNav::Beat {
-                        chapter_id,
-                        beat_id,
-                    },
-                overlay: Some(overlay),
-                sidebar: true,
-            } => format!(
-                "/stories/{id}/chapters/{chapter_id}/beats/{beat_id}/{}/sidebar",
-                overlay_segment(*overlay)
-            ),
-            _ => "/chats".to_string(),
+                scenario_id,
+                game_id,
+            } => scenarios_to_path(*scenario_id, *game_id),
         }
+    }
+}
+
+fn stories_to_path(
+    story_id: Option<i64>,
+    nav: StoryNav,
+    reading: bool,
+    overlay: Option<Overlay>,
+) -> String {
+    match story_id {
+        None => match overlay {
+            Some(overlay) => format!("/stories/{}", overlay_segment(overlay)),
+            None => "/stories".to_string(),
+        },
+        Some(id) => {
+            let mut parts = vec![format!("/stories/{id}")];
+            if reading {
+                parts.push("reading".to_string());
+            } else {
+                match nav {
+                    StoryNav::None => {}
+                    StoryNav::Basics => parts.push("basics".to_string()),
+                    StoryNav::Chapter(chapter_id) => {
+                        parts.push("chapters".to_string());
+                        parts.push(chapter_id.to_string());
+                    }
+                    StoryNav::Beat {
+                        chapter_id,
+                        beat_id,
+                    } => {
+                        parts.push("chapters".to_string());
+                        parts.push(chapter_id.to_string());
+                        parts.push("beats".to_string());
+                        parts.push(beat_id.to_string());
+                    }
+                }
+            }
+            if let Some(overlay) = overlay {
+                parts.push(overlay_segment(overlay).to_string());
+            }
+            parts.join("/")
+        }
+    }
+}
+
+fn games_to_path(game_id: Option<i64>, overlay: Option<Overlay>) -> String {
+    match (game_id, overlay) {
+        (None, None) => "/games".to_string(),
+        (None, Some(Overlay::NewGame)) => "/games/new".to_string(),
+        (None, Some(overlay)) => format!("/games/{}", overlay_segment(overlay)),
+        (Some(id), None) => format!("/games/{id}"),
+        (Some(id), Some(overlay)) => format!("/games/{id}/{}", overlay_segment(overlay)),
+    }
+}
+
+fn characters_to_path(character_id: Option<i64>, chat_id: Option<i64>) -> String {
+    match (character_id, chat_id) {
+        (None, None) => "/characters".to_string(),
+        (Some(id), None) => format!("/characters/{id}"),
+        (None, Some(chat_id)) => format!("/characters/chat/{chat_id}"),
+        (Some(id), Some(chat_id)) => format!("/characters/{id}/chat/{chat_id}"),
+    }
+}
+
+fn scenarios_to_path(scenario_id: Option<i64>, game_id: Option<i64>) -> String {
+    match (scenario_id, game_id) {
+        (None, None) => "/scenarios".to_string(),
+        (Some(id), None) => format!("/scenarios/{id}"),
+        (None, Some(game_id)) => format!("/scenarios/game/{game_id}"),
+        (Some(id), Some(game_id)) => format!("/scenarios/{id}/game/{game_id}"),
+    }
+}
+
+fn stories_route(
+    story_id: Option<i64>,
+    nav: StoryNav,
+    reading: bool,
+    overlay: Option<Overlay>,
+) -> AppRoute {
+    AppRoute::Stories {
+        story_id,
+        nav,
+        reading,
+        overlay,
     }
 }
 
@@ -526,29 +269,25 @@ fn overlay_segment(overlay: Overlay) -> &'static str {
     }
 }
 
-fn scenarios_route(scenario_id: Option<i64>, game_id: Option<i64>, sidebar: bool) -> AppRoute {
+fn scenarios_route(scenario_id: Option<i64>, game_id: Option<i64>) -> AppRoute {
     AppRoute::Scenarios {
         scenario_id,
         game_id,
-        sidebar,
     }
 }
 
-fn characters_route(character_id: Option<i64>, chat_id: Option<i64>, sidebar: bool) -> AppRoute {
+fn characters_route(character_id: Option<i64>, chat_id: Option<i64>) -> AppRoute {
     AppRoute::Characters {
         character_id,
         chat_id,
-        sidebar,
     }
 }
 
 fn route_if_settings(segments: &[&str]) -> Option<AppRoute> {
-    segments
-        .contains(&"settings")
-        .then_some(AppRoute::Settings { sidebar: false })
+    segments.contains(&"settings").then_some(AppRoute::Settings)
 }
 
-fn chats_to_path(chat_id: Option<i64>, overlay: Option<Overlay>, sidebar: bool) -> String {
+fn chats_to_path(chat_id: Option<i64>, overlay: Option<Overlay>) -> String {
     let base = match (chat_id, overlay) {
         (None, Some(Overlay::NewChat)) => "/chats/new".to_string(),
         (None, None) => "/chats".to_string(),
@@ -556,11 +295,7 @@ fn chats_to_path(chat_id: Option<i64>, overlay: Option<Overlay>, sidebar: bool) 
         (Some(id), None) => format!("/chats/{id}"),
         (Some(id), Some(overlay)) => format!("/chats/{id}/{}", overlay_segment(overlay)),
     };
-    if sidebar {
-        format!("{base}/sidebar")
-    } else {
-        base
-    }
+    base
 }
 
 pub fn parse_path(path: &str) -> AppRoute {
@@ -572,9 +307,7 @@ pub fn parse_path(path: &str) -> AppRoute {
 
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     match segments.first().copied() {
-        Some("settings") => AppRoute::Settings {
-            sidebar: segments.get(1) == Some(&"sidebar"),
-        },
+        Some("settings") => AppRoute::Settings,
         Some("queue") => parse_queue(&segments[1..]),
         Some("characters") => parse_characters(&segments[1..]),
         Some("scenarios") => parse_scenarios(&segments[1..]),
@@ -599,32 +332,32 @@ fn parse_overlay(value: &str) -> Option<Overlay> {
 }
 
 fn parse_scenarios(segments: &[&str]) -> AppRoute {
-    let (segments, sidebar) = strip_sidebar_suffix(segments);
+    let segments = strip_legacy_suffix(segments);
     match segments {
-        [] => scenarios_route(None, None, sidebar),
-        [id] if parse_id(id).is_some() => scenarios_route(parse_id(id), None, sidebar),
+        [] => scenarios_route(None, None),
+        [id] if parse_id(id).is_some() => scenarios_route(parse_id(id), None),
         ["game", game_id] if parse_id(game_id).is_some() => {
-            scenarios_route(None, parse_id(game_id), sidebar)
+            scenarios_route(None, parse_id(game_id))
         }
         [id, "game", game_id] if parse_id(id).is_some() && parse_id(game_id).is_some() => {
-            scenarios_route(parse_id(id), parse_id(game_id), sidebar)
+            scenarios_route(parse_id(id), parse_id(game_id))
         }
-        _ => scenarios_route(None, None, sidebar),
+        _ => scenarios_route(None, None),
     }
 }
 
 fn parse_characters(segments: &[&str]) -> AppRoute {
-    let (segments, sidebar) = strip_sidebar_suffix(segments);
+    let segments = strip_legacy_suffix(segments);
     match segments {
-        [] => characters_route(None, None, sidebar),
-        [id] if parse_id(id).is_some() => characters_route(parse_id(id), None, sidebar),
+        [] => characters_route(None, None),
+        [id] if parse_id(id).is_some() => characters_route(parse_id(id), None),
         ["chat", chat_id] if parse_id(chat_id).is_some() => {
-            characters_route(None, parse_id(chat_id), sidebar)
+            characters_route(None, parse_id(chat_id))
         }
         [id, "chat", chat_id] if parse_id(id).is_some() && parse_id(chat_id).is_some() => {
-            characters_route(parse_id(id), parse_id(chat_id), sidebar)
+            characters_route(parse_id(id), parse_id(chat_id))
         }
-        _ => characters_route(None, None, sidebar),
+        _ => characters_route(None, None),
     }
 }
 
@@ -632,65 +365,30 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
     if let Some(route) = route_if_settings(segments) {
         return route;
     }
+    let segments = strip_legacy_suffix(segments);
     match segments {
         [] => AppRoute::Chats {
             chat_id: None,
             overlay: None,
-            sidebar: false,
-        },
-        ["sidebar"] => AppRoute::Chats {
-            chat_id: None,
-            overlay: None,
-            sidebar: true,
         },
         ["new"] => AppRoute::Chats {
             chat_id: None,
             overlay: Some(Overlay::NewChat),
-            sidebar: false,
         },
-        ["new", "sidebar"] => AppRoute::Chats {
-            chat_id: None,
-            overlay: Some(Overlay::NewChat),
-            sidebar: true,
-        },
-        ["character"] => characters_route(None, None, false),
-        ["character", "sidebar"] => characters_route(None, None, true),
+        ["character"] => characters_route(None, None),
         [overlay] if parse_overlay(overlay).is_some() => AppRoute::Chats {
             chat_id: None,
             overlay: parse_overlay(overlay),
-            sidebar: false,
-        },
-        [overlay, "sidebar"] if parse_overlay(overlay).is_some() => AppRoute::Chats {
-            chat_id: None,
-            overlay: parse_overlay(overlay),
-            sidebar: true,
         },
         [id] if parse_id(id).is_some() => AppRoute::Chats {
             chat_id: parse_id(id),
             overlay: None,
-            sidebar: false,
         },
-        [id, "sidebar"] if parse_id(id).is_some() => AppRoute::Chats {
-            chat_id: parse_id(id),
-            overlay: None,
-            sidebar: true,
-        },
-        [id, "character"] if parse_id(id).is_some() => characters_route(None, parse_id(id), false),
-        [id, "character", "sidebar"] if parse_id(id).is_some() => {
-            characters_route(None, parse_id(id), true)
-        }
+        [id, "character"] if parse_id(id).is_some() => characters_route(None, parse_id(id)),
         [id, overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
             AppRoute::Chats {
                 chat_id: parse_id(id),
                 overlay: parse_overlay(overlay),
-                sidebar: false,
-            }
-        }
-        [id, overlay, "sidebar"] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
-            AppRoute::Chats {
-                chat_id: parse_id(id),
-                overlay: parse_overlay(overlay),
-                sidebar: true,
             }
         }
         _ => AppRoute::default(),
@@ -698,40 +396,31 @@ fn parse_chats(segments: &[&str]) -> AppRoute {
 }
 
 fn parse_games(segments: &[&str]) -> AppRoute {
-    let (segments, sidebar) = strip_sidebar_suffix(segments);
+    let segments = strip_legacy_suffix(segments);
     match segments {
         [] => AppRoute::Games {
             game_id: None,
             overlay: None,
-            sidebar,
         },
-        ["scenario"] => scenarios_route(None, None, false),
-        ["scenario", "sidebar"] => scenarios_route(None, None, true),
+        ["scenario"] => scenarios_route(None, None),
         ["new"] => AppRoute::Games {
             game_id: None,
             overlay: Some(Overlay::NewGame),
-            sidebar,
         },
         [id] if parse_id(id).is_some() => AppRoute::Games {
             game_id: parse_id(id),
             overlay: None,
-            sidebar,
         },
-        [id, "scenario"] if parse_id(id).is_some() => scenarios_route(None, parse_id(id), false),
-        [id, "scenario", "sidebar"] if parse_id(id).is_some() => {
-            scenarios_route(None, parse_id(id), true)
-        }
+        [id, "scenario"] if parse_id(id).is_some() => scenarios_route(None, parse_id(id)),
         [id, overlay] if parse_id(id).is_some() && parse_game_overlay(overlay).is_some() => {
             AppRoute::Games {
                 game_id: parse_id(id),
                 overlay: parse_game_overlay(overlay),
-                sidebar,
             }
         }
         _ => AppRoute::Games {
             game_id: None,
             overlay: None,
-            sidebar: false,
         },
     }
 }
@@ -744,11 +433,11 @@ fn parse_game_overlay(value: &str) -> Option<Overlay> {
     }
 }
 
-fn strip_sidebar_suffix<'a>(segments: &'a [&'a str]) -> (&'a [&'a str], bool) {
+fn strip_legacy_suffix<'a>(segments: &'a [&'a str]) -> &'a [&'a str] {
     if segments.last() == Some(&"sidebar") {
-        (&segments[..segments.len() - 1], true)
+        &segments[..segments.len() - 1]
     } else {
-        (segments, false)
+        segments
     }
 }
 
@@ -756,210 +445,94 @@ fn parse_stories(segments: &[&str]) -> AppRoute {
     if let Some(route) = route_if_settings(segments) {
         return route;
     }
+    let segments = strip_legacy_suffix(segments);
     match segments {
-        [] => AppRoute::Stories {
-            story_id: None,
-            nav: StoryNav::None,
-            overlay: None,
-            sidebar: false,
-        },
-        ["sidebar"] => AppRoute::Stories {
-            story_id: None,
-            nav: StoryNav::None,
-            overlay: None,
-            sidebar: true,
-        },
-        ["character"] => characters_route(None, None, false),
-        ["character", "sidebar"] => characters_route(None, None, true),
-        [overlay] if parse_overlay(overlay).is_some() => AppRoute::Stories {
-            story_id: None,
-            nav: StoryNav::None,
-            overlay: parse_overlay(overlay),
-            sidebar: false,
-        },
-        [id] if parse_id(id).is_some() => AppRoute::Stories {
-            story_id: parse_id(id),
-            nav: StoryNav::None,
-            overlay: None,
-            sidebar: false,
-        },
-        [id, "sidebar"] if parse_id(id).is_some() => AppRoute::Stories {
-            story_id: parse_id(id),
-            nav: StoryNav::None,
-            overlay: None,
-            sidebar: true,
-        },
-        [id, "character"] if parse_id(id).is_some() => characters_route(None, parse_id(id), false),
-        [id, "character", "sidebar"] if parse_id(id).is_some() => {
-            characters_route(None, parse_id(id), true)
+        [] => stories_route(None, StoryNav::None, false, None),
+        ["character"] => characters_route(None, None),
+        [overlay] if parse_overlay(overlay).is_some() => {
+            stories_route(None, StoryNav::None, false, parse_overlay(overlay))
         }
-        [id, overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::None,
-                overlay: parse_overlay(overlay),
-                sidebar: false,
-            }
+        [id, rest @ ..] if parse_id(id).is_some() => {
+            parse_story_detail(parse_id(id).unwrap(), rest)
         }
-        [id, overlay, "sidebar"] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::None,
-                overlay: parse_overlay(overlay),
-                sidebar: true,
-            }
-        }
-        [id, "basics"] if parse_id(id).is_some() => AppRoute::Stories {
-            story_id: parse_id(id),
-            nav: StoryNav::Basics,
-            overlay: None,
-            sidebar: false,
-        },
-        [id, "basics", "sidebar"] if parse_id(id).is_some() => AppRoute::Stories {
-            story_id: parse_id(id),
-            nav: StoryNav::Basics,
-            overlay: None,
-            sidebar: true,
-        },
-        [id, "basics", overlay] if parse_id(id).is_some() && parse_overlay(overlay).is_some() => {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Basics,
-                overlay: parse_overlay(overlay),
-                sidebar: false,
-            }
-        }
-        [id, "basics", overlay, "sidebar"]
-            if parse_id(id).is_some() && parse_overlay(overlay).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Basics,
-                overlay: parse_overlay(overlay),
-                sidebar: true,
-            }
-        }
-        [id, "chapters", chapter_id]
-            if parse_id(id).is_some() && parse_id(chapter_id).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Chapter(parse_id(chapter_id).unwrap()),
-                overlay: None,
-                sidebar: false,
-            }
-        }
-        [id, "chapters", chapter_id, "sidebar"]
-            if parse_id(id).is_some() && parse_id(chapter_id).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Chapter(parse_id(chapter_id).unwrap()),
-                overlay: None,
-                sidebar: true,
-            }
-        }
-        [id, "chapters", chapter_id, overlay]
-            if parse_id(id).is_some()
-                && parse_id(chapter_id).is_some()
-                && parse_overlay(overlay).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Chapter(parse_id(chapter_id).unwrap()),
-                overlay: parse_overlay(overlay),
-                sidebar: false,
-            }
-        }
-        [id, "chapters", chapter_id, overlay, "sidebar"]
-            if parse_id(id).is_some()
-                && parse_id(chapter_id).is_some()
-                && parse_overlay(overlay).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Chapter(parse_id(chapter_id).unwrap()),
-                overlay: parse_overlay(overlay),
-                sidebar: true,
-            }
-        }
-        [id, "chapters", chapter_id, "beats", beat_id]
-            if parse_id(id).is_some()
-                && parse_id(chapter_id).is_some()
-                && parse_id(beat_id).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Beat {
-                    chapter_id: parse_id(chapter_id).unwrap(),
-                    beat_id: parse_id(beat_id).unwrap(),
-                },
-                overlay: None,
-                sidebar: false,
-            }
-        }
-        [id, "chapters", chapter_id, "beats", beat_id, "sidebar"]
-            if parse_id(id).is_some()
-                && parse_id(chapter_id).is_some()
-                && parse_id(beat_id).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Beat {
-                    chapter_id: parse_id(chapter_id).unwrap(),
-                    beat_id: parse_id(beat_id).unwrap(),
-                },
-                overlay: None,
-                sidebar: true,
-            }
-        }
-        [id, "chapters", chapter_id, "beats", beat_id, overlay]
-            if parse_id(id).is_some()
-                && parse_id(chapter_id).is_some()
-                && parse_id(beat_id).is_some()
-                && parse_overlay(overlay).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Beat {
-                    chapter_id: parse_id(chapter_id).unwrap(),
-                    beat_id: parse_id(beat_id).unwrap(),
-                },
-                overlay: parse_overlay(overlay),
-                sidebar: false,
-            }
-        }
-        [id, "chapters", chapter_id, "beats", beat_id, overlay, "sidebar"]
-            if parse_id(id).is_some()
-                && parse_id(chapter_id).is_some()
-                && parse_id(beat_id).is_some()
-                && parse_overlay(overlay).is_some() =>
-        {
-            AppRoute::Stories {
-                story_id: parse_id(id),
-                nav: StoryNav::Beat {
-                    chapter_id: parse_id(chapter_id).unwrap(),
-                    beat_id: parse_id(beat_id).unwrap(),
-                },
-                overlay: parse_overlay(overlay),
-                sidebar: true,
-            }
-        }
-        _ => AppRoute::Stories {
-            story_id: None,
-            nav: StoryNav::None,
-            overlay: None,
-            sidebar: false,
-        },
+        _ => stories_route(None, StoryNav::None, false, None),
     }
+}
+
+fn parse_story_detail(story_id: i64, segments: &[&str]) -> AppRoute {
+    if segments.is_empty() {
+        return stories_route(Some(story_id), StoryNav::None, false, None);
+    }
+    if segments[0] == "character" {
+        return characters_route(None, Some(story_id));
+    }
+    let (segments, reading) = if segments[0] == "reading" {
+        (&segments[1..], true)
+    } else {
+        (segments, false)
+    };
+    if segments.is_empty() {
+        return stories_route(Some(story_id), StoryNav::None, reading, None);
+    }
+    if let Some(overlay) = parse_overlay(segments.last().copied().unwrap_or("")) {
+        if segments.len() == 1 {
+            return stories_route(Some(story_id), StoryNav::None, reading, Some(overlay));
+        }
+        if segments.len() == 2 && parse_overlay(segments[1]).is_some() {
+            return stories_route(Some(story_id), StoryNav::None, reading, Some(overlay));
+        }
+    }
+    if segments == ["basics"] {
+        return stories_route(Some(story_id), StoryNav::Basics, reading, None);
+    }
+    if segments.len() == 2 && segments[0] == "basics" {
+        if let Some(overlay) = parse_overlay(segments[1]) {
+            return stories_route(Some(story_id), StoryNav::Basics, reading, Some(overlay));
+        }
+    }
+    if segments.len() >= 2 && segments[0] == "chapters" {
+        if let Some(chapter_id) = parse_id(segments[1]) {
+            if segments.len() == 2 {
+                return stories_route(Some(story_id), StoryNav::Chapter(chapter_id), reading, None);
+            }
+            if segments.len() == 3 {
+                if let Some(overlay) = parse_overlay(segments[2]) {
+                    return stories_route(
+                        Some(story_id),
+                        StoryNav::Chapter(chapter_id),
+                        reading,
+                        Some(overlay),
+                    );
+                }
+            }
+            if segments.len() >= 4 && segments[2] == "beats" {
+                if let Some(beat_id) = parse_id(segments[3]) {
+                    let overlay = segments.get(4).and_then(|s| parse_overlay(s));
+                    return stories_route(
+                        Some(story_id),
+                        StoryNav::Beat {
+                            chapter_id,
+                            beat_id,
+                        },
+                        reading,
+                        overlay,
+                    );
+                }
+            }
+        }
+    }
+    if let Some(overlay) = parse_overlay(segments[0]) {
+        return stories_route(Some(story_id), StoryNav::None, reading, Some(overlay));
+    }
+    stories_route(Some(story_id), StoryNav::None, reading, None)
 }
 
 fn parse_queue(segments: &[&str]) -> AppRoute {
     if let Some(route) = route_if_settings(segments) {
         return route;
     }
-    let sidebar = segments == ["sidebar"];
-    AppRoute::Queue { sidebar }
+    let _ = strip_legacy_suffix(segments);
+    AppRoute::Queue
 }
 
 pub fn current_route() -> AppRoute {
@@ -1063,47 +636,38 @@ mod tests {
             AppRoute::Chats {
                 chat_id: None,
                 overlay: None,
-                sidebar: false,
             },
             AppRoute::Chats {
                 chat_id: Some(42),
                 overlay: None,
-                sidebar: false,
             },
             AppRoute::Chats {
                 chat_id: Some(42),
                 overlay: Some(Overlay::Variables),
-                sidebar: false,
             },
             AppRoute::Chats {
                 chat_id: None,
                 overlay: Some(Overlay::NewChat),
-                sidebar: false,
             },
             AppRoute::Chats {
                 chat_id: Some(7),
                 overlay: None,
-                sidebar: true,
             },
             AppRoute::Characters {
                 character_id: None,
                 chat_id: None,
-                sidebar: false,
             },
             AppRoute::Characters {
                 character_id: Some(5),
                 chat_id: None,
-                sidebar: false,
             },
             AppRoute::Characters {
                 character_id: None,
                 chat_id: Some(42),
-                sidebar: false,
             },
             AppRoute::Characters {
                 character_id: Some(5),
                 chat_id: Some(42),
-                sidebar: false,
             },
         ];
         for route in routes {
@@ -1118,20 +682,20 @@ mod tests {
             AppRoute::Stories {
                 story_id: Some(3),
                 nav: StoryNav::None,
+                reading: false,
                 overlay: None,
-                sidebar: false,
             },
             AppRoute::Stories {
                 story_id: Some(3),
                 nav: StoryNav::Basics,
+                reading: false,
                 overlay: None,
-                sidebar: false,
             },
             AppRoute::Stories {
                 story_id: Some(3),
                 nav: StoryNav::Chapter(9),
+                reading: false,
                 overlay: None,
-                sidebar: false,
             },
             AppRoute::Stories {
                 story_id: Some(3),
@@ -1139,20 +703,20 @@ mod tests {
                     chapter_id: 9,
                     beat_id: 12,
                 },
+                reading: false,
                 overlay: Some(Overlay::Variables),
-                sidebar: true,
             },
             AppRoute::Stories {
                 story_id: Some(3),
-                nav: StoryNav::Chapter(9),
-                overlay: Some(Overlay::Variables),
-                sidebar: true,
-            },
-            AppRoute::Stories {
-                story_id: Some(3),
-                nav: StoryNav::Basics,
+                nav: StoryNav::None,
+                reading: true,
                 overlay: None,
-                sidebar: true,
+            },
+            AppRoute::Stories {
+                story_id: Some(3),
+                nav: StoryNav::None,
+                reading: true,
+                overlay: Some(Overlay::Variables),
             },
         ];
         for route in routes {
@@ -1167,37 +731,30 @@ mod tests {
             AppRoute::Games {
                 game_id: None,
                 overlay: None,
-                sidebar: false,
             },
             AppRoute::Games {
                 game_id: None,
                 overlay: None,
-                sidebar: true,
             },
             AppRoute::Games {
                 game_id: None,
                 overlay: Some(Overlay::NewGame),
-                sidebar: false,
             },
             AppRoute::Games {
                 game_id: Some(7),
                 overlay: None,
-                sidebar: false,
             },
             AppRoute::Games {
                 game_id: Some(7),
                 overlay: None,
-                sidebar: true,
             },
             AppRoute::Games {
                 game_id: Some(7),
                 overlay: Some(Overlay::State),
-                sidebar: false,
             },
             AppRoute::Games {
                 game_id: Some(7),
                 overlay: Some(Overlay::State),
-                sidebar: true,
             },
         ];
         for route in routes {
@@ -1212,22 +769,18 @@ mod tests {
             AppRoute::Scenarios {
                 scenario_id: None,
                 game_id: None,
-                sidebar: false,
             },
             AppRoute::Scenarios {
                 scenario_id: Some(4),
                 game_id: None,
-                sidebar: false,
             },
             AppRoute::Scenarios {
                 scenario_id: None,
                 game_id: Some(9),
-                sidebar: true,
             },
             AppRoute::Scenarios {
                 scenario_id: Some(4),
                 game_id: Some(9),
-                sidebar: true,
             },
         ];
         for route in routes {
@@ -1238,19 +791,15 @@ mod tests {
 
     #[test]
     fn round_trip_queue() {
-        let routes = [
-            AppRoute::Queue { sidebar: false },
-            AppRoute::Queue { sidebar: true },
-        ];
-        for route in routes {
-            let path = route.to_path();
-            assert_eq!(parse_path(&path), route, "path: {path}");
-        }
+        let route = AppRoute::Queue;
+        let path = route.to_path();
+        assert_eq!(parse_path(&path), route, "path: {path}");
+        assert_eq!(parse_path("/queue/sidebar"), route);
     }
 
     #[test]
     fn round_trip_settings() {
-        let route = AppRoute::Settings { sidebar: false };
+        let route = AppRoute::Settings;
         let path = route.to_path();
         assert_eq!(parse_path(&path), route, "path: {path}");
     }
@@ -1263,7 +812,6 @@ mod tests {
                 AppRoute::Characters {
                     character_id: None,
                     chat_id: None,
-                    sidebar: false,
                 },
             ),
             (
@@ -1271,7 +819,6 @@ mod tests {
                 AppRoute::Characters {
                     character_id: None,
                     chat_id: Some(42),
-                    sidebar: false,
                 },
             ),
             (
@@ -1279,7 +826,6 @@ mod tests {
                 AppRoute::Characters {
                     character_id: None,
                     chat_id: None,
-                    sidebar: false,
                 },
             ),
         ];
@@ -1298,11 +844,7 @@ mod tests {
             "/stories/3/basics/settings",
         ];
         for path in legacy {
-            assert_eq!(
-                parse_path(path),
-                AppRoute::Settings { sidebar: false },
-                "path: {path}"
-            );
+            assert_eq!(parse_path(path), AppRoute::Settings, "path: {path}");
         }
     }
 }

@@ -466,6 +466,7 @@ pub async fn delete_variable(chat_id: i64, variable_id: i64) -> Result<(), Strin
     .await
 }
 
+#[allow(dead_code)]
 pub async fn get_health() -> Result<HealthResponse, String> {
     json(api_request("GET", "/api/health")).await
 }
@@ -909,6 +910,7 @@ pub async fn list_archived_games() -> Result<Vec<Game>, String> {
     json(api_request("GET", "/api/games/archived")).await
 }
 
+#[allow(dead_code)]
 pub async fn import_game_draft(file: &web_sys::File) -> Result<ImportGameDraftResponse, String> {
     let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
     form.append_with_blob("file", file)

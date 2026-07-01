@@ -14,6 +14,7 @@ mod install;
 mod item_list;
 mod markdown;
 mod message_menu;
+mod nav_ui;
 mod notifications;
 mod queue_ui;
 mod resume_policy;
@@ -21,7 +22,6 @@ mod router;
 mod scenario_editors;
 mod scenario_state_ui;
 mod scenario_ui;
-mod sidebar;
 mod sse_client;
 mod state_ui;
 mod stories_ui;
@@ -59,10 +59,10 @@ use gloo_timers::callback::Timeout;
 use install::InstallSettings;
 use item_list::ChatList;
 use message_menu::MessageOptionsMenu;
-use queue_ui::{AppMode, QueueBar, QueuePage, TopBarQueueButton};
+use nav_ui::{BottomNav, ModeBar};
+use queue_ui::{AppMode, QueueBar, QueuePage};
 use router::{use_router, AppRoute, Overlay, StoryNav};
 use scenario_ui::{default_game_title, game_create_from_scenario, ScenariosPage};
-use sidebar::AppSidebar;
 use state_ui::{
     render_prose_with_state_markers, PhaseSection, PlanBeatsList, StateChangesList,
     StateEntriesPanel, StateEntryRow, StateScopeActor,
@@ -80,7 +80,7 @@ use variables_ui::{
     VariableRowModel, MANUAL_MESSAGE_SOURCE,
 };
 use view_scroll::{
-    mobile_scroll_chrome_active, scroll_content_view_to_bottom, update_mobile_sidebar_inset,
+    mobile_scroll_chrome_active, scroll_content_view_to_bottom, update_mobile_chrome_inset,
     window_scroll_y,
 };
 use web_sys::{HtmlElement, HtmlInputElement};
@@ -146,17 +146,11 @@ fn resolve_characters_selected_id(
     })
 }
 
-fn sidebar_open_from_route(route: &AppRoute) -> bool {
-    matches!(
-        route,
-        AppRoute::Chats { sidebar: true, .. }
-            | AppRoute::Stories { sidebar: true, .. }
-            | AppRoute::Games { sidebar: true, .. }
-            | AppRoute::Queue { sidebar: true }
-            | AppRoute::Settings { sidebar: true }
-            | AppRoute::Characters { sidebar: true, .. }
-            | AppRoute::Scenarios { sidebar: true, .. }
-    )
+fn reading_from_route(route: &AppRoute) -> bool {
+    match route {
+        AppRoute::Stories { reading, .. } => *reading,
+        _ => false,
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -407,6 +401,21 @@ fn app() -> Html {
     let summarize_watch = use_mut_ref(|| None::<i64>);
     let job_tracker = use_mut_ref(notifications::JobCompletionTracker::new);
     let installed = use_state(install::is_installed);
+    let last_primary_route = use_state(AppRoute::default);
+
+    {
+        let last_primary_route = last_primary_route.clone();
+        let route = route.clone();
+        use_effect_with(route.clone(), move |route| {
+            match route.mode() {
+                AppMode::Chats | AppMode::Stories | AppMode::Game => {
+                    last_primary_route.set(route.clone());
+                }
+                _ => {}
+            }
+            || ()
+        });
+    }
 
     {
         let installed = installed.clone();
@@ -550,13 +559,11 @@ fn app() -> Html {
                         AppRoute::Chats {
                             chat_id: Some(id),
                             overlay,
-                            sidebar,
                         } if !chat_list.iter().any(|c| c.id == id) => {
                             router.navigate(
                                 AppRoute::Chats {
                                     chat_id: chat_list.first().map(|c| c.id),
                                     overlay,
-                                    sidebar,
                                 },
                                 false,
                             );
@@ -796,7 +803,6 @@ fn app() -> Html {
                             AppRoute::Chats {
                                 chat_id: Some(chat_id),
                                 overlay: None,
-                                sidebar: false,
                             },
                             true,
                         );
@@ -810,8 +816,8 @@ fn app() -> Html {
                             AppRoute::Stories {
                                 story_id: Some(story_id),
                                 nav: StoryNav::None,
+                                reading: false,
                                 overlay: None,
-                                sidebar: false,
                             },
                             true,
                         );
@@ -930,12 +936,12 @@ fn app() -> Html {
 
     let open_queue = {
         let navigate = navigate.clone();
-        Callback::from(move |_| navigate.emit((AppRoute::Queue { sidebar: false }, true)))
+        Callback::from(move |_| navigate.emit((AppRoute::Queue, true)))
     };
 
     let open_settings = {
         let navigate = navigate.clone();
-        Callback::from(move |_| navigate.emit((AppRoute::Settings { sidebar: false }, true)))
+        Callback::from(move |_| navigate.emit((AppRoute::Settings, true)))
     };
 
     let open_characters = {
@@ -945,7 +951,6 @@ fn app() -> Html {
                 AppRoute::Characters {
                     character_id: None,
                     chat_id: None,
-                    sidebar: false,
                 },
                 true,
             ))
@@ -959,7 +964,6 @@ fn app() -> Html {
                 AppRoute::Characters {
                     character_id,
                     chat_id: Some(chat_id),
-                    sidebar: false,
                 },
                 true,
             ))
@@ -973,7 +977,6 @@ fn app() -> Html {
                 AppRoute::Scenarios {
                     scenario_id: None,
                     game_id: None,
-                    sidebar: false,
                 },
                 true,
             ))
@@ -987,27 +990,9 @@ fn app() -> Html {
                 AppRoute::Scenarios {
                     scenario_id,
                     game_id: Some(game_id),
-                    sidebar: false,
                 },
                 true,
             ))
-        })
-    };
-
-    let toggle_sidebar = {
-        let navigate = navigate.clone();
-        let route = route.clone();
-        Callback::from(move |_| {
-            let open = sidebar_open_from_route(&route);
-            navigate.emit((route.clone().with_sidebar(!open), true));
-        })
-    };
-
-    let close_sidebar = {
-        let navigate = navigate.clone();
-        let route = route.clone();
-        Callback::from(move |_| {
-            navigate.emit((route.clone().with_sidebar(false), false));
         })
     };
 
@@ -1036,7 +1021,6 @@ fn app() -> Html {
                 AppMode::Chats => AppRoute::Chats {
                     chat_id: chat_id_from_route(&route),
                     overlay: None,
-                    sidebar: false,
                 },
                 AppMode::Stories => AppRoute::Stories {
                     story_id: story_id_from_route(&route),
@@ -1044,25 +1028,22 @@ fn app() -> Html {
                         AppRoute::Stories { nav, .. } => *nav,
                         _ => StoryNav::None,
                     },
+                    reading: reading_from_route(&route),
                     overlay: None,
-                    sidebar: false,
                 },
                 AppMode::Game => AppRoute::Games {
                     game_id: game_id_from_route(&route),
                     overlay: None,
-                    sidebar: false,
                 },
-                AppMode::Queue => AppRoute::Queue { sidebar: false },
-                AppMode::Settings => AppRoute::Settings { sidebar: false },
+                AppMode::Queue => AppRoute::Queue,
+                AppMode::Settings => AppRoute::Settings,
                 AppMode::Characters => AppRoute::Characters {
                     character_id: None,
                     chat_id: None,
-                    sidebar: false,
                 },
                 AppMode::Scenarios => AppRoute::Scenarios {
                     scenario_id: None,
                     game_id: None,
-                    sidebar: false,
                 },
             };
             navigate.emit((next, true));
@@ -1088,7 +1069,6 @@ fn app() -> Html {
                             AppRoute::Chats {
                                 chat_id: Some(chat.id),
                                 overlay: None,
-                                sidebar: false,
                             },
                             true,
                         ));
@@ -1128,7 +1108,6 @@ fn app() -> Html {
                             AppRoute::Games {
                                 game_id: Some(detail.game.id),
                                 overlay: None,
-                                sidebar: false,
                             },
                             true,
                         ));
@@ -1160,7 +1139,6 @@ fn app() -> Html {
                             AppRoute::Games {
                                 game_id: Some(detail.game.id),
                                 overlay: None,
-                                sidebar: false,
                             },
                             true,
                         ));
@@ -1216,12 +1194,12 @@ fn app() -> Html {
                 let app_layout_ref = app_layout_ref.clone();
                 let last_scroll_y = Rc::new(RefCell::new(window_scroll_y()));
 
-                let sync_sidebar_inset = {
+                let sync_chrome_inset = {
                     let app_layout_ref = app_layout_ref.clone();
                     let mobile_chrome_visible = mobile_chrome_visible.clone();
                     Rc::new(move || {
                         if let Some(layout) = app_layout_ref.cast::<HtmlElement>() {
-                            update_mobile_sidebar_inset(
+                            update_mobile_chrome_inset(
                                 &layout,
                                 mode,
                                 scroll_chrome,
@@ -1233,7 +1211,7 @@ fn app() -> Html {
                 };
 
                 let scroll_callback = Closure::wrap(Box::new({
-                    let sync_sidebar_inset = sync_sidebar_inset.clone();
+                    let sync_chrome_inset = sync_chrome_inset.clone();
                     let mobile_chrome_visible = mobile_chrome_visible.clone();
                     let last_scroll_y = last_scroll_y.clone();
                     move |_event: web_sys::Event| {
@@ -1250,13 +1228,13 @@ fn app() -> Html {
                             }
                             *last = current;
                         }
-                        sync_sidebar_inset();
+                        sync_chrome_inset();
                     }
                 }) as Box<dyn FnMut(_)>);
 
                 let resize_callback = Closure::wrap(Box::new({
-                    let sync_sidebar_inset = sync_sidebar_inset.clone();
-                    move |_event: web_sys::Event| sync_sidebar_inset()
+                    let sync_chrome_inset = sync_chrome_inset.clone();
+                    move |_event: web_sys::Event| sync_chrome_inset()
                 }) as Box<dyn FnMut(_)>);
 
                 let window = web_sys::window();
@@ -1271,7 +1249,7 @@ fn app() -> Html {
                     );
                 }
 
-                let sync = sync_sidebar_inset.clone();
+                let sync = sync_chrome_inset.clone();
                 Timeout::new(0, move || sync()).forget();
 
                 move || {
@@ -1307,7 +1285,7 @@ fn app() -> Html {
                 let scroll_chrome = *scroll_chrome;
                 let chrome_visible = *chrome_visible;
                 if let Some(layout) = app_layout_ref.cast::<HtmlElement>() {
-                    update_mobile_sidebar_inset(
+                    update_mobile_chrome_inset(
                         &layout,
                         mode,
                         scroll_chrome,
@@ -1318,7 +1296,7 @@ fn app() -> Html {
                 let app_layout_ref = app_layout_ref.clone();
                 Timeout::new(0, move || {
                     if let Some(layout) = app_layout_ref.cast::<HtmlElement>() {
-                        update_mobile_sidebar_inset(
+                        update_mobile_chrome_inset(
                             &layout,
                             mode,
                             scroll_chrome,
@@ -1333,7 +1311,6 @@ fn app() -> Html {
         );
     }
 
-    let sidebar_open = sidebar_open_from_route(&route);
     let overlay = route.overlay();
     let picker_open = overlay == Some(Overlay::NewChat);
     let game_create_open = overlay == Some(Overlay::NewGame);
@@ -1356,6 +1333,294 @@ fn app() -> Html {
         })
     };
 
+    let navigate_to_last_primary = {
+        let navigate = navigate.clone();
+        let last_primary_route = last_primary_route.clone();
+        Callback::from(move |_| navigate.emit(((*last_primary_route).clone(), true)))
+    };
+
+    let characters_on_back = {
+        let navigate = navigate.clone();
+        let last_primary_route = last_primary_route.clone();
+        Callback::from(move |_| {
+            if let Some(chat_id) = characters_chat_id {
+                navigate.emit((
+                    AppRoute::Chats {
+                        chat_id: Some(chat_id),
+                        overlay: None,
+                    },
+                    true,
+                ));
+            } else {
+                navigate.emit(((*last_primary_route).clone(), true));
+            }
+        })
+    };
+
+    let scenarios_on_back = {
+        let navigate = navigate.clone();
+        Callback::from(move |_| {
+            navigate.emit((
+                AppRoute::Games {
+                    game_id: None,
+                    overlay: None,
+                },
+                true,
+            ))
+        })
+    };
+
+    let open_new_chat = {
+        let navigate = navigate.clone();
+        let route = route.clone();
+        Callback::from(move |_| {
+            let next = AppRoute::Chats {
+                chat_id: chat_id_from_route(&route),
+                overlay: Some(Overlay::NewChat),
+            };
+            navigate.emit((next, true));
+        })
+    };
+
+    let archive_chat = Callback::from({
+        let chats = chats.clone();
+        let archived_chats = archived_chats.clone();
+        let navigate = navigate.clone();
+        let route = route.clone();
+        move |id| {
+            let chats = chats.clone();
+            let archived_chats = archived_chats.clone();
+            let navigate = navigate.clone();
+            let route = route.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = api::archive_chat(id).await;
+                if let Ok(list) = api::list_chats().await {
+                    let list = sort_chats(list);
+                    if chat_id_from_route(&route) == Some(id) {
+                        navigate.emit((
+                            AppRoute::Chats {
+                                chat_id: list.first().map(|c| c.id),
+                                overlay: None,
+                            },
+                            false,
+                        ));
+                    }
+                    publish_chats(&chats, list, None);
+                }
+                if let Ok(list) = api::list_archived_chats().await {
+                    publish_archived_chats(&archived_chats, list);
+                }
+            });
+        }
+    });
+
+    let restore_chat = Callback::from({
+        let chats = chats.clone();
+        let archived_chats = archived_chats.clone();
+        let navigate = navigate.clone();
+        move |id| {
+            let chats = chats.clone();
+            let archived_chats = archived_chats.clone();
+            let navigate = navigate.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::restore_chat(id).await.is_ok() {
+                    if let Ok(list) = api::list_chats().await {
+                        publish_chats(&chats, list, Some(id));
+                    }
+                    if let Ok(list) = api::list_archived_chats().await {
+                        publish_archived_chats(&archived_chats, list);
+                    }
+                    navigate.emit((
+                        AppRoute::Chats {
+                            chat_id: Some(id),
+                            overlay: None,
+                        },
+                        true,
+                    ));
+                }
+            });
+        }
+    });
+
+    let permanent_delete_chat = Callback::from({
+        let archived_chats = archived_chats.clone();
+        move |id| {
+            let archived_chats = archived_chats.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if !confirm_permanent_chat_delete() {
+                    return;
+                }
+                let _ = api::permanently_delete_chat(id).await;
+                if let Ok(list) = api::list_archived_chats().await {
+                    publish_archived_chats(&archived_chats, list);
+                }
+            });
+        }
+    });
+
+    let archive_story = Callback::from({
+        let stories = stories.clone();
+        let archived_stories = archived_stories.clone();
+        let navigate = navigate.clone();
+        let route = route.clone();
+        move |id| {
+            let stories = stories.clone();
+            let archived_stories = archived_stories.clone();
+            let navigate = navigate.clone();
+            let route = route.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = api::archive_story(id).await;
+                if let Ok(list) = api::list_stories().await {
+                    if story_id_from_route(&route) == Some(id) {
+                        navigate.emit((
+                            AppRoute::Stories {
+                                story_id: list.first().map(|s| s.id),
+                                nav: StoryNav::None,
+                                reading: reading_from_route(&route),
+                                overlay: None,
+                            },
+                            false,
+                        ));
+                    }
+                    stories.set(list);
+                }
+                if let Ok(list) = api::list_archived_stories().await {
+                    publish_archived_stories(&archived_stories, list);
+                }
+            });
+        }
+    });
+
+    let restore_story = Callback::from({
+        let stories = stories.clone();
+        let archived_stories = archived_stories.clone();
+        let navigate = navigate.clone();
+        move |id| {
+            let stories = stories.clone();
+            let archived_stories = archived_stories.clone();
+            let navigate = navigate.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::restore_story(id).await.is_ok() {
+                    if let Ok(list) = api::list_stories().await {
+                        stories.set(list);
+                    }
+                    if let Ok(list) = api::list_archived_stories().await {
+                        publish_archived_stories(&archived_stories, list);
+                    }
+                    navigate.emit((
+                        AppRoute::Stories {
+                            story_id: Some(id),
+                            nav: StoryNav::None,
+                            reading: false,
+                            overlay: None,
+                        },
+                        true,
+                    ));
+                }
+            });
+        }
+    });
+
+    let permanent_delete_story = Callback::from({
+        let archived_stories = archived_stories.clone();
+        move |id| {
+            let archived_stories = archived_stories.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if !confirm_permanent_story_delete() {
+                    return;
+                }
+                let _ = api::permanently_delete_story(id).await;
+                if let Ok(list) = api::list_archived_stories().await {
+                    publish_archived_stories(&archived_stories, list);
+                }
+            });
+        }
+    });
+
+    let archive_game = Callback::from({
+        let games = games.clone();
+        let archived_games = archived_games.clone();
+        let navigate = navigate.clone();
+        let route = route.clone();
+        move |id| {
+            let games = games.clone();
+            let archived_games = archived_games.clone();
+            let navigate = navigate.clone();
+            let route = route.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = api::archive_game(id).await;
+                if let Ok(list) = api::list_games().await {
+                    if game_id_from_route(&route) == Some(id) {
+                        navigate.emit((
+                            AppRoute::Games {
+                                game_id: list.first().map(|g| g.id),
+                                overlay: None,
+                            },
+                            false,
+                        ));
+                    }
+                    games.set(list);
+                }
+                if let Ok(list) = api::list_archived_games().await {
+                    publish_archived_games(&archived_games, list);
+                }
+            });
+        }
+    });
+
+    let restore_game = Callback::from({
+        let games = games.clone();
+        let archived_games = archived_games.clone();
+        let navigate = navigate.clone();
+        move |id| {
+            let games = games.clone();
+            let archived_games = archived_games.clone();
+            let navigate = navigate.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::restore_game(id).await.is_ok() {
+                    if let Ok(list) = api::list_games().await {
+                        games.set(list);
+                    }
+                    if let Ok(list) = api::list_archived_games().await {
+                        publish_archived_games(&archived_games, list);
+                    }
+                    navigate.emit((
+                        AppRoute::Games {
+                            game_id: Some(id),
+                            overlay: None,
+                        },
+                        true,
+                    ));
+                }
+            });
+        }
+    });
+
+    let permanent_delete_game = Callback::from({
+        let archived_games = archived_games.clone();
+        move |id| {
+            let archived_games = archived_games.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if !confirm_permanent_game_delete() {
+                    return;
+                }
+                let _ = api::permanently_delete_game(id).await;
+                if let Ok(list) = api::list_archived_games().await {
+                    publish_archived_games(&archived_games, list);
+                }
+            });
+        }
+    });
+
+    let start_game_from_modal = Callback::from({
+        let start_game = start_game.clone();
+        let close_overlay = close_overlay.clone();
+        move |scenario: Scenario| {
+            close_overlay.emit(());
+            start_game.emit(scenario);
+        }
+    });
+
     html! {
         <div
             ref={app_layout_ref}
@@ -1368,9 +1633,7 @@ fn app() -> Html {
             <ModeBar
                 mode={mode}
                 queue={(*queue).clone()}
-                on_toggle_sidebar={toggle_sidebar.clone()}
-                show_sidebar_toggle={true}
-                sidebar_open={sidebar_open}
+                on_mode={on_mode.clone()}
                 on_open_settings={open_settings.clone()}
                 on_open_queue={open_queue.clone()}
                 on_open_characters={open_characters.clone()}
@@ -1390,9 +1653,9 @@ fn app() -> Html {
             }
             if game_create_open {
                 <GameCreateModal
-                    characters={(*characters).clone()}
                     on_close={close_overlay.clone()}
-                    on_create={create_game.clone()}
+                    on_start={start_game_from_modal.clone()}
+                    on_open_scenarios={open_scenarios.clone()}
                 />
             }
             if let Some(scenario) = (*setup_scenario).clone() {
@@ -1414,356 +1677,12 @@ fn app() -> Html {
                     on_messages_changed={load_messages_for_chat.clone()}
                 />
             }
-            if sidebar_open {
-                <div class="drawer-backdrop" onclick={close_sidebar.clone()} />
-            }
-            <div class={classes!(
-                "app-shell",
-                sidebar_open.then_some("pane-sidebar"),
-            )}>
-            <AppSidebar
-                mode={mode}
-                chats={(*chats).clone()}
-                archived_chats={(*archived_chats).clone()}
-                stories={(*stories).clone()}
-                archived_stories={(*archived_stories).clone()}
-                games={(*games).clone()}
-                archived_games={(*archived_games).clone()}
-                selected_chat_id={selected_chat_id}
-                selected_story_id={story_id_from_route(&route)}
-                selected_game_id={game_id_from_route(&route)}
-                on_mode={on_mode.clone()}
-                on_select_chat={Callback::from({
-                    let navigate = navigate.clone();
-                    let load_messages_for_chat = load_messages_for_chat.clone();
-                    move |id| {
-                        navigate.emit((
-                            AppRoute::Chats {
-                                chat_id: Some(id),
-                                overlay: None,
-                                sidebar: false,
-                            },
-                            true,
-                        ));
-                        load_messages_for_chat.emit(id);
-                    }
-                })}
-                on_new_chat={Callback::from({
-                    let navigate = navigate.clone();
-                    let route = route.clone();
-                    move |_| {
-                        let next = AppRoute::Chats {
-                            chat_id: chat_id_from_route(&route),
-                            overlay: Some(Overlay::NewChat),
-                            sidebar: false,
-                        };
-                        navigate.emit((next, true));
-                    }
-                })}
-                on_archive_chat={Callback::from({
-                    let chats = chats.clone();
-                    let archived_chats = archived_chats.clone();
-                    let navigate = navigate.clone();
-                    let route = route.clone();
-                    move |id| {
-                        let chats = chats.clone();
-                        let archived_chats = archived_chats.clone();
-                        let navigate = navigate.clone();
-                        let route = route.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::archive_chat(id).await;
-                            if let Ok(list) = api::list_chats().await {
-                                let list = sort_chats(list);
-                                if chat_id_from_route(&route) == Some(id) {
-                                    navigate.emit((
-                                        AppRoute::Chats {
-                                            chat_id: list.first().map(|c| c.id),
-                                            overlay: None,
-                                            sidebar: false,
-                                        },
-                                        false,
-                                    ));
-                                }
-                                publish_chats(&chats, list, None);
-                            }
-                            if let Ok(list) = api::list_archived_chats().await {
-                                publish_archived_chats(&archived_chats, list);
-                            }
-                        });
-                    }
-                })}
-                on_restore_chat={Callback::from({
-                    let chats = chats.clone();
-                    let archived_chats = archived_chats.clone();
-                    let navigate = navigate.clone();
-                    move |id| {
-                        let chats = chats.clone();
-                        let archived_chats = archived_chats.clone();
-                        let navigate = navigate.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if api::restore_chat(id).await.is_ok() {
-                                if let Ok(list) = api::list_chats().await {
-                                    publish_chats(&chats, list, Some(id));
-                                }
-                                if let Ok(list) = api::list_archived_chats().await {
-                                    publish_archived_chats(&archived_chats, list);
-                                }
-                                navigate.emit((
-                                    AppRoute::Chats {
-                                        chat_id: Some(id),
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            }
-                        });
-                    }
-                })}
-                on_permanent_delete_chat={Callback::from({
-                    let archived_chats = archived_chats.clone();
-                    move |id| {
-                        let archived_chats = archived_chats.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if !confirm_permanent_chat_delete() {
-                                return;
-                            }
-                            let _ = api::permanently_delete_chat(id).await;
-                            if let Ok(list) = api::list_archived_chats().await {
-                                publish_archived_chats(&archived_chats, list);
-                            }
-                        });
-                    }
-                })}
-                on_select_story={Callback::from({
-                    let navigate = navigate.clone();
-                    move |id| {
-                        navigate.emit((
-                            AppRoute::Stories {
-                                story_id: Some(id),
-                                nav: StoryNav::None,
-                                overlay: None,
-                                sidebar: false,
-                            },
-                            true,
-                        ));
-                    }
-                })}
-                on_new_story={Callback::from({
-                    let stories = stories.clone();
-                    let navigate = navigate.clone();
-                    move |_| {
-                        let stories = stories.clone();
-                        let navigate = navigate.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let payload = StoryCreate {
-                                title: format!("Story {}", stories.len() + 1),
-                                ..Default::default()
-                            };
-                            if let Ok(d) = api::create_story(&payload).await {
-                                if let Ok(list) = api::list_stories().await {
-                                    stories.set(list);
-                                }
-                                navigate.emit((
-                                    AppRoute::Stories {
-                                        story_id: Some(d.story.id),
-                                        nav: StoryNav::Basics,
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            }
-                        });
-                    }
-                })}
-                on_open_characters={open_characters.clone()}
-                on_archive_story={Callback::from({
-                    let stories = stories.clone();
-                    let archived_stories = archived_stories.clone();
-                    let navigate = navigate.clone();
-                    let route = route.clone();
-                    move |id| {
-                        let stories = stories.clone();
-                        let archived_stories = archived_stories.clone();
-                        let navigate = navigate.clone();
-                        let route = route.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::archive_story(id).await;
-                            if let Ok(list) = api::list_stories().await {
-                                if story_id_from_route(&route) == Some(id) {
-                                    navigate.emit((
-                                        AppRoute::Stories {
-                                            story_id: list.first().map(|s| s.id),
-                                            nav: StoryNav::None,
-                                            overlay: None,
-                                            sidebar: false,
-                                        },
-                                        false,
-                                    ));
-                                }
-                                stories.set(list);
-                            }
-                            if let Ok(list) = api::list_archived_stories().await {
-                                publish_archived_stories(&archived_stories, list);
-                            }
-                        });
-                    }
-                })}
-                on_restore_story={Callback::from({
-                    let stories = stories.clone();
-                    let archived_stories = archived_stories.clone();
-                    let navigate = navigate.clone();
-                    move |id| {
-                        let stories = stories.clone();
-                        let archived_stories = archived_stories.clone();
-                        let navigate = navigate.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if api::restore_story(id).await.is_ok() {
-                                if let Ok(list) = api::list_stories().await {
-                                    stories.set(list);
-                                }
-                                if let Ok(list) = api::list_archived_stories().await {
-                                    publish_archived_stories(&archived_stories, list);
-                                }
-                                navigate.emit((
-                                    AppRoute::Stories {
-                                        story_id: Some(id),
-                                        nav: StoryNav::None,
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            }
-                        });
-                    }
-                })}
-                on_permanent_delete_story={Callback::from({
-                    let archived_stories = archived_stories.clone();
-                    move |id| {
-                        let archived_stories = archived_stories.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if !confirm_permanent_story_delete() {
-                                return;
-                            }
-                            let _ = api::permanently_delete_story(id).await;
-                            if let Ok(list) = api::list_archived_stories().await {
-                                publish_archived_stories(&archived_stories, list);
-                            }
-                        });
-                    }
-                })}
-                on_select_game={Callback::from({
-                    let navigate = navigate.clone();
-                    move |id| {
-                        navigate.emit((
-                            AppRoute::Games {
-                                game_id: Some(id),
-                                overlay: None,
-                                sidebar: false,
-                            },
-                            true,
-                        ));
-                    }
-                })}
-                on_open_scenarios={open_scenarios.clone()}
-                on_new_game={Callback::from({
-                    let navigate = navigate.clone();
-                    let route = route.clone();
-                    move |_| {
-                        let next = AppRoute::Games {
-                            game_id: game_id_from_route(&route),
-                            overlay: Some(Overlay::NewGame),
-                            sidebar: false,
-                        };
-                        navigate.emit((next, true));
-                    }
-                })}
-                on_archive_game={Callback::from({
-                    let games = games.clone();
-                    let archived_games = archived_games.clone();
-                    let navigate = navigate.clone();
-                    let route = route.clone();
-                    move |id| {
-                        let games = games.clone();
-                        let archived_games = archived_games.clone();
-                        let navigate = navigate.clone();
-                        let route = route.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let _ = api::archive_game(id).await;
-                            if let Ok(list) = api::list_games().await {
-                                if game_id_from_route(&route) == Some(id) {
-                                    navigate.emit((
-                                        AppRoute::Games {
-                                            game_id: list.first().map(|g| g.id),
-                                            overlay: None,
-                                            sidebar: false,
-                                        },
-                                        false,
-                                    ));
-                                }
-                                games.set(list);
-                            }
-                            if let Ok(list) = api::list_archived_games().await {
-                                publish_archived_games(&archived_games, list);
-                            }
-                        });
-                    }
-                })}
-                on_restore_game={Callback::from({
-                    let games = games.clone();
-                    let archived_games = archived_games.clone();
-                    let navigate = navigate.clone();
-                    move |id| {
-                        let games = games.clone();
-                        let archived_games = archived_games.clone();
-                        let navigate = navigate.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if api::restore_game(id).await.is_ok() {
-                                if let Ok(list) = api::list_games().await {
-                                    games.set(list);
-                                }
-                                if let Ok(list) = api::list_archived_games().await {
-                                    publish_archived_games(&archived_games, list);
-                                }
-                                navigate.emit((
-                                    AppRoute::Games {
-                                        game_id: Some(id),
-                                        overlay: None,
-                                        sidebar: false,
-                                    },
-                                    true,
-                                ));
-                            }
-                        });
-                    }
-                })}
-                on_permanent_delete_game={Callback::from({
-                    let archived_games = archived_games.clone();
-                    move |id| {
-                        let archived_games = archived_games.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if !confirm_permanent_game_delete() {
-                                return;
-                            }
-                            let _ = api::permanently_delete_game(id).await;
-                            if let Ok(list) = api::list_archived_games().await {
-                                publish_archived_games(&archived_games, list);
-                            }
-                        });
-                    }
-                })}
-            />
             <main class="main">
                 <QueueBar queue={(*queue).clone()} on_open={open_queue.clone()} />
                 if mode == AppMode::Queue {
                     <QueuePage
                         queue={(*queue).clone()}
-                        on_back={Callback::from({
-                            let router = router.clone();
-                            move |_| router.back()
-                        })}
+                        on_back={navigate_to_last_primary.clone()}
                         on_open_chat={Callback::from({
                             let navigate = navigate.clone();
                             let load_messages_for_chat = load_messages_for_chat.clone();
@@ -1772,7 +1691,6 @@ fn app() -> Html {
                                     AppRoute::Chats {
                                         chat_id: Some(chat_id),
                                         overlay: None,
-                                        sidebar: false,
                                     },
                                     true,
                                 ));
@@ -1786,8 +1704,8 @@ fn app() -> Html {
                                     AppRoute::Stories {
                                         story_id: Some(story_id),
                                         nav: StoryNav::None,
+                                        reading: false,
                                         overlay: None,
-                                        sidebar: false,
                                     },
                                     true,
                                 ));
@@ -1800,7 +1718,6 @@ fn app() -> Html {
                                     AppRoute::Games {
                                         game_id: Some(game_id),
                                         overlay: None,
-                                        sidebar: false,
                                     },
                                     true,
                                 ));
@@ -1814,19 +1731,13 @@ fn app() -> Html {
                 } else if mode == AppMode::Settings {
                     <SettingsPage
                         settings={settings.clone()}
-                        on_back={Callback::from({
-                            let router = router.clone();
-                            move |_| router.back()
-                        })}
+                        on_back={navigate_to_last_primary.clone()}
                     />
                 } else if mode == AppMode::Characters {
                     <CharactersPage
                         selected_character_id={selected_character_id}
                         chat_id={characters_chat_id}
-                        on_back={Callback::from({
-                            let router = router.clone();
-                            move |_| router.back()
-                        })}
+                        on_back={characters_on_back.clone()}
                         on_character_change={Callback::from({
                             let chats = chats.clone();
                             move |(chat_id, character_id)| {
@@ -1852,7 +1763,6 @@ fn app() -> Html {
                                     AppRoute::Scenarios {
                                         scenario_id: Some(scenario.id),
                                         game_id: None,
-                                        sidebar: false,
                                     },
                                     true,
                                 ));
@@ -1874,7 +1784,6 @@ fn app() -> Html {
                                         AppRoute::Chats {
                                             chat_id: Some(chat_id),
                                             overlay: None,
-                                            sidebar: false,
                                         },
                                         true,
                                     ));
@@ -1914,10 +1823,7 @@ fn app() -> Html {
                     <ScenariosPage
                         selected_scenario_id={scenarios_scenario_id}
                         game_id={scenarios_game_id}
-                        on_back={Callback::from({
-                            let router = router.clone();
-                            move |_| router.back()
-                        })}
+                        on_back={scenarios_on_back.clone()}
                         on_scenario_change={Callback::from(|_| ())}
                         on_start_game={start_game.clone()}
                         on_scenarios_changed={Callback::from(|_| ())}
@@ -1927,6 +1833,10 @@ fn app() -> Html {
                         route={route.clone()}
                         on_navigate={navigate.clone()}
                         variables_enabled={settings.as_ref().is_some_and(|s| s.variables_enabled)}
+                        archived_stories={(*archived_stories).clone()}
+                        on_archive_story={archive_story.clone()}
+                        on_restore_story={restore_story.clone()}
+                        on_permanent_delete_story={permanent_delete_story.clone()}
                     />
                 } else if mode == AppMode::Game {
                     <GameShell
@@ -1934,6 +1844,7 @@ fn app() -> Html {
                         on_navigate={navigate.clone()}
                         settings={(*settings).clone()}
                         games={(*games).clone()}
+                        archived_games={(*archived_games).clone()}
                         on_games_refresh={Callback::from({
                             let games = games.clone();
                             move |_| {
@@ -1952,7 +1863,6 @@ fn app() -> Html {
                                     AppRoute::Games {
                                         game_id: Some(id),
                                         overlay: None,
-                                        sidebar: false,
                                     },
                                     true,
                                 ));
@@ -1966,12 +1876,15 @@ fn app() -> Html {
                                     AppRoute::Games {
                                         game_id: game_id_from_route(&route),
                                         overlay: Some(Overlay::NewGame),
-                                        sidebar: false,
                                     },
                                     true,
                                 ));
                             }
                         })}
+                        on_open_scenarios={open_scenarios.clone()}
+                        on_archive_game={archive_game.clone()}
+                        on_restore_game={restore_game.clone()}
+                        on_permanent_delete_game={permanent_delete_game.clone()}
                     />
                 } else {
                 <div class="chat-pane">
@@ -2084,13 +1997,15 @@ fn app() -> Html {
                             <p class="header-subtitle muted">{ format!("With {}", header.character_name) }</p>
                         }
                     } else {
-                        <h1 class="header-title">{"Select a chat"}</h1>
-                        if chats.is_empty() {
-                            <p class="header-subtitle muted">{"Create a character, then start a chat from the sidebar."}</p>
-                        } else {
-                            <p class="header-subtitle muted">{"Pick a chat below to continue."}</p>
-                        }
+                        <h1 class="header-title">{"Chats"}</h1>
                         <div class="header-actions">
+                            <button
+                                class="btn btn-compact"
+                                title="New chat"
+                                onclick={open_new_chat.reform(|_| ())}
+                            >
+                                {"New chat"}
+                            </button>
                             <button
                                 class="btn secondary btn-compact"
                                 title="Characters"
@@ -2161,26 +2076,16 @@ fn app() -> Html {
                                 {"Create character"}
                             </button>
                         } else {
-                            <p>{"No chats yet. Click New in the sidebar to pick a character."}</p>
-                            <button class="btn" style="margin-top:0.75rem;" onclick={{
-                                let navigate = navigate.clone();
-                                let route = route.clone();
-                                Callback::from(move |_| {
-                                    navigate.emit((
-                                        AppRoute::Chats {
-                                            chat_id: chat_id_from_route(&route),
-                                            overlay: Some(Overlay::NewChat),
-                                            sidebar: false,
-                                        },
-                                        true,
-                                    ));
-                                })
-                            }}>{"Start a chat"}</button>
+                            <p>{"No chats yet. Click New chat to pick a character."}</p>
+                            <button class="btn" style="margin-top:0.75rem;" onclick={open_new_chat.reform(|_| ())}>
+                                {"Start a chat"}
+                            </button>
                         }
                     </div>
                 } else {
                     <ChatList
                         chats={(*chats).clone()}
+                        archived={(*archived_chats).clone()}
                         on_select={Callback::from({
                             let navigate = navigate.clone();
                             let load_messages_for_chat = load_messages_for_chat.clone();
@@ -2189,13 +2094,15 @@ fn app() -> Html {
                                     AppRoute::Chats {
                                         chat_id: Some(id),
                                         overlay: None,
-                                        sidebar: false,
                                     },
                                     true,
                                 ));
                                 load_messages_for_chat.emit(id);
                             }
                         })}
+                        on_archive={archive_chat.clone()}
+                        on_restore={restore_chat.clone()}
+                        on_permanent_delete={permanent_delete_chat.clone()}
                     />
                 }
                 <Composer
@@ -2250,83 +2157,7 @@ fn app() -> Html {
                 </div>
                 }
             </main>
-        </div>
-        </div>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct ModeBarProps {
-    mode: AppMode,
-    queue: Option<QueueStatus>,
-    show_sidebar_toggle: bool,
-    sidebar_open: bool,
-    on_toggle_sidebar: Callback<()>,
-    on_open_settings: Callback<()>,
-    on_open_queue: Callback<()>,
-    on_open_characters: Callback<()>,
-    on_open_scenarios: Callback<()>,
-}
-
-#[function_component(ModeBar)]
-fn mode_bar(props: &ModeBarProps) -> Html {
-    html! {
-        <div class="mode-bar">
-            <div class="mode-bar-start">
-                if props.show_sidebar_toggle {
-                    <button
-                        class={classes!(
-                            "mode-btn",
-                            "mode-btn-menu",
-                            "mode-bar-sidebar-toggle",
-                            props.sidebar_open.then_some("active"),
-                        )}
-                        aria-label="Toggle sidebar"
-                        aria-expanded={if props.sidebar_open { "true" } else { "false" }}
-                        onclick={props.on_toggle_sidebar.reform(|_| ())}
-                    >
-                        {"☰"}
-                    </button>
-                }
-                <div class="mode-bar-brand">
-                    <span class="mode-bar-title">{"Dreamwell"}</span>
-                    <BuildInfo />
-                </div>
-            </div>
-            <div class="mode-bar-actions">
-                <TopBarQueueButton
-                    queue={props.queue.clone()}
-                    active={props.mode == AppMode::Queue}
-                    on_open={props.on_open_queue.clone()}
-                />
-                <button
-                    type="button"
-                    class={classes!("mode-btn", "mode-btn-icon", (props.mode == AppMode::Characters).then_some("active"))}
-                    title="Characters"
-                    aria-label="Characters"
-                    onclick={props.on_open_characters.reform(|_| ())}
-                >
-                    <span class="mode-btn-icon-glyph">{"🎭"}</span>
-                </button>
-                <button
-                    type="button"
-                    class={classes!("mode-btn", "mode-btn-icon", (props.mode == AppMode::Scenarios).then_some("active"))}
-                    title="Scenarios"
-                    aria-label="Scenarios"
-                    onclick={props.on_open_scenarios.reform(|_| ())}
-                >
-                    <span class="mode-btn-icon-glyph">{"🗺"}</span>
-                </button>
-                <button
-                    type="button"
-                    class={classes!("mode-btn", "mode-btn-icon", (props.mode == AppMode::Settings).then_some("active"))}
-                    title="Settings"
-                    aria-label="Settings"
-                    onclick={props.on_open_settings.reform(|_| ())}
-                >
-                    <span class="mode-btn-icon-glyph">{"⚙"}</span>
-                </button>
-            </div>
+            <BottomNav mode={mode} on_mode={on_mode.clone()} />
         </div>
     }
 }
@@ -4862,28 +4693,6 @@ fn settings_panel(props: &SettingsPanelProps) -> Html {
     }
 }
 
-#[function_component(BuildInfo)]
-fn build_info() -> Html {
-    let sha = use_state(|| None::<String>);
-
-    {
-        let sha = sha.clone();
-        use_effect_with((), move |_| {
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(health) = api::get_health().await {
-                    sha.set(health.git_sha);
-                }
-            });
-            || ()
-        });
-    }
-
-    match (*sha).clone() {
-        Some(sha) => html! { <span class="mode-bar-version muted">{ sha }</span> },
-        None => html! {},
-    }
-}
-
 #[function_component(NotificationSettings)]
 fn notification_settings() -> Html {
     let enabled = use_state(notifications::is_enabled);
@@ -4992,47 +4801,6 @@ fn text_input(save_ctx: SettingsSaveContext, field: &'static str) -> Callback<In
             _ => {}
         });
     })
-}
-
-#[cfg(test)]
-mod sidebar_tests {
-    use super::*;
-
-    #[test]
-    fn sidebar_open_from_route_matches_all_modes() {
-        assert!(!sidebar_open_from_route(&AppRoute::Chats {
-            chat_id: None,
-            overlay: None,
-            sidebar: false,
-        }));
-        assert!(sidebar_open_from_route(&AppRoute::Chats {
-            chat_id: None,
-            overlay: None,
-            sidebar: true,
-        }));
-        assert!(!sidebar_open_from_route(&AppRoute::Stories {
-            story_id: None,
-            nav: StoryNav::None,
-            overlay: None,
-            sidebar: false,
-        }));
-        assert!(sidebar_open_from_route(&AppRoute::Stories {
-            story_id: None,
-            nav: StoryNav::None,
-            overlay: None,
-            sidebar: true,
-        }));
-        assert!(!sidebar_open_from_route(&AppRoute::Games {
-            game_id: None,
-            overlay: None,
-            sidebar: false,
-        }));
-        assert!(sidebar_open_from_route(&AppRoute::Games {
-            game_id: None,
-            overlay: None,
-            sidebar: true,
-        }));
-    }
 }
 
 #[cfg(test)]

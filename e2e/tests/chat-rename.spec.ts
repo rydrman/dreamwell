@@ -7,12 +7,9 @@ async function seedChat(request: import("@playwright/test").APIRequestContext) {
 }
 
 test.describe("chat rename", () => {
-  test("renamed chat stays in sidebar and chat list", async ({ page, request }) => {
+  test("renamed chat stays in chat list", async ({ page, request }) => {
     const seed = await seedChat(request);
     await page.goto(`/chats/${seed.chat_id}`);
-
-    await expect(page.locator(".sidebar .chat-item")).toHaveCount(1);
-    await expect(page.locator(".sidebar .chat-item-title")).toHaveText("E2E chat");
 
     await page.locator(".content-header .title-editable").click();
     const input = page.locator(".content-header input.header-title");
@@ -20,9 +17,10 @@ test.describe("chat rename", () => {
     await input.fill("Renamed chat");
     await input.press("Enter");
 
-    await expect(page.locator(".sidebar .chat-item")).toHaveCount(1);
-    await expect(page.locator(".sidebar .chat-item-title")).toHaveText("Renamed chat");
     await expect(page.locator(".content-header .title-editable")).toHaveText("Renamed chat");
+
+    await page.goto("/chats");
+    await expect(page.locator(".main-list .chat-item-title")).toHaveText("Renamed chat");
 
     const listResponse = await request.get("/api/chats");
     expect(listResponse.ok()).toBeTruthy();

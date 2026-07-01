@@ -33,9 +33,14 @@ pub struct GameShellProps {
     pub on_navigate: Callback<(AppRoute, bool)>,
     pub settings: Option<Settings>,
     pub games: Vec<Game>,
+    pub archived_games: Vec<Game>,
     pub on_select_game: Callback<i64>,
     pub on_new_game: Callback<()>,
+    pub on_open_scenarios: Callback<()>,
     pub on_games_refresh: Callback<()>,
+    pub on_archive_game: Callback<i64>,
+    pub on_restore_game: Callback<i64>,
+    pub on_permanent_delete_game: Callback<i64>,
 }
 
 fn game_id_from_route(route: &AppRoute) -> Option<i64> {
@@ -338,7 +343,6 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                             AppRoute::Games {
                                 game_id: Some(detail.game.id),
                                 overlay: Some(Overlay::State),
-                                sidebar: false,
                             },
                             true,
                         ));
@@ -1242,8 +1246,24 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                     <>
                         <header class="header content-header">
                             <h1 class="header-title">{"Games"}</h1>
+                            <div class="header-actions">
+                                <button
+                                    class="btn btn-compact"
+                                    title="New game"
+                                    onclick={props.on_new_game.reform(|_| ())}
+                                >
+                                    {"New game"}
+                                </button>
+                                <button
+                                    class="btn secondary btn-compact"
+                                    title="Scenarios"
+                                    onclick={props.on_open_scenarios.reform(|_| ())}
+                                >
+                                    {"Scenarios"}
+                                </button>
+                            </div>
                             if props.games.is_empty() {
-                                <p class="header-subtitle muted">{"Start a game from Scenarios or create one from the sidebar."}</p>
+                                <p class="header-subtitle muted">{"Start a game from Scenarios or create a new one."}</p>
                             } else {
                                 <p class="header-subtitle muted">{"Pick a game below to continue."}</p>
                             }
@@ -1251,7 +1271,7 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                         <div class="content-scroll">
                             if props.games.is_empty() {
                                 <div class="empty-state muted">
-                                    <p>{"No games yet. Start one from Scenarios or click New game in the sidebar."}</p>
+                                    <p>{"No games yet. Start one from Scenarios or click New game."}</p>
                                     <button class="btn" style="margin-top:0.75rem;" onclick={props.on_new_game.reform(|_| ())}>
                                         {"New game"}
                                     </button>
@@ -1259,7 +1279,11 @@ pub fn game_shell(props: &GameShellProps) -> Html {
                             } else {
                                 <GameList
                                     games={props.games.clone()}
+                                    archived={props.archived_games.clone()}
                                     on_select={props.on_select_game.clone()}
+                                    on_archive={props.on_archive_game.clone()}
+                                    on_restore={props.on_restore_game.clone()}
+                                    on_permanent_delete={props.on_permanent_delete_game.clone()}
                                 />
                             }
                         </div>
