@@ -29,7 +29,7 @@ pub fn mobile_scroll_chrome_active(
     }
 }
 
-pub fn update_mobile_sidebar_inset(
+pub fn update_mobile_chrome_inset(
     layout: &HtmlElement,
     mode: AppMode,
     scroll_chrome: bool,
@@ -37,7 +37,7 @@ pub fn update_mobile_sidebar_inset(
     scroll_y: f64,
 ) {
     if !is_mobile_viewport() {
-        let _ = layout.style().remove_property("--sidebar-inset-top");
+        let _ = layout.style().remove_property("--chrome-inset-top");
         let _ = layout.style().remove_property("--content-header-height");
         return;
     }
@@ -78,7 +78,7 @@ pub fn update_mobile_sidebar_inset(
 
     let _ = layout
         .style()
-        .set_property("--sidebar-inset-top", &format!("{inset}px"));
+        .set_property("--chrome-inset-top", &format!("{inset}px"));
 }
 
 pub fn scroll_content_view_to_bottom(scroll_el: Option<&HtmlElement>) {

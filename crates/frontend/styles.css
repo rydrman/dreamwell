@@ -12,9 +12,9 @@
   --success: #1a6b3c;
   --overlay: rgba(0, 0, 0, 0.25);
   --app-topbar-height: calc(max(0.5rem, env(safe-area-inset-top, 0px)) + 2.75rem + 0.5rem);
-  --sidebar-width: 18rem;
+  --app-bottomnav-height: 0px;
+  --chrome-inset-top: var(--app-topbar-height);
   --chat-column-max-width: 48rem;
-  --desktop-sidebar-min: 1024px;
   font-family: "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--fg);
@@ -97,6 +97,67 @@ button {
   align-items: center;
   gap: 0.35rem;
   flex-shrink: 0;
+}
+
+.mode-bar-primary {
+  display: none;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0 auto;
+}
+
+.mode-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 0.375rem;
+  padding: 0.4rem 0.75rem;
+  min-height: 2.25rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.mode-tab:hover {
+  color: var(--fg);
+  background: var(--surface);
+}
+
+.mode-tab.active {
+  background: var(--fg);
+  color: var(--accent-fg);
+  border-color: var(--fg);
+}
+
+.bottom-nav {
+  display: none;
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.bottom-nav-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.65rem 0.5rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.bottom-nav-btn.active {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.bottom-nav-btn:hover {
+  color: var(--fg);
+  background: var(--surface);
 }
 
 .mode-btn-icon {
@@ -577,7 +638,43 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg);
+}
+
+.list-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.list-item-main {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.main-list-archive {
+  margin-top: 0.5rem;
+}
+
+.game-create-scenario-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.game-create-scenario-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.game-create-scenario-premise {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .header {
@@ -2529,6 +2626,18 @@ input.header-title {
 
 @media (max-width: 768px) {
 
+  :root {
+    --app-bottomnav-height: calc(2.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .mode-bar-primary {
+    display: none;
+  }
+
+  .bottom-nav {
+    display: flex;
+  }
+
   html,
   body {
     height: auto;
@@ -2595,7 +2704,7 @@ input.header-title {
   }
 
   .app-layout--chat-scroll-chrome .main {
-    padding-top: var(--sidebar-inset-top, 0px);
+    padding-top: var(--chrome-inset-top, 0px);
     transition: padding-top 0.2s ease;
   }
 
@@ -2681,33 +2790,15 @@ input.header-title {
   }
 }
 
+@media (min-width: 769px) {
+  .mode-bar-primary {
+    display: flex;
+  }
+}
+
 @media (min-width: 1024px) {
-  .app-shell {
-    flex-direction: row;
-  }
-
-  .sidebar {
-    position: static;
-    top: auto;
-    bottom: auto;
-    left: auto;
-    z-index: auto;
-    height: auto;
-    align-self: stretch;
-    transform: none;
-    transition: none;
-  }
-
-  .app-shell.pane-sidebar .sidebar {
-    transform: none;
-  }
-
-  .drawer-backdrop {
-    display: none;
-  }
-
-  .mode-bar-sidebar-toggle {
-    display: none;
+  .mode-bar-primary {
+    display: flex;
   }
 }
 

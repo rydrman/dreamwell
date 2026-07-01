@@ -466,10 +466,6 @@ pub async fn delete_variable(chat_id: i64, variable_id: i64) -> Result<(), Strin
     .await
 }
 
-pub async fn get_health() -> Result<HealthResponse, String> {
-    json(api_request("GET", "/api/health")).await
-}
-
 pub async fn get_settings() -> Result<Settings, String> {
     json(api_request("GET", "/api/settings")).await
 }
@@ -907,20 +903,6 @@ pub async fn list_games() -> Result<Vec<Game>, String> {
 
 pub async fn list_archived_games() -> Result<Vec<Game>, String> {
     json(api_request("GET", "/api/games/archived")).await
-}
-
-pub async fn import_game_draft(file: &web_sys::File) -> Result<ImportGameDraftResponse, String> {
-    let form = web_sys::FormData::new().map_err(|_| "FormData unsupported".to_string())?;
-    form.append_with_blob("file", file)
-        .map_err(|_| "append failed".to_string())?;
-    let response = gloo_net::http::Request::post("/api/games/import")
-        .body(form)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let response = ensure_ok_response(response).await?;
-    response.json().await.map_err(|e| e.to_string())
 }
 
 pub async fn create_game(payload: &GameCreate) -> Result<GameDetail, String> {
