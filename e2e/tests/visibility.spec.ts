@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
 
+async function seedIdleChat(request: import("@playwright/test").APIRequestContext) {
+  const response = await request.post("/api/e2e/seed-chat-idle");
+  expect(response.ok()).toBeTruthy();
+  return (await response.json()) as { chat_id: number };
+}
+
 async function seedRunningChat(request: import("@playwright/test").APIRequestContext) {
   const response = await request.post("/api/e2e/seed-chat-running");
   expect(response.ok()).toBeTruthy();
@@ -48,6 +54,40 @@ async function setTabHidden(page: import("@playwright/test").Page, hidden: boole
 test.describe("tab visibility resume", () => {
   test.beforeEach(async ({ page }) => {
     await installVisibilityShim(page);
+  });
+
+  test("chat shows sent message and reply after send then background", async ({
+    page,
+    request,
+  }) => {
+    const seed = await seedIdleChat(request);
+    const userMessage = "Hello while tab was hidden";
+    await page.goto(`/chats/${seed.chat_id}`);
+
+    await page.locator(".composer textarea").fill(userMessage);
+    await page.locator(".composer .btn").click();
+
+    await setTabHidden(page, true);
+
+    await expect
+      .poll(async () => {
+        const response = await request.post(`/api/e2e/complete-chat-job/${seed.chat_id}`);
+        if (!response.ok()) {
+          return false;
+        }
+        const messages = await request.get(`/api/chats/${seed.chat_id}/messages`);
+        if (!messages.ok()) {
+          return false;
+        }
+        const list = (await messages.json()) as Array<{ role: string; content: string }>;
+        return list.some((message) => message.role === "user" && message.content === userMessage);
+      })
+      .toBeTruthy();
+
+    await setTabHidden(page, false);
+
+    await expect(page.getByText(userMessage)).toBeVisible();
+    await expect(page.getByText("Completed after background")).toBeVisible();
   });
 
   test("chat shows completed content after returning from background", async ({

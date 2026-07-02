@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 dreamwell-types = { workspace = true }
 dreamwell-units = { workspace = true }
+chrono = { workspace = true }
 yew = { version = "0.21", features = ["csr"] }
 gloo-net = { version = "0.6", features = ["http", "websocket"] }
 gloo-timers = { version = "0.3", features = ["futures"] }

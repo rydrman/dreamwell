@@ -24,9 +24,15 @@ struct SeedGameRunningResponse {
     expected_content: String,
 }
 
+#[derive(Serialize)]
+struct SeedChatIdleResponse {
+    chat_id: i64,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/seed-chat-running", post(seed_chat_running))
+        .route("/seed-chat-idle", post(seed_chat_idle))
         .route("/complete-chat-job/:chat_id", post(complete_chat_job))
         .route("/seed-game-running", post(seed_game_running))
         .route("/complete-game-job/:game_id", post(complete_game_job))
@@ -68,6 +74,25 @@ async fn seed_chat_running(
         chat_id: chat.id,
         expected_content: "Completed after background".into(),
     }))
+}
+
+async fn seed_chat_idle(State(state): State<AppState>) -> AppResult<Json<SeedChatIdleResponse>> {
+    let character = db::create_character(
+        &state.pool,
+        CharacterCreate {
+            name: "E2E".into(),
+            description: String::new(),
+            personality: String::new(),
+            scenario: String::new(),
+            first_message: String::new(),
+            example_dialogue: String::new(),
+            system_prompt: String::new(),
+            avatar_url: None,
+        },
+    )
+    .await?;
+    let chat = db::create_chat(&state.pool, "E2E idle chat".into(), character.id).await?;
+    Ok(Json(SeedChatIdleResponse { chat_id: chat.id }))
 }
 
 async fn complete_chat_job(
