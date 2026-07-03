@@ -9,8 +9,8 @@ use crate::chat_state;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_tools::{
-    format_pc_fork_blockquote, is_author_notes_tool, is_present_fork_tool, is_state_tool,
-    parse_present_fork_args, parse_state_tool_call, prose_agent_tool_specs, PcFork,
+    append_fork_blockquote, is_author_notes_tool, is_present_fork_tool, is_state_tool,
+    parse_present_fork_args, parse_state_tool_call, prose_agent_tool_specs,
 };
 use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
 use crate::model_fallback::stream_chat_completion_with_tools_connection_fallback;
@@ -252,13 +252,6 @@ pub async fn run_chat_prose_pass(
         prose,
         applied_state,
     })
-}
-
-fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
-    if !prose.is_empty() {
-        prose.push_str("\n\n");
-    }
-    prose.push_str(&format_pc_fork_blockquote(fork));
 }
 
 fn append_inline_marker(prose: &mut String, marker: String) {

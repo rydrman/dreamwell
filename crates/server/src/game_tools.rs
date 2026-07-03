@@ -305,6 +305,16 @@ pub fn parse_present_fork_args(args: &Value) -> Option<PcFork> {
     })
 }
 
+/// Append a formatted fork blockquote to prose, closing any dangling thought tags first
+/// so the fork stays in the visible reply when thought blocks are enabled.
+pub fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
+    crate::thoughts::close_dangling_thought_tags(prose);
+    if !prose.is_empty() {
+        prose.push_str("\n\n");
+    }
+    prose.push_str(&format_pc_fork_blockquote(fork));
+}
+
 /// Render a fork as a blockquoted situation with numbered choices.
 pub fn format_pc_fork_blockquote(fork: &PcFork) -> String {
     let mut lines: Vec<String> = fork

@@ -12,7 +12,7 @@ use crate::error::{AppError, AppResult};
 use crate::game_mechanics::{flush_turn_mechanicals_streaming, persist_turn_mechanicals};
 use crate::game_prompts::{build_inline_prose_agent_messages, build_prose_narration_messages};
 use crate::game_tools::{
-    format_pc_fork_blockquote, handle_mechanical_tool_call, inline_prose_tool_specs,
+    append_fork_blockquote, handle_mechanical_tool_call, inline_prose_tool_specs,
     is_author_notes_tool, is_outcome_tool, is_present_fork_tool, is_state_tool,
     parse_author_notes_args, parse_present_fork_args, parse_state_tool_call,
     prose_agent_tool_specs, PcFork, ToolSessionState,
@@ -706,13 +706,6 @@ async fn run_prose_pass(
         llm_calls,
         tool_calls,
     })
-}
-
-fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
-    if !prose.is_empty() {
-        prose.push_str("\n\n");
-    }
-    prose.push_str(&format_pc_fork_blockquote(fork));
 }
 
 async fn apply_author_notes_tool(
