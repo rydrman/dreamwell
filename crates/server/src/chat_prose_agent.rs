@@ -9,8 +9,8 @@ use crate::chat_state;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::game_tools::{
-    format_pc_fork_blockquote, is_author_notes_tool, is_present_fork_tool, is_state_tool,
-    parse_present_fork_args, parse_state_tool_call, prose_agent_tool_specs, PcFork,
+    append_fork_blockquote, chat_prose_agent_tool_specs, is_author_notes_tool,
+    is_present_fork_tool, is_state_tool, parse_present_fork_args, parse_state_tool_call,
 };
 use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
 use crate::model_fallback::stream_chat_completion_with_tools_connection_fallback;
@@ -37,7 +37,7 @@ pub async fn run_chat_prose_pass(
     settings: &Settings,
     token: &CancellationToken,
 ) -> AppResult<ChatProseOutcome> {
-    let tools = prose_agent_tool_specs();
+    let tools = chat_prose_agent_tool_specs();
     let tool_defs = tool_definitions_from_specs(&tools);
     let loop_config = ToolLoopConfig::default();
     let parser = resolve_tool_parser(
@@ -48,7 +48,7 @@ pub async fn run_chat_prose_pass(
     let mut messages = messages;
     let mut prose = String::new();
     let mut applied_state = plan_state.to_vec();
-    let mut end_turn = false;
+    let mut end_reply = false;
     let mut prose_stream = ProseStreamState {
         last_flush: Instant::now(),
         thought_started_at: None,
@@ -126,6 +126,10 @@ pub async fn run_chat_prose_pass(
                 }
             }
         }
+        let pending_fork = pending.iter().any(|tc| is_present_fork_tool(&tc.name));
+        if pending_fork {
+            sync_prose_from_saved_snapshot(pool, message_id, &mut prose).await?;
+        }
         flush_message_prose_throttled(
             pool,
             chat_id,
@@ -197,6 +201,7 @@ pub async fn run_chat_prose_pass(
             } else if is_present_fork_tool(&tc.name) {
                 let args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Object(Default::default()));
+                sync_prose_from_saved_snapshot(pool, message_id, &mut prose).await?;
                 if let Some(fork) = parse_present_fork_args(&args) {
                     append_fork_blockquote(&mut prose, &fork);
                     flush_message_prose_throttled(
@@ -209,7 +214,7 @@ pub async fn run_chat_prose_pass(
                         true,
                     )
                     .await?;
-                    end_turn = true;
+                    end_reply = true;
                     serde_json::json!({ "ended": true })
                 } else {
                     serde_json::json!({ "error": "present_fork requires a non-empty situation and at least two options" })
@@ -225,11 +230,11 @@ pub async fn run_chat_prose_pass(
                 "tool_call_id": tc.id,
                 "content": serde_json::to_string(&tool_result).unwrap_or_else(|_| "{}".to_string())
             }));
-            if end_turn {
+            if end_reply {
                 break;
             }
         }
-        if end_turn {
+        if end_reply {
             break;
         }
     }
@@ -254,11 +259,22 @@ pub async fn run_chat_prose_pass(
     })
 }
 
-fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
-    if !prose.is_empty() {
-        prose.push_str("\n\n");
+/// Salvaging inline `present_fork` syntax can empty the in-memory prose buffer even though
+/// earlier streaming flushes already saved narration to the message. Restore that text
+/// before appending the formatted fork so ending the reply does not overwrite it.
+async fn sync_prose_from_saved_snapshot(
+    pool: &SqlitePool,
+    message_id: i64,
+    prose: &mut String,
+) -> AppResult<()> {
+    if !prose.trim().is_empty() {
+        return Ok(());
     }
-    prose.push_str(&format_pc_fork_blockquote(fork));
+    let snapshot = db::get_message_generation_snapshot(pool, message_id).await?;
+    if !snapshot.content.trim().is_empty() {
+        prose.clone_from(&snapshot.content);
+    }
+    Ok(())
 }
 
 fn append_inline_marker(prose: &mut String, marker: String) {

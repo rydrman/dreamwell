@@ -851,10 +851,15 @@ async fn run_chat_typed_generation_attempt(
         ));
     }
 
+    let final_content = if settings.thought_blocks_enabled {
+        parse_thought_blocks(&prose.prose).reply
+    } else {
+        prose.prose.clone()
+    };
     db::finalize_message_typed_generation(
         pool,
         message_id,
-        &prose.prose,
+        &final_content,
         "",
         None,
         false,

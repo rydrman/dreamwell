@@ -246,6 +246,13 @@ pub fn prose_agent_tool_specs() -> Vec<Value> {
     tools
 }
 
+/// Chat prose tools: state updates plus `present_fork` with reply-oriented wording.
+pub fn chat_prose_agent_tool_specs() -> Vec<Value> {
+    let mut tools = simple_state_tool_specs();
+    tools.push(present_fork_chat_spec());
+    tools
+}
+
 pub const UPDATE_AUTHOR_NOTES_TOOL: &str = "update_author_notes";
 pub const AUTHOR_NOTES_MAX_LEN: usize = 2048;
 
@@ -305,6 +312,16 @@ pub fn parse_present_fork_args(args: &Value) -> Option<PcFork> {
     })
 }
 
+/// Append a formatted fork blockquote to prose, closing any dangling thought tags first
+/// so the fork stays in the visible reply when thought blocks are enabled.
+pub fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
+    crate::thoughts::close_dangling_thought_tags(prose);
+    if !prose.is_empty() {
+        prose.push_str("\n\n");
+    }
+    prose.push_str(&format_pc_fork_blockquote(fork));
+}
+
 /// Render a fork as a blockquoted situation with numbered choices.
 pub fn format_pc_fork_blockquote(fork: &PcFork) -> String {
     let mut lines: Vec<String> = fork
@@ -323,6 +340,31 @@ pub fn format_pc_fork_blockquote(fork: &PcFork) -> String {
 /// (dice/board/card). These must never be narrated before the tool runs.
 pub fn is_outcome_tool(name: &str) -> bool {
     matches!(name, "roll_dice" | "board_move" | "draw_card")
+}
+
+fn present_fork_chat_spec() -> Value {
+    tool_spec(
+        PRESENT_FORK_TOOL,
+        &format!(
+            "End this reply at a concrete choice when the user must decide something they have not specified. Call only after narrating up to the decision point in this message. Provide the situation in second person and at least two concrete actions — never open-ended meta questions. Stop writing immediately after the fork; do not narrate their choice or continue past it.\n\n{PRESENT_FORK_RULES}"
+        ),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "situation": {
+                    "type": "string",
+                    "description": "Second-person description of the choice the user faces."
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 2,
+                    "description": "At least two concrete actions the user could take."
+                }
+            },
+            "required": ["situation", "options"]
+        }),
+    )
 }
 
 fn present_fork_spec() -> Value {
@@ -825,6 +867,19 @@ mod tests {
         assert!(names.iter().any(|n| n == UPDATE_AUTHOR_NOTES_TOOL));
         // Outcome tools are intentionally excluded from the narration pass.
         assert!(!names.iter().any(|n| is_outcome_tool(n)));
+    }
+
+    #[test]
+    fn chat_prose_specs_use_reply_wording_for_present_fork() {
+        let spec = chat_prose_agent_tool_specs()
+            .into_iter()
+            .find(|tool| tool["function"]["name"] == "present_fork")
+            .expect("present_fork");
+        let description = spec["function"]["description"]
+            .as_str()
+            .expect("description");
+        assert!(description.contains("End this reply"));
+        assert!(!description.contains("Ends the turn"));
     }
 
     #[test]

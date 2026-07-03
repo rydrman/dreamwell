@@ -13,6 +13,33 @@ pub fn strip_thought_blocks(text: &str) -> String {
     parse_thought_blocks(text).reply
 }
 
+const THOUGHT_TAG_PAIRS: &[(&str, &str)] = &[
+    ("<think>", "</think>"),
+    ("<thinking>", "</thinking>"),
+    ("<thought>", "</thought>"),
+    ("<|channel>thought", "<channel|>"),
+];
+
+/// Close the innermost still-open reasoning tag so text appended afterward lands in the
+/// visible reply instead of being classified as in-progress thought content.
+pub fn close_dangling_thought_tags(prose: &mut String) {
+    let lower = prose.to_lowercase();
+    let mut open_pos: Option<(usize, &'static str)> = None;
+
+    for (open, close) in THOUGHT_TAG_PAIRS {
+        if let Some(pos) = lower.rfind(open) {
+            let after_open = &lower[pos..];
+            if !after_open.contains(close) && open_pos.is_none_or(|(existing, _)| pos > existing) {
+                open_pos = Some((pos, close));
+            }
+        }
+    }
+
+    if let Some((_, close)) = open_pos {
+        prose.push_str(close);
+    }
+}
+
 /// Splits reasoning blocks from the visible reply.
 pub fn parse_thought_blocks(text: &str) -> ParsedThoughts {
     let (parts, remainder) = extract_complete_thoughts(text);
@@ -89,12 +116,7 @@ fn extract_unclosed(text: &str) -> (String, String, bool) {
     let lower = text.to_lowercase();
     let mut open_pos: Option<(usize, usize)> = None;
 
-    for (open, close) in [
-        ("<think>", "</think>"),
-        ("<thinking>", "</thinking>"),
-        ("<thought>", "</thought>"),
-        ("<|channel>thought", "<channel|>"),
-    ] {
+    for (open, close) in THOUGHT_TAG_PAIRS {
         if let Some(pos) = lower.rfind(open) {
             let after_open = &lower[pos..];
             if !after_open.contains(close) && (open_pos.is_none() || pos > open_pos.unwrap().0) {
@@ -353,5 +375,22 @@ planning here<channel|><|channel|>";
         assert_eq!(parsed.thought, "planning here");
         assert_eq!(parsed.reply, "");
         assert!(!parsed.thought_complete);
+    }
+
+    #[test]
+    fn close_dangling_thought_tags_lets_fork_land_in_reply() {
+        use crate::game_tools::{append_fork_blockquote, PcFork};
+
+        let mut prose = "<thinking>planning the fork".to_string();
+        let fork = PcFork {
+            situation: "The path splits ahead.".into(),
+            options: vec!["Go left".into(), "Go right".into()],
+        };
+        append_fork_blockquote(&mut prose, &fork);
+        let parsed = parse_thought_blocks(&prose);
+        assert_eq!(parsed.thought, "planning the fork");
+        assert!(parsed.reply.contains("The path splits ahead."));
+        assert!(parsed.reply.contains("1. Go left"));
+        assert!(parsed.thought_complete);
     }
 }
