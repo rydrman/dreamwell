@@ -2875,7 +2875,10 @@ fn message_bubble(props: &MessageBubbleProps) -> Html {
                     </div>
                 }
             }
-            if props.message.role == MessageRole::Assistant && !props.message.state_changes.is_empty() {
+            if props.message.role == MessageRole::Assistant
+                && !props.message.state_changes.is_empty()
+                && !prose_has_inline_state
+            {
                 <div class="game-state-changes-bar">
                     <PhaseSection
                         label={format!("State changes ({})", props.message.state_changes.len())}

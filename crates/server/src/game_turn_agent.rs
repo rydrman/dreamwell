@@ -679,7 +679,7 @@ async fn run_prose_pass(
     // If the mechanics pass paused for a player fork and the narrator did not
     // already surface it, append it so the turn ends on the open choice.
     if let Some(fork) = pending_fork {
-        if !end_turn && !prose.contains(&fork.situation) {
+        if !end_turn && !crate::game_tools::prose_already_surfaces_fork(&prose, fork) {
             append_fork_blockquote(&mut prose, fork);
         }
     }
