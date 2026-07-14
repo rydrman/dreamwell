@@ -312,9 +312,36 @@ pub fn parse_present_fork_args(args: &Value) -> Option<PcFork> {
     })
 }
 
+/// Whether prose already contains the formatted fork blockquote (or equivalent numbered
+/// choices). Models sometimes narrate the fork inline during streaming before the tool
+/// fires; appending again would duplicate it at the bottom.
+pub fn prose_already_surfaces_fork(prose: &str, fork: &PcFork) -> bool {
+    let prose = prose.trim();
+    if prose.is_empty() {
+        return false;
+    }
+    let formatted = format_pc_fork_blockquote(fork);
+    if prose.contains(formatted.trim()) {
+        return true;
+    }
+    let situation = fork.situation.trim();
+    if situation.is_empty() || !prose.contains(situation) {
+        return false;
+    }
+    fork.options.iter().enumerate().all(|(i, opt)| {
+        let opt = opt.trim();
+        !opt.is_empty()
+            && (prose.contains(&format!("> {}. {opt}", i + 1))
+                || prose.contains(&format!(">{}. {opt}", i + 1)))
+    })
+}
+
 /// Append a formatted fork blockquote to prose, closing any dangling thought tags first
 /// so the fork stays in the visible reply when thought blocks are enabled.
 pub fn append_fork_blockquote(prose: &mut String, fork: &PcFork) {
+    if prose_already_surfaces_fork(prose, fork) {
+        return;
+    }
     crate::thoughts::close_dangling_thought_tags(prose);
     if !prose.is_empty() {
         prose.push_str("\n\n");
@@ -804,6 +831,43 @@ mod tests {
         assert!(block.contains("> The corridor splits."));
         assert!(block.contains("> 1. Sneak left"));
         assert!(block.contains("> 2. Call out right"));
+    }
+
+    #[test]
+    fn prose_already_surfaces_fork_detects_formatted_blockquote() {
+        let fork = PcFork {
+            situation: "The corridor splits.".into(),
+            options: vec!["Sneak left".into(), "Call out right".into()],
+        };
+        let prose = format!(
+            "You pause at the junction.\n\n{}",
+            format_pc_fork_blockquote(&fork)
+        );
+        assert!(prose_already_surfaces_fork(&prose, &fork));
+    }
+
+    #[test]
+    fn append_fork_blockquote_skips_when_fork_already_present() {
+        let fork = PcFork {
+            situation: "The corridor splits.".into(),
+            options: vec!["Sneak left".into(), "Call out right".into()],
+        };
+        let block = format_pc_fork_blockquote(&fork);
+        let mut prose = format!("You pause.\n\n{block}");
+        append_fork_blockquote(&mut prose, &fork);
+        assert_eq!(prose, format!("You pause.\n\n{block}"));
+    }
+
+    #[test]
+    fn append_fork_blockquote_adds_when_only_narration_mentions_situation() {
+        let fork = PcFork {
+            situation: "The corridor splits.".into(),
+            options: vec!["Sneak left".into(), "Call out right".into()],
+        };
+        let mut prose = "You reach the corridor splits.".to_string();
+        append_fork_blockquote(&mut prose, &fork);
+        assert!(prose.contains("> 1. Sneak left"));
+        assert!(prose.contains("> 2. Call out right"));
     }
 
     #[test]
