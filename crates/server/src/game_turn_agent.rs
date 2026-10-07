@@ -18,7 +18,7 @@ use crate::game_tools::{
     prose_agent_tool_specs, PcFork, ToolSessionState,
 };
 use crate::game_turn::{declare_and_roll_checks, model_override_for_phase, GameModelPhase};
-use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
+use crate::inference::{ensure_unique_tool_call_ids, ToolCall, ToolLoopConfig, ToolStreamChunk};
 use crate::model_fallback::stream_chat_completion_with_tools_connection_fallback;
 use crate::thoughts::{parse_thought_blocks, thought_timing};
 use crate::tool_stream::{
@@ -279,6 +279,7 @@ async fn run_inline_prose_pass(
         )
         .await?;
 
+        ensure_unique_tool_call_ids(&mut pending);
         if pending.is_empty() {
             break;
         }
@@ -562,6 +563,7 @@ async fn run_prose_pass(
         // The narration pass must not re-resolve mechanics. Drop any outcome-tool
         // calls the model emits — the canonical results are already fixed.
         pending.retain(|tc| !is_outcome_tool(&tc.name));
+        ensure_unique_tool_call_ids(&mut pending);
         flush_prose_throttled(
             pool,
             game_id,

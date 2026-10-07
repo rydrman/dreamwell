@@ -12,7 +12,7 @@ use crate::game_tools::{
     append_fork_blockquote, chat_prose_agent_tool_specs, is_author_notes_tool,
     is_present_fork_tool, is_state_tool, parse_present_fork_args, parse_state_tool_call,
 };
-use crate::inference::{ToolCall, ToolLoopConfig, ToolStreamChunk};
+use crate::inference::{ensure_unique_tool_call_ids, ToolCall, ToolLoopConfig, ToolStreamChunk};
 use crate::model_fallback::stream_chat_completion_with_tools_connection_fallback;
 use crate::thoughts::{parse_thought_blocks, thought_timing};
 use crate::tool_stream::{
@@ -145,6 +145,7 @@ pub async fn run_chat_prose_pass(
             break;
         }
 
+        ensure_unique_tool_call_ids(&mut pending);
         let assistant_tool_calls: Vec<serde_json::Value> = pending
             .iter()
             .map(|tc| {

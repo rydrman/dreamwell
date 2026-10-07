@@ -84,11 +84,15 @@ fn format_inference_http_error(status: StatusCode, body: &str) -> String {
     if let Ok(json) = serde_json::from_str::<Value>(trimmed) {
         if let Some(message) = json.pointer("/error/message").and_then(|v| v.as_str()) {
             let code = json.pointer("/error/code").and_then(|v| v.as_str());
-            return match code.filter(|code| !code.is_empty()) {
+            let base = match code.filter(|code| !code.is_empty()) {
                 Some(code) => {
                     format!("Inference server returned HTTP {status} ({code}): {message}")
                 }
                 None => format!("Inference server returned HTTP {status}: {message}"),
+            };
+            return match openrouter_error_detail(&json, message) {
+                Some(detail) => format!("{base} — {detail}"),
+                None => base,
             };
         }
         if let Some(message) = json.get("error").and_then(|v| v.as_str()) {
@@ -105,6 +109,50 @@ fn format_inference_http_error(status: StatusCode, body: &str) -> String {
         format!("Inference server returned HTTP {status} (empty response body)")
     } else {
         format!("Inference server returned HTTP {status}: {trimmed}")
+    }
+}
+
+/// Extracts upstream provider detail from an OpenRouter-style error body
+/// (`error.metadata.provider_name` + `error.metadata.raw`). The `raw` field is
+/// itself a JSON-encoded upstream error; its `message` is preferred when present.
+/// Returns None when metadata is absent or adds nothing beyond `message`.
+fn openrouter_error_detail(json: &Value, message: &str) -> Option<String> {
+    const RAW_LIMIT: usize = 500;
+    let metadata = json.pointer("/error/metadata")?;
+    let provider = metadata
+        .get("provider_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let raw = metadata
+        .get("raw")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let upstream = raw.map(|raw| {
+        if let Ok(upstream_json) = serde_json::from_str::<Value>(raw) {
+            if let Some(m) = upstream_json.get("message").and_then(|v| v.as_str()) {
+                return m.to_string();
+            }
+        }
+        if raw.len() > RAW_LIMIT {
+            let cut = raw
+                .char_indices()
+                .take_while(|(i, _)| *i < RAW_LIMIT)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            format!("{}…", &raw[..cut])
+        } else {
+            raw.to_string()
+        }
+    });
+    match (provider, upstream) {
+        (Some(provider), Some(detail)) if detail != message => {
+            Some(format!("{provider}: {detail}"))
+        }
+        (Some(provider), _) => Some(provider.to_string()),
+        (None, Some(detail)) if detail != message => Some(detail),
+        _ => None,
     }
 }
 
@@ -533,14 +581,14 @@ pub async fn stream_chat_completion_with_tools(
             }
         }
         let native_tool_calls = native_calls
-            .into_values()
-            .filter_map(|builder| {
+            .into_iter()
+            .filter_map(|(index, builder)| {
                 let name = builder.name?;
                 if name.is_empty() {
                     return None;
                 }
                 Some(ToolCall {
-                    id: builder.id.unwrap_or_else(|| "call".to_string()),
+                    id: builder.id.unwrap_or_else(|| format!("call_{index}")),
                     name,
                     arguments: if builder.arguments.is_empty() {
                         "{}".to_string()
@@ -629,6 +677,28 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
+}
+
+/// Providers (e.g. Mistral) reject an assistant message whose `tool_calls`
+/// carry duplicate or empty ids. Text-parsed calls reuse `call_fallback_{index}`
+/// per parsed section and streamed calls may omit ids, so normalize a pending
+/// batch before it is echoed back as an assistant message.
+pub fn ensure_unique_tool_call_ids(calls: &mut [ToolCall]) {
+    let mut seen = std::collections::HashSet::new();
+    for call in calls.iter_mut() {
+        if call.id.is_empty() || seen.contains(&call.id) {
+            let mut n = 0;
+            loop {
+                let candidate = format!("call_fix_{n}");
+                if !seen.contains(&candidate) {
+                    call.id = candidate;
+                    break;
+                }
+                n += 1;
+            }
+        }
+        seen.insert(call.id.clone());
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -987,15 +1057,31 @@ where
             Err(err) => {
                 last_error = err.to_string();
                 last_raw = raw.clone();
+                if raw.trim().is_empty() {
+                    last_error =
+                        "model returned an empty response (reasoning tokens may have exhausted max_tokens)"
+                            .to_string();
+                }
                 if attempt < attempts {
-                    attempt_messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": raw
-                    }));
-                    attempt_messages.push(serde_json::json!({
-                        "role": "user",
-                        "content": json_repair_user_message(&last_error, repair_hint)
-                    }));
+                    // An empty assistant message (no content, no tool calls) is
+                    // rejected by some providers (e.g. Mistral), and echoing an
+                    // empty reply back adds no context — ask for the JSON again
+                    // in a fresh user turn instead.
+                    if raw.trim().is_empty() {
+                        attempt_messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": json_empty_response_user_message(repair_hint)
+                        }));
+                    } else {
+                        attempt_messages.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": raw
+                        }));
+                        attempt_messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": json_repair_user_message(&last_error, repair_hint)
+                        }));
+                    }
                 }
             }
         }
@@ -1012,6 +1098,13 @@ fn json_repair_user_message(parse_error: &str, repair_hint: Option<&str>) -> Str
     let hint = repair_hint.map(|h| format!("\n\n{h}")).unwrap_or_default();
     format!(
         "Your previous response was not valid JSON: {parse_error}.{hint}\n\nReply with ONLY corrected JSON — no prose, no markdown fences."
+    )
+}
+
+fn json_empty_response_user_message(repair_hint: Option<&str>) -> String {
+    let hint = repair_hint.map(|h| format!("\n\n{h}")).unwrap_or_default();
+    format!(
+        "Your previous response was empty.{hint}\n\nReply with ONLY the JSON object — no reasoning, no prose, no markdown fences."
     )
 }
 
@@ -1075,6 +1168,50 @@ fn strip_json_fence(text: &str) -> &str {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: "{}".to_string(),
+        }
+    }
+
+    #[test]
+    fn unique_ids_rewrites_duplicate_fallback_ids() {
+        let mut calls = vec![
+            tool_call("call_fallback_0", "roll_dice"),
+            tool_call("abc123", "set_variable"),
+            tool_call("call_fallback_0", "set_measurement"),
+        ];
+        ensure_unique_tool_call_ids(&mut calls);
+        let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids[0], "call_fallback_0");
+        assert_eq!(ids[1], "abc123");
+        assert_ne!(ids[2], "call_fallback_0");
+        assert!(!ids[2].is_empty());
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn unique_ids_rewrites_empty_ids() {
+        let mut calls = vec![tool_call("", "roll_dice"), tool_call("", "roll_dice")];
+        ensure_unique_tool_call_ids(&mut calls);
+        assert!(calls.iter().all(|c| !c.id.is_empty()));
+        assert_ne!(calls[0].id, calls[1].id);
+    }
+
+    #[test]
+    fn unique_ids_leaves_distinct_ids_untouched() {
+        let mut calls = vec![
+            tool_call("a1", "roll_dice"),
+            tool_call("b2", "set_variable"),
+        ];
+        ensure_unique_tool_call_ids(&mut calls);
+        assert_eq!(calls[0].id, "a1");
+        assert_eq!(calls[1].id, "b2");
+    }
 
     #[test]
     fn inference_server_root_strips_v1_suffix() {
@@ -1192,6 +1329,47 @@ mod tests {
         let body = r#"{"error":"Insufficient balance"}"#;
         let msg = format_inference_http_error(StatusCode::PAYMENT_REQUIRED, body);
         assert!(msg.contains("Insufficient balance"));
+    }
+
+    #[test]
+    fn format_inference_http_error_surfaces_openrouter_provider_detail() {
+        let body = r#"{"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"{\"object\":\"error\",\"message\":\"Assistant message must have either content or tool_calls, but not none.\",\"type\":\"invalid_request_assistant_message\",\"code\":\"3240\"}","provider_name":"Mistral","is_byok":false}}}"#;
+        let msg = format_inference_http_error(StatusCode::BAD_REQUEST, body);
+        assert!(msg.contains("HTTP 400 Bad Request"));
+        assert!(msg.contains("Provider returned error"));
+        assert!(msg.contains("Mistral"));
+        assert!(msg.contains("Assistant message must have either content or tool_calls"));
+    }
+
+    #[test]
+    fn format_inference_http_error_includes_non_json_raw_metadata() {
+        let body = r#"{"error":{"message":"Provider returned error","code":502,"metadata":{"raw":"upstream timeout after 30s","provider_name":"Chutes"}}}"#;
+        let msg = format_inference_http_error(StatusCode::BAD_GATEWAY, body);
+        assert!(msg.contains("Chutes"));
+        assert!(msg.contains("upstream timeout after 30s"));
+    }
+
+    #[test]
+    fn format_inference_http_error_dedupes_identical_upstream_message() {
+        let body = r#"{"error":{"message":"model overloaded","code":503,"metadata":{"raw":"{\"message\":\"model overloaded\"}","provider_name":"Mistral"}}}"#;
+        let msg = format_inference_http_error(StatusCode::SERVICE_UNAVAILABLE, body);
+        assert_eq!(msg.matches("model overloaded").count(), 1);
+        assert!(msg.contains("Mistral"));
+    }
+
+    #[test]
+    fn json_empty_response_user_message_asks_for_json_only() {
+        let msg = json_empty_response_user_message(Some("use checks array"));
+        assert!(msg.contains("response was empty"));
+        assert!(msg.contains("use checks array"));
+        assert!(msg.contains("ONLY the JSON"));
+    }
+
+    #[test]
+    fn json_empty_response_user_message_omits_hint_when_none() {
+        let msg = json_empty_response_user_message(None);
+        assert!(msg.contains("response was empty"));
+        assert!(!msg.contains("\n\n\n"));
     }
 
     #[test]
